@@ -1,0 +1,1502 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import {
+  getRentalPageData,
+  saveRentals,
+  returnRental,
+  deleteRental,
+  saveCustomer,
+} from "../actions";
+import { useAppMessage } from "../contexts/AppMessageProvider";
+
+const branches = ["Karuvannur", "Ollur", "Kachery", "Mulayam Rd", "Pattikkad"];
+const today = new Date().toISOString().slice(0, 10);
+
+const emptyRental = {
+  customer_id: "",
+  mobile: "",
+  customer_name: "",
+  tool_id: "",
+  qty: 1,
+  daily_rate: 0,
+  discount: 0,
+  start_date: today,
+  end_date: "",
+  status: "Active",
+  shop: "",
+  avoid_sundays: true,
+};
+
+const emptyNewCustomer = {
+  customer_name: "",
+  mobile: "",
+  occupation: "",
+  address: "",
+  shop: "",
+  notes: "",
+};
+
+export default function RentalsPage() {
+  const { setAppMessage } = useAppMessage();
+
+  const [customers, setCustomers] = useState<any[]>([]);
+  const [tools, setTools] = useState<any[]>([]);
+  const [rentals, setRentals] = useState<any[]>([]);
+  const [rows, setRows] = useState<any[]>(
+    Array.from({ length: 20 }, () => ({ ...emptyRental }))
+  );
+
+  const [selectedBranch, setSelectedBranch] = useState("");
+  const [bulkDate, setBulkDate] = useState(today);
+  const [businessDate, setBusinessDate] = useState(today);
+  const [liveBranchFilter, setLiveBranchFilter] = useState("All Shops");
+  const [returnedBranchFilter, setReturnedBranchFilter] = useState("All Shops");
+
+  const [newCustomer, setNewCustomer] = useState<any>({ ...emptyNewCustomer });
+  const [showAddCustomer, setShowAddCustomer] = useState(false);
+  const [addCustomerRowIndex, setAddCustomerRowIndex] = useState<number | null>(
+    null
+  );
+
+  const [loading, setLoading] = useState(false);
+
+  const [returnMode, setReturnMode] = useState<any>({});
+  const [returnDates, setReturnDates] = useState<any>({});
+
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [confirmDate, setConfirmDate] = useState("");
+  const [mobileSuggestions, setMobileSuggestions] = useState<any>({});
+  const [shopPopupOpen, setShopPopupOpen] = useState(false);
+  const [popupShop, setPopupShop] = useState("");
+
+  function showError(message: string) {
+    setAppMessage({
+      type: "error",
+      title: "Error",
+      message,
+    });
+  }
+
+  function showSuccess(message: string) {
+    setAppMessage({
+      type: "success",
+      title: "Success",
+      message,
+    });
+  }
+
+  function showWarning(message: string) {
+    setAppMessage({
+      type: "warning",
+      title: "Warning",
+      message,
+    });
+  }
+
+  const uniqueTools = Array.from(
+    new Map(
+      tools.map((tool: any) => [
+        String(tool.tool_name || "").trim().toLowerCase(),
+        tool,
+      ])
+    ).values()
+  );
+
+  async function loadData() {
+    const res = await getRentalPageData();
+
+    if (res.success) {
+      setCustomers(res.customers || []);
+      setTools(res.tools || []);
+      setRentals(res.rentals || []);
+    } else {
+      showError(res.message || "Failed to load rentals");
+    }
+  }
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  function changeRow(index: number, field: string, value: any) {
+    const updated = [...rows];
+    updated[index] = { ...updated[index], [field]: value };
+    setRows(updated);
+  }
+
+  function applyDateToAllRows() {
+    if (!bulkDate) {
+      showWarning("Please select a date");
+      return;
+    }
+
+    const updated = rows.map((row) => ({
+      ...row,
+      start_date: bulkDate,
+    }));
+
+    setRows(updated);
+    showSuccess(`Date applied to all rows: ${bulkDate}`);
+  }
+
+  function handleMobileChange(index: number, value: string) {
+    const updated = [...rows];
+
+    updated[index] = {
+      ...updated[index],
+      mobile: value,
+    };
+
+    setRows(updated);
+
+    const searchValue = value.trim();
+
+    const matches =
+      searchValue.length === 0
+        ? []
+        : customers.filter((c) => String(c.mobile || "").includes(searchValue));
+
+    setMobileSuggestions({
+      ...mobileSuggestions,
+      [index]: matches.slice(0, 8),
+    });
+
+    const exact = customers.find((c) => String(c.mobile) === String(value));
+
+    if (exact) {
+      updated[index] = {
+        ...updated[index],
+        customer_id: exact.id,
+        customer_name: exact.customer_name,
+      };
+
+      setRows(updated);
+      setShowAddCustomer(false);
+      setAddCustomerRowIndex(null);
+    } else {
+      updated[index] = {
+        ...updated[index],
+        customer_id: "",
+        customer_name: "",
+      };
+
+      setRows(updated);
+
+      setNewCustomer({
+        ...emptyNewCustomer,
+        mobile: value,
+      });
+
+      setAddCustomerRowIndex(index);
+
+      if (searchValue.length >= 5 && matches.length === 0) {
+        setShowAddCustomer(true);
+      } else {
+        setShowAddCustomer(false);
+      }
+    }
+  }
+
+  async function handleSaveNewCustomer() {
+    const res = await saveCustomer(newCustomer);
+
+    if (!res.success) {
+      showError(res.message || "Failed to save customer");
+      return;
+    }
+
+    showSuccess(res.message || "Customer saved successfully");
+
+    const reload = await getRentalPageData();
+
+    if (reload.success) {
+      const updatedCustomers = reload.customers || [];
+      const found = updatedCustomers.find(
+        (c: any) => String(c.mobile) === String(newCustomer.mobile)
+      );
+
+      setCustomers(updatedCustomers);
+
+      if (found && addCustomerRowIndex !== null) {
+        const updatedRows = [...rows];
+
+        updatedRows[addCustomerRowIndex] = {
+          ...updatedRows[addCustomerRowIndex],
+          customer_id: found.id,
+          mobile: found.mobile,
+          customer_name: found.customer_name,
+        };
+
+        setRows(updatedRows);
+      }
+    }
+
+    setNewCustomer({ ...emptyNewCustomer });
+    setShowAddCustomer(false);
+    setAddCustomerRowIndex(null);
+  }
+
+  function handleToolChange(index: number, toolId: string) {
+    const selectedTool = tools.find((t) => String(t.id) === String(toolId));
+    const updated = [...rows];
+
+    updated[index] = {
+      ...updated[index],
+      tool_id: toolId,
+      daily_rate: selectedTool?.daily_rent || 0,
+    };
+
+    setRows(updated);
+  }
+
+  function customerName(id: number) {
+    const c = customers.find((x) => Number(x.id) === Number(id));
+    return c ? `${c.customer_name} - ${c.mobile}` : "";
+  }
+
+  function toolName(id: number) {
+    const t = tools.find((x) => Number(x.id) === Number(id));
+    return t ? t.tool_name : "";
+  }
+
+  function calcDays(
+    start: string,
+    end: string | null,
+    status: string,
+    avoidSundays = true
+  ) {
+    if (!start) return 0;
+
+    const startDate = new Date(start);
+    const endDate =
+      status === "Returned" && end ? new Date(end) : new Date(today);
+
+    if (endDate < startDate) return 1;
+
+    let count = 0;
+    const d = new Date(startDate);
+
+    while (d <= endDate) {
+      const isSunday = d.getDay() === 0;
+      if (!(avoidSundays && isSunday)) count++;
+      d.setDate(d.getDate() + 1);
+    }
+
+    return Math.max(count, 1);
+  }
+
+  function calcEntryDays(row: any) {
+    if (!row.start_date) return 1;
+
+    if (row.end_date) {
+      return calcDays(
+        row.start_date,
+        row.end_date,
+        "Returned",
+        row.avoid_sundays !== false
+      );
+    }
+
+    return 1;
+  }
+
+  function calcEntryAmount(row: any) {
+    if (!row.tool_id) return 0;
+
+    const days = calcEntryDays(row);
+
+    return Math.max(
+      days * Number(row.qty || 1) * Number(row.daily_rate || 0) -
+        Number(row.discount || 0),
+      0
+    );
+  }
+
+  function calcTotal(row: any) {
+    if (row.status === "Returned" && Number(row.total_amount || 0) > 0) {
+      return Number(row.total_amount || 0);
+    }
+
+    const days = calcDays(
+      row.start_date,
+      row.end_date,
+      row.status,
+      row.avoid_sundays !== false
+    );
+
+    return Math.max(
+      days * Number(row.qty || 1) * Number(row.daily_rate || 0) -
+        Number(row.discount || 0),
+      0
+    );
+  }
+
+  function validRows() {
+    return rows.filter((r) => r.customer_id && r.tool_id && r.start_date);
+  }
+
+  function openSaveConfirmation() {
+    const v = validRows();
+
+    if (v.length === 0) {
+      showWarning("No valid rentals to save");
+      return;
+    }
+
+    const dates = Array.from(new Set(v.map((r) => r.start_date)));
+    setConfirmDate(dates.length === 1 ? dates[0] : "Multiple Dates");
+    setShowConfirm(true);
+  }
+
+  function askSaveConfirmation() {
+    if (!selectedBranch) {
+      setPopupShop("");
+      setShopPopupOpen(true);
+      return;
+    }
+
+    openSaveConfirmation();
+  }
+
+  function continueAfterShopSelect() {
+    if (!popupShop) return;
+
+    const v = validRows();
+
+    if (v.length === 0) {
+      setShopPopupOpen(false);
+      showWarning("No valid rentals to save");
+      return;
+    }
+
+    setSelectedBranch(popupShop);
+    setShopPopupOpen(false);
+
+    const dates = Array.from(new Set(v.map((r) => r.start_date)));
+    setConfirmDate(dates.length === 1 ? dates[0] : "Multiple Dates");
+    setShowConfirm(true);
+  }
+
+  async function confirmSaveRentals() {
+    setLoading(true);
+
+    const rowsWithBranch = rows.map((r) => ({
+      ...r,
+      shop: selectedBranch,
+    }));
+
+    const res = await saveRentals(rowsWithBranch);
+
+    setLoading(false);
+    setShowConfirm(false);
+
+    if (!res.success) {
+      showError(res.message || "Failed to save rentals");
+      return;
+    }
+
+    showSuccess(res.message || "Rentals saved successfully");
+    setRows(Array.from({ length: 20 }, () => ({ ...emptyRental })));
+    await loadData();
+  }
+
+  async function handleReturn(id: number, mode: string) {
+    if (!mode) return;
+
+    if (mode === "Pick Date") {
+      setReturnMode({ ...returnMode, [id]: "Pick Date" });
+      return;
+    }
+
+    const res = await returnRental(id, today);
+
+    if (!res.success) {
+      showError(res.message || "Failed to return rental");
+      return;
+    }
+
+    showSuccess(res.message || "Rental returned successfully");
+    await loadData();
+  }
+
+  async function handleReturnWithDate(id: number) {
+    const pickedDate = returnDates[id];
+
+    if (!pickedDate) {
+      showWarning("Please select return date");
+      return;
+    }
+
+    const res = await returnRental(id, pickedDate);
+
+    if (!res.success) {
+      showError(res.message || "Failed to return rental");
+      return;
+    }
+
+    showSuccess(res.message || "Rental returned successfully");
+
+    setReturnMode({ ...returnMode, [id]: "" });
+    setReturnDates({ ...returnDates, [id]: "" });
+    await loadData();
+  }
+
+  async function handleDelete(id: number) {
+    const res = await deleteRental(id);
+
+    if (!res.success) {
+      showError(res.message || "Failed to delete rental");
+      return;
+    }
+
+    showSuccess(res.message || "Rental deleted successfully");
+    await loadData();
+  }
+
+  const activeRentals = rentals.filter((r) => r.status === "Active");
+  const returnedRentals = rentals.filter((r) => r.status === "Returned");
+
+  const filteredActiveRentals =
+    liveBranchFilter === "All Shops"
+      ? activeRentals
+      : activeRentals.filter((r) => r.shop === liveBranchFilter);
+
+  const filteredReturnedRentals =
+    returnedBranchFilter === "All Shops"
+      ? returnedRentals
+      : returnedRentals.filter((r) => r.shop === returnedBranchFilter);
+
+  const entryRows = rows.filter((r) => r.customer_id && r.tool_id);
+  const totalRows = entryRows.length;
+
+  const totalQty = rows.reduce(
+    (sum, r) => sum + (r.tool_id ? Number(r.qty || 0) : 0),
+    0
+  );
+
+  const totalEntryAmount = rows.reduce(
+    (sum, r) => sum + calcEntryAmount(r),
+    0
+  );
+
+  const entryBusinessForSelectedDate = rows
+    .filter((r) => r.tool_id && r.start_date === businessDate)
+    .reduce((sum, r) => sum + calcEntryAmount(r), 0);
+
+  const liveRentalToday = activeRentals
+    .filter((r) => {
+      const branchOk = selectedBranch ? r.shop === selectedBranch : true;
+      const startOk = !r.start_date || r.start_date <= businessDate;
+      const endOk = !r.end_date || r.end_date >= businessDate;
+      return branchOk && startOk && endOk;
+    })
+    .reduce((sum, r) => {
+      const oneDayAmount = Math.max(
+        Number(r.qty || 1) * Number(r.daily_rate || 0) -
+          Number(r.discount || 0),
+        0
+      );
+
+      return sum + oneDayAmount;
+    }, 0);
+
+  const dayTotalBusiness = entryBusinessForSelectedDate + liveRentalToday;
+
+  return (
+    <main>
+      <h1>Rentals</h1>
+
+      {shopPopupOpen && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(7, 23, 53, 0.45)",
+            zIndex: 99999,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 24,
+          }}
+        >
+          <div
+            style={{
+              width: "min(540px, 94vw)",
+              background: "white",
+              borderRadius: 18,
+              padding: "32px 30px",
+              textAlign: "center",
+              boxShadow: "0 25px 70px rgba(15, 23, 42, 0.35)",
+              border: "1px solid #dbe5f2",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 28,
+                fontWeight: 950,
+                color: "#071735",
+                marginBottom: 10,
+              }}
+            >
+              Select Shop
+            </div>
+
+            <div
+              style={{
+                fontSize: 17,
+                fontWeight: 800,
+                color: "#475569",
+                marginBottom: 22,
+              }}
+            >
+              Please select the shop to continue.
+            </div>
+
+            <select
+              value={popupShop}
+              onChange={(e) => setPopupShop(e.target.value)}
+              style={{
+                width: "100%",
+                marginBottom: 24,
+                fontSize: 18,
+                fontWeight: 900,
+                padding: "14px 16px",
+              }}
+            >
+              <option value="">Select Shop</option>
+              {branches.map((b) => (
+                <option key={b} value={b}>
+                  {b}
+                </option>
+              ))}
+            </select>
+
+            <div
+              style={{
+                display: "flex",
+                gap: 12,
+                justifyContent: "center",
+              }}
+            >
+              <button
+                type="button"
+                className="btn-gray"
+                onClick={() => setShopPopupOpen(false)}
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                className="btn-blue"
+                disabled={!popupShop}
+                onClick={continueAfterShopSelect}
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showConfirm && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.55)",
+            zIndex: 99999,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 24,
+          }}
+        >
+          <div
+            style={{
+              background: "#b91c1c",
+              color: "white",
+              padding: 40,
+              borderRadius: 18,
+              width: "min(560px, 94vw)",
+              textAlign: "center",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.4)",
+            }}
+          >
+            <div style={{ fontSize: 44, fontWeight: 900, marginBottom: 20 }}>
+              {selectedBranch}
+            </div>
+
+            <div style={{ fontSize: 34, fontWeight: 800, marginBottom: 30 }}>
+              {confirmDate}
+            </div>
+
+            <button
+              onClick={confirmSaveRentals}
+              disabled={loading}
+              style={{
+                background: "white",
+                color: "#b91c1c",
+                padding: "16px 28px",
+                borderRadius: 10,
+                fontSize: 18,
+                fontWeight: 900,
+                marginRight: 12,
+                cursor: "pointer",
+              }}
+            >
+              {loading ? "Saving..." : "CONFIRM SAVE"}
+            </button>
+
+            <button
+              onClick={() => setShowConfirm(false)}
+              style={{
+                background: "#111827",
+                color: "white",
+                padding: "16px 28px",
+                borderRadius: 10,
+                fontSize: 18,
+                fontWeight: 900,
+                cursor: "pointer",
+              }}
+            >
+              CANCEL
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="panel">
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: 14,
+          }}
+        >
+          <h2 style={{ margin: 0 }}>Live Rentals</h2>
+
+          <select
+            value={liveBranchFilter}
+            onChange={(e) => setLiveBranchFilter(e.target.value)}
+            style={{ width: 220 }}
+          >
+            <option>All Shops</option>
+            {branches.map((b) => (
+              <option key={b}>{b}</option>
+            ))}
+          </select>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Customer</th>
+              <th>Tool</th>
+              <th>Qty</th>
+              <th>Daily Rate</th>
+              <th>Start</th>
+              <th>Days</th>
+              <th>Current Total</th>
+              <th>Shop</th>
+              <th>Status</th>
+              <th>Return</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+
+          <tbody>
+            {filteredActiveRentals.map((r) => (
+              <tr key={r.id}>
+                <td>{customerName(r.customer_id)}</td>
+                <td>{toolName(r.tool_id)}</td>
+                <td>{r.qty}</td>
+                <td>₹{r.daily_rate}</td>
+                <td>{r.start_date}</td>
+                <td>
+                  {calcDays(
+                    r.start_date,
+                    r.end_date,
+                    r.status,
+                    r.avoid_sundays !== false
+                  )}
+                </td>
+                <td>₹{calcTotal(r)}</td>
+                <td>{r.shop || "-"}</td>
+                <td>{r.status}</td>
+
+                <td>
+                  <select
+                    value={returnMode[r.id] || ""}
+                    onChange={(e) => handleReturn(r.id, e.target.value)}
+                  >
+                    <option value="">Return</option>
+                    <option value="Same Day">Same Day</option>
+                    <option value="Pick Date">Pick a Date</option>
+                  </select>
+
+                  {returnMode[r.id] === "Pick Date" && (
+                    <div style={{ marginTop: 6 }}>
+                      <input
+                        type="date"
+                        value={returnDates[r.id] || today}
+                        onChange={(e) =>
+                          setReturnDates({
+                            ...returnDates,
+                            [r.id]: e.target.value,
+                          })
+                        }
+                      />
+
+                      <button
+                        className="btn-green"
+                        style={{ marginTop: 6 }}
+                        onClick={() => handleReturnWithDate(r.id)}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  )}
+                </td>
+
+                <td>
+                  <button
+                    className="btn-red"
+                    onClick={() => handleDelete(r.id)}
+                  >
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+
+            {filteredActiveRentals.length === 0 && (
+              <tr>
+                <td colSpan={11}>No live rentals</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="panel">
+        <h2 style={{ marginTop: 0, marginBottom: 14 }}>New Rentals</h2>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(5, minmax(170px, 1fr))",
+            gap: 14,
+            marginBottom: 16,
+          }}
+        >
+          <div
+            style={{
+              background: "#eff6ff",
+              border: "1px solid #bfdbfe",
+              borderRadius: 12,
+              padding: "20px 18px",
+              minHeight: 96,
+              fontWeight: 900,
+            }}
+          >
+            <div style={{ color: "#1e40af", fontSize: 13 }}>Total Rows</div>
+            <div style={{ fontSize: 34 }}>{totalRows}</div>
+          </div>
+
+          <div
+            style={{
+              background: "#f0fdf4",
+              border: "1px solid #bbf7d0",
+              borderRadius: 12,
+              padding: "20px 18px",
+              minHeight: 96,
+              fontWeight: 900,
+            }}
+          >
+            <div style={{ color: "#166534", fontSize: 13 }}>Total Qty</div>
+            <div style={{ fontSize: 34 }}>{totalQty}</div>
+          </div>
+
+          <div
+            style={{
+              background: "#fff7ed",
+              border: "1px solid #fed7aa",
+              borderRadius: 12,
+              padding: "20px 18px",
+              minHeight: 96,
+              fontWeight: 900,
+            }}
+          >
+            <div style={{ color: "#9a3412", fontSize: 13 }}>
+              Entry Table Total
+            </div>
+            <div style={{ fontSize: 34 }}>₹{totalEntryAmount.toFixed(0)}</div>
+          </div>
+
+          <div
+            style={{
+              background: "#f8fafc",
+              border: "1px solid #cbd5e1",
+              borderRadius: 12,
+              padding: "20px 18px",
+              minHeight: 96,
+              fontWeight: 900,
+            }}
+          >
+            <div style={{ color: "#334155", fontSize: 13 }}>
+              Live Rental Today
+            </div>
+            <div style={{ fontSize: 34 }}>₹{liveRentalToday.toFixed(0)}</div>
+          </div>
+
+          <div
+            style={{
+              background: "linear-gradient(135deg, #1d4ed8, #0f172a)",
+              color: "white",
+              borderRadius: 12,
+              padding: "20px 18px",
+              minHeight: 96,
+              fontWeight: 900,
+              boxShadow: "0 10px 22px rgba(29,78,216,0.25)",
+            }}
+          >
+            <div style={{ fontSize: 13 }}>Total Business Today</div>
+
+            <input
+              type="date"
+              value={businessDate}
+              onChange={(e) => setBusinessDate(e.target.value)}
+              style={{
+                width: "100%",
+                marginTop: 6,
+                marginBottom: 6,
+                fontWeight: 900,
+                color: "#0f172a",
+              }}
+            />
+
+            <div style={{ fontSize: 34 }}>₹{dayTotalBusiness.toFixed(0)}</div>
+          </div>
+        </div>
+
+        <div
+          style={{
+            background: "#f8fafc",
+            border: "1px solid #cbd5e1",
+            borderRadius: 12,
+            padding: 14,
+            marginBottom: 14,
+            display: "grid",
+            gridTemplateColumns: "190px 190px 1fr 180px",
+            gap: 10,
+            alignItems: "center",
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 900, color: "#475569" }}>
+              Entry Date
+            </div>
+            <input
+              type="date"
+              value={bulkDate}
+              onChange={(e) => setBulkDate(e.target.value)}
+              style={{ fontWeight: 800 }}
+            />
+          </div>
+
+          <button
+            className="btn-gray"
+            onClick={applyDateToAllRows}
+            style={{ fontWeight: 900 }}
+          >
+            Apply To All Rows
+          </button>
+
+          <select
+            value={selectedBranch}
+            onChange={(e) => setSelectedBranch(e.target.value)}
+            style={{ fontWeight: 800 }}
+          >
+            <option value="">Select Shop</option>
+            {branches.map((b) => (
+              <option key={b}>{b}</option>
+            ))}
+          </select>
+
+          <button
+            className="btn-blue"
+            onClick={askSaveConfirmation}
+            disabled={loading}
+            style={{ fontWeight: 900 }}
+          >
+            Save Rentals
+          </button>
+        </div>
+
+        {showAddCustomer && (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(7, 23, 53, 0.55)",
+              zIndex: 99998,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 24,
+            }}
+          >
+            <div
+              style={{
+                width: "min(1120px, 96vw)",
+                background: "#ffffff",
+                borderRadius: 16,
+                boxShadow: "0 25px 70px rgba(15, 23, 42, 0.35)",
+                border: "1px solid #dbe5f2",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  minHeight: 78,
+                  padding: "18px 28px",
+                  borderBottom: "1px solid #e5eaf3",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 16,
+                }}
+              >
+                <h2
+                  style={{
+                    margin: 0,
+                    fontSize: 28,
+                    fontWeight: 950,
+                    color: "#071735",
+                  }}
+                >
+                  Add New Customer
+                </h2>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAddCustomer(false);
+                    setAddCustomerRowIndex(null);
+                  }}
+                  style={{
+                    width: 42,
+                    height: 42,
+                    borderRadius: "50%",
+                    border: "1px solid #d6deec",
+                    background: "#ffffff",
+                    color: "#071735",
+                    fontSize: 28,
+                    lineHeight: "36px",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+
+              <div style={{ padding: 28 }}>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns:
+                      "1.1fr 1.4fr 1.1fr 1.5fr 1.1fr 1.3fr",
+                    gap: 18,
+                    alignItems: "start",
+                  }}
+                >
+                  <div>
+                    <input
+                      placeholder="Mobile"
+                      value={newCustomer.mobile}
+                      onChange={(e) =>
+                        setNewCustomer({
+                          ...newCustomer,
+                          mobile: e.target.value,
+                        })
+                      }
+                    />
+                    <div
+                      style={{
+                        marginTop: 8,
+                        color: "#003b8f",
+                        fontWeight: 900,
+                        fontSize: 14,
+                      }}
+                    >
+                      Mobile Number *
+                    </div>
+                  </div>
+
+                  <div>
+                    <input
+                      placeholder="Customer Name"
+                      value={newCustomer.customer_name}
+                      onChange={(e) =>
+                        setNewCustomer({
+                          ...newCustomer,
+                          customer_name: e.target.value,
+                        })
+                      }
+                    />
+                    <div
+                      style={{
+                        marginTop: 8,
+                        color: "#003b8f",
+                        fontWeight: 900,
+                        fontSize: 14,
+                      }}
+                    >
+                      Customer Name *
+                    </div>
+                  </div>
+
+                  <div>
+                    <input
+                      placeholder="Occupation"
+                      value={newCustomer.occupation}
+                      onChange={(e) =>
+                        setNewCustomer({
+                          ...newCustomer,
+                          occupation: e.target.value,
+                        })
+                      }
+                    />
+                    <div
+                      style={{
+                        marginTop: 8,
+                        color: "#003b8f",
+                        fontWeight: 900,
+                        fontSize: 14,
+                      }}
+                    >
+                      Occupation
+                    </div>
+                  </div>
+
+                  <div>
+                    <input
+                      placeholder="Address"
+                      value={newCustomer.address}
+                      onChange={(e) =>
+                        setNewCustomer({
+                          ...newCustomer,
+                          address: e.target.value,
+                        })
+                      }
+                    />
+                    <div
+                      style={{
+                        marginTop: 8,
+                        color: "#003b8f",
+                        fontWeight: 900,
+                        fontSize: 14,
+                      }}
+                    >
+                      Address
+                    </div>
+                  </div>
+
+                  <div>
+                    <select
+                      value={newCustomer.shop}
+                      onChange={(e) =>
+                        setNewCustomer({
+                          ...newCustomer,
+                          shop: e.target.value,
+                        })
+                      }
+                    >
+                      <option value="">Select Shop</option>
+                      {branches.map((b) => (
+                        <option key={b}>{b}</option>
+                      ))}
+                    </select>
+                    <div
+                      style={{
+                        marginTop: 8,
+                        color: "#003b8f",
+                        fontWeight: 900,
+                        fontSize: 14,
+                      }}
+                    >
+                      Shop *
+                    </div>
+                  </div>
+
+                  <div>
+                    <input
+                      placeholder="Notes"
+                      value={newCustomer.notes}
+                      onChange={(e) =>
+                        setNewCustomer({
+                          ...newCustomer,
+                          notes: e.target.value,
+                        })
+                      }
+                    />
+                    <div
+                      style={{
+                        marginTop: 8,
+                        color: "#003b8f",
+                        fontWeight: 900,
+                        fontSize: 14,
+                      }}
+                    >
+                      Notes
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    marginTop: 30,
+                    display: "flex",
+                    justifyContent: "center",
+                    gap: 16,
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="btn-green"
+                    onClick={handleSaveNewCustomer}
+                    style={{
+                      padding: "15px 34px",
+                      fontSize: 17,
+                      fontWeight: 950,
+                    }}
+                  >
+                    Save New Customer
+                  </button>
+
+                  <button
+                    type="button"
+                    className="btn-gray"
+                    onClick={() => {
+                      setShowAddCustomer(false);
+                      setAddCustomerRowIndex(null);
+                    }}
+                    style={{
+                      padding: "15px 34px",
+                      fontSize: 17,
+                      fontWeight: 950,
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <table>
+          <thead>
+            <tr>
+              <th>No</th>
+              <th>Mobile</th>
+              <th>Customer</th>
+              <th>Tool</th>
+              <th>Qty</th>
+              <th>Rate</th>
+              <th>Discount</th>
+              <th>Total</th>
+              <th>Start</th>
+              <th>End</th>
+              <th>Avoid Sundays</th>
+            </tr>
+          </thead>
+
+          <tbody>
+            {rows.map((row, index) => (
+              <tr key={index}>
+                <td>{index + 1}</td>
+
+                <td>
+                  <div style={{ position: "relative" }}>
+                    <input
+                      value={row.mobile}
+                      onChange={(e) =>
+                        handleMobileChange(index, e.target.value)
+                      }
+                      placeholder="Mobile"
+                    />
+
+                    {(mobileSuggestions[index] || []).length > 0 && (
+                      <div
+                        style={{
+                          position: "absolute",
+                          top: "100%",
+                          left: 0,
+                          right: 0,
+                          background: "white",
+                          border: "1px solid #d1d5db",
+                          zIndex: 999,
+                          maxHeight: 220,
+                          overflowY: "auto",
+                        }}
+                      >
+                        {mobileSuggestions[index].map((c: any) => (
+                          <div
+                            key={c.id}
+                            style={{
+                              padding: "8px",
+                              cursor: "pointer",
+                              borderBottom: "1px solid #eee",
+                            }}
+                            onClick={() => {
+                              const updated = [...rows];
+
+                              updated[index] = {
+                                ...updated[index],
+                                customer_id: c.id,
+                                mobile: c.mobile,
+                                customer_name: c.customer_name,
+                              };
+
+                              setRows(updated);
+
+                              setMobileSuggestions({
+                                ...mobileSuggestions,
+                                [index]: [],
+                              });
+
+                              setShowAddCustomer(false);
+                            }}
+                          >
+                            <strong>{c.mobile}</strong>
+                            {" - "}
+                            {c.customer_name}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </td>
+
+                <td>
+                  <input value={row.customer_name} readOnly placeholder="Name" />
+                </td>
+
+                <td>
+                  <select
+                    value={row.tool_id}
+                    onChange={(e) => handleToolChange(index, e.target.value)}
+                  >
+                    <option value="">Select Tool</option>
+                    {uniqueTools.map((t: any) => (
+                      <option key={t.id} value={t.id}>
+                        {t.tool_name} - ₹{t.daily_rent}/day
+                      </option>
+                    ))}
+                  </select>
+                </td>
+
+                <td>
+                  <input
+                    type="number"
+                    value={row.qty}
+                    onChange={(e) => changeRow(index, "qty", e.target.value)}
+                  />
+                </td>
+
+                <td>
+                  <input
+                    type="number"
+                    value={row.daily_rate}
+                    onChange={(e) =>
+                      changeRow(index, "daily_rate", e.target.value)
+                    }
+                  />
+                </td>
+
+                <td>
+                  <input
+                    type="number"
+                    value={row.discount}
+                    onChange={(e) =>
+                      changeRow(index, "discount", e.target.value)
+                    }
+                  />
+                </td>
+
+                <td
+                  style={{
+                    fontWeight: 950,
+                    color: "#0057ff",
+                    textAlign: "right",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  ₹{calcEntryAmount(row).toFixed(0)}
+                </td>
+
+                <td>
+                  <input
+                    type="date"
+                    value={row.start_date}
+                    onChange={(e) =>
+                      changeRow(index, "start_date", e.target.value)
+                    }
+                  />
+                </td>
+
+                <td>
+                  <input
+                    type="date"
+                    value={row.end_date}
+                    onChange={(e) =>
+                      changeRow(index, "end_date", e.target.value)
+                    }
+                  />
+                </td>
+
+                <td style={{ textAlign: "center" }}>
+                  <input
+                    type="checkbox"
+                    checked={row.avoid_sundays !== false}
+                    onChange={(e) =>
+                      changeRow(index, "avoid_sundays", e.target.checked)
+                    }
+                    style={{ width: 20 }}
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <div
+          style={{
+            marginTop: 14,
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 12,
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ fontWeight: 950, color: "#071735" }}>
+            Rows: {totalRows} &nbsp; | &nbsp; Qty: {totalQty} &nbsp; | &nbsp;
+            Entry Total: ₹{totalEntryAmount.toFixed(0)}
+          </div>
+
+          <div>
+            <button
+              className="btn-gray"
+              onClick={() =>
+                setRows([
+                  ...rows,
+                  ...Array.from({ length: 5 }, () => ({ ...emptyRental })),
+                ])
+              }
+            >
+              + Add 5 Rows
+            </button>
+
+            <button
+              className="btn-gray"
+              style={{ marginLeft: 8 }}
+              onClick={() =>
+                setRows(Array.from({ length: 20 }, () => ({ ...emptyRental })))
+              }
+            >
+              Clear Table
+            </button>
+
+            <button
+              className="btn-blue"
+              style={{ marginLeft: 8, fontWeight: 900 }}
+              onClick={askSaveConfirmation}
+              disabled={loading}
+            >
+              Save Rentals
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="panel">
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: 14,
+          }}
+        >
+          <h2 style={{ margin: 0 }}>Returned Rentals</h2>
+
+          <select
+            value={returnedBranchFilter}
+            onChange={(e) => setReturnedBranchFilter(e.target.value)}
+            style={{ width: 220 }}
+          >
+            <option>All Shops</option>
+            {branches.map((b) => (
+              <option key={b}>{b}</option>
+            ))}
+          </select>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Customer</th>
+              <th>Tool</th>
+              <th>Qty</th>
+              <th>Daily Rate</th>
+              <th>Start</th>
+              <th>End</th>
+              <th>Days</th>
+              <th>Total</th>
+              <th>Shop</th>
+              <th>Avoid Sundays</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+
+          <tbody>
+            {filteredReturnedRentals.map((r) => (
+              <tr key={r.id}>
+                <td>{customerName(r.customer_id)}</td>
+                <td>{toolName(r.tool_id)}</td>
+                <td>{r.qty}</td>
+                <td>₹{r.daily_rate}</td>
+                <td>{r.start_date}</td>
+                <td>{r.end_date}</td>
+                <td>
+                  {calcDays(
+                    r.start_date,
+                    r.end_date,
+                    r.status,
+                    r.avoid_sundays !== false
+                  )}
+                </td>
+                <td>₹{calcTotal(r)}</td>
+                <td>{r.shop || "-"}</td>
+                <td>{r.avoid_sundays !== false ? "Yes" : "No"}</td>
+                <td>{r.status}</td>
+              </tr>
+            ))}
+
+            {filteredReturnedRentals.length === 0 && (
+              <tr>
+                <td colSpan={11}>No returned rentals</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </main>
+  );
+}
