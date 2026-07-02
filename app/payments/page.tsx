@@ -29,6 +29,7 @@ const thisMonth = () => new Date().toISOString().slice(0, 7);
 
 const emptyPaymentRow = () => ({
   payment_date: today(),
+  rental_id: "",
   mobile: "",
   customer_id: "",
   customer_name: "",
@@ -58,6 +59,7 @@ export default function PaymentsPage() {
 
   const [customers, setCustomers] = useState<any[]>([]);
   const [pendingRows, setPendingRows] = useState<any[]>([]);
+  const [pendingReturnedRentals, setPendingReturnedRentals] = useState<any[]>([]);
   const [payments, setPayments] = useState<any[]>([]);
   const [cashReceived, setCashReceived] = useState<any[]>([]);
   const [rentals, setRentals] = useState<any[]>([]);
@@ -97,6 +99,7 @@ export default function PaymentsPage() {
 
     if (paymentsRes.success) {
       setPendingRows(paymentsRes.data || []);
+      setPendingReturnedRentals(paymentsRes.pendingReturnedRentals || []);
     } else {
       showError(paymentsRes.message || "Failed to load payments data");
     }
@@ -168,7 +171,10 @@ export default function PaymentsPage() {
 
         if (field === "mobile") {
           const customer = findCustomerByMobile(value);
-          const pending = findPendingByMobile(value);
+          const pending =
+            pendingReturnedRentals.find(
+              (p) => String(p.mobile || "").trim() === String(value || "").trim()
+            ) || findPendingByMobile(value);
 
           updated.customer_id = customer?.id || pending?.id || "";
           updated.customer_name =
@@ -183,6 +189,44 @@ export default function PaymentsPage() {
         return updated;
       })
     );
+  }
+
+  function receivePendingRental(row: any) {
+    const paymentRow = {
+      payment_date: today(),
+      rental_id: row.rental_id || row.id || "",
+      mobile: row.mobile || "",
+      customer_id: row.customer_id || "",
+      customer_name: row.customer_name || "",
+      shop: row.shop || "",
+      outstanding: String(Number(row.balance || 0)),
+      amount: "",
+      discount: "",
+      mode: "Cash",
+      remarks: row.tool_name ? `Payment for ${row.tool_name}` : "Rental payment",
+    };
+
+    setPaymentRows((prev) => {
+      const next = [...prev];
+      const emptyIndex = next.findIndex(
+        (r) =>
+          !r.mobile &&
+          !r.customer_name &&
+          !r.amount &&
+          !r.discount &&
+          !r.rental_id
+      );
+
+      if (emptyIndex >= 0) {
+        next[emptyIndex] = paymentRow;
+        return next;
+      }
+
+      return [paymentRow, ...next];
+    });
+
+    setCustomerFilter(row.mobile || "");
+    showSuccess("Payment row filled. Enter amount and save payment.");
   }
 
   function updateCashRow(index: number, field: string, value: string) {
@@ -205,6 +249,7 @@ export default function PaymentsPage() {
 
     const insertRows = filled.map((row) => ({
       payment_date: row.payment_date,
+      rental_id: row.rental_id || null,
       customer_id: row.customer_id || null,
       customer_name: row.customer_name,
       mobile: row.mobile,
@@ -212,6 +257,7 @@ export default function PaymentsPage() {
       amount: Number(row.amount || 0),
       discount: Number(row.discount || 0),
       mode: row.mode,
+      payment_mode: row.mode,
       remarks: row.remarks,
     }));
 
@@ -243,6 +289,7 @@ export default function PaymentsPage() {
       received_from: row.received_from,
       amount: Number(row.amount || 0),
       mode: row.mode,
+      payment_mode: row.mode,
       remarks: row.remarks,
     }));
 
@@ -387,6 +434,16 @@ export default function PaymentsPage() {
 
   const monthCashTotal = monthCash.reduce(
     (sum, c) => sum + Number(c.amount || 0),
+    0
+  );
+
+  const filteredReturnedPending =
+    shopFilter === "All Shops"
+      ? pendingReturnedRentals
+      : pendingReturnedRentals.filter((row) => row.shop === shopFilter);
+
+  const returnedPendingTotal = filteredReturnedPending.reduce(
+    (sum, row) => sum + Number(row.balance || 0),
     0
   );
 
@@ -579,9 +636,70 @@ export default function PaymentsPage() {
         <Kpi title="Month Business" value={`₹${monthBusiness.toFixed(0)}`} />
         <Kpi title="Payments Received" value={`₹${monthPaymentTotal.toFixed(0)}`} />
         <Kpi title="Cash From Shops" value={`₹${monthCashTotal.toFixed(0)}`} />
-        <Kpi title="Pending Balance" value={`₹${outstandingTotal.toFixed(0)}`} />
+        <Kpi title="Pending Returned" value={`₹${returnedPendingTotal.toFixed(0)}`} />
         <Kpi title="Total Arrears" value={`₹${totalArrears.toFixed(0)}`} />
       </div>
+
+      <section className="modern-card">
+        <SectionHeader
+          title="Pending Returned Rentals"
+          subtitle="Returned tools waiting for payment. Use shop dropdown in Search & Results to filter."
+        />
+
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Return Date</th>
+                <th>Customer</th>
+                <th>Mobile</th>
+                <th>Tool</th>
+                <th>Shop</th>
+                <th>Amount</th>
+                <th>Paid</th>
+                <th>Discount</th>
+                <th>Balance</th>
+                <th>Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {filteredReturnedPending.map((row, index) => (
+                <tr key={`${row.rental_id || row.id || "rental"}-${index}`}>
+                  <td>{row.return_date || row.end_date || "-"}</td>
+                  <td>
+                    <strong>{row.customer_name || "-"}</strong>
+                  </td>
+                  <td>{row.mobile || "-"}</td>
+                  <td>{row.tool_name || "-"}</td>
+                  <td>{row.shop || "-"}</td>
+                  <td className="strong">₹{Number(row.amount || 0).toFixed(0)}</td>
+                  <td>₹{Number(row.paid || 0).toFixed(0)}</td>
+                  <td>₹{Number(row.discount || 0).toFixed(0)}</td>
+                  <td className="strong">₹{Number(row.balance || 0).toFixed(0)}</td>
+                  <td>{row.payment_status}</td>
+                  <td>
+                    <button
+                      className="btn-blue"
+                      type="button"
+                      onClick={() => receivePendingRental(row)}
+                    >
+                      Receive Payment
+                    </button>
+                  </td>
+                </tr>
+              ))}
+
+              {filteredReturnedPending.length === 0 && (
+                <tr>
+                  <td colSpan={11}>No pending returned rentals found</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       <section className="modern-card">
         <SectionHeader

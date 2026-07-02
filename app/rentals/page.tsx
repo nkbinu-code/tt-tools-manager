@@ -37,6 +37,48 @@ const emptyNewCustomer = {
   notes: "",
 };
 
+const compactTableStyle = {
+  width: "100%",
+  borderCollapse: "collapse" as const,
+  tableLayout: "fixed" as const,
+  fontSize: 15,
+};
+
+const compactHeaderStyle = {
+  textAlign: "center" as const,
+  fontWeight: 950,
+  padding: "7px 6px",
+  whiteSpace: "nowrap" as const,
+};
+
+const compactCellStyle = {
+  padding: "5px 6px",
+  lineHeight: 1.1,
+  fontWeight: 850,
+  verticalAlign: "middle" as const,
+};
+
+const compactCenterCellStyle = {
+  ...compactCellStyle,
+  textAlign: "center" as const,
+};
+
+const compactInputStyle = {
+  width: "100%",
+  minWidth: 0,
+  padding: "7px 6px",
+  fontWeight: 850,
+  fontSize: 14,
+};
+
+const compactSelectStyle = {
+  width: "100%",
+  minWidth: 0,
+  padding: "7px 6px",
+  fontWeight: 850,
+  fontSize: 14,
+};
+
 export default function RentalsPage() {
   const { setAppMessage } = useAppMessage();
 
@@ -44,7 +86,7 @@ export default function RentalsPage() {
   const [tools, setTools] = useState<any[]>([]);
   const [rentals, setRentals] = useState<any[]>([]);
   const [rows, setRows] = useState<any[]>(
-    Array.from({ length: 20 }, () => ({ ...emptyRental }))
+    Array.from({ length: 20 }, () => ({ ...emptyRental })),
   );
 
   const [selectedBranch, setSelectedBranch] = useState("");
@@ -56,7 +98,7 @@ export default function RentalsPage() {
   const [newCustomer, setNewCustomer] = useState<any>({ ...emptyNewCustomer });
   const [showAddCustomer, setShowAddCustomer] = useState(false);
   const [addCustomerRowIndex, setAddCustomerRowIndex] = useState<number | null>(
-    null
+    null,
   );
 
   const [loading, setLoading] = useState(false);
@@ -97,10 +139,12 @@ export default function RentalsPage() {
   const uniqueTools = Array.from(
     new Map(
       tools.map((tool: any) => [
-        String(tool.tool_name || "").trim().toLowerCase(),
+        String(tool.tool_name || "")
+          .trim()
+          .toLowerCase(),
         tool,
-      ])
-    ).values()
+      ]),
+    ).values(),
   );
 
   async function loadData() {
@@ -123,6 +167,42 @@ export default function RentalsPage() {
     const updated = [...rows];
     updated[index] = { ...updated[index], [field]: value };
     setRows(updated);
+  }
+
+  function copyPreviousCustomerDetails(index: number) {
+    let sourceRow: any = null;
+
+    for (let i = index - 1; i >= 0; i--) {
+      const row = rows[i];
+
+      if (row?.customer_id || row?.mobile || row?.customer_name) {
+        sourceRow = row;
+        break;
+      }
+    }
+
+    if (!sourceRow) {
+      showWarning("No previous customer found to copy");
+      return;
+    }
+
+    const updated = [...rows];
+
+    updated[index] = {
+      ...updated[index],
+      customer_id: sourceRow.customer_id || "",
+      mobile: sourceRow.mobile || "",
+      customer_name: sourceRow.customer_name || "",
+      start_date: sourceRow.start_date || today,
+      end_date: sourceRow.end_date || "",
+      avoid_sundays: sourceRow.avoid_sundays !== false,
+    };
+
+    setRows(updated);
+    setMobileSuggestions({
+      ...mobileSuggestions,
+      [index]: [],
+    });
   }
 
   function applyDateToAllRows() {
@@ -213,7 +293,7 @@ export default function RentalsPage() {
     if (reload.success) {
       const updatedCustomers = reload.customers || [];
       const found = updatedCustomers.find(
-        (c: any) => String(c.mobile) === String(newCustomer.mobile)
+        (c: any) => String(c.mobile) === String(newCustomer.mobile),
       );
 
       setCustomers(updatedCustomers);
@@ -264,7 +344,7 @@ export default function RentalsPage() {
     start: string,
     end: string | null,
     status: string,
-    avoidSundays = true
+    avoidSundays = true,
   ) {
     if (!start) return 0;
 
@@ -294,7 +374,7 @@ export default function RentalsPage() {
         row.start_date,
         row.end_date,
         "Returned",
-        row.avoid_sundays !== false
+        row.avoid_sundays !== false,
       );
     }
 
@@ -309,7 +389,7 @@ export default function RentalsPage() {
     return Math.max(
       days * Number(row.qty || 1) * Number(row.daily_rate || 0) -
         Number(row.discount || 0),
-      0
+      0,
     );
   }
 
@@ -322,13 +402,13 @@ export default function RentalsPage() {
       row.start_date,
       row.end_date,
       row.status,
-      row.avoid_sundays !== false
+      row.avoid_sundays !== false,
     );
 
     return Math.max(
       days * Number(row.qty || 1) * Number(row.daily_rate || 0) -
         Number(row.discount || 0),
-      0
+      0,
     );
   }
 
@@ -472,13 +552,10 @@ export default function RentalsPage() {
 
   const totalQty = rows.reduce(
     (sum, r) => sum + (r.tool_id ? Number(r.qty || 0) : 0),
-    0
+    0,
   );
 
-  const totalEntryAmount = rows.reduce(
-    (sum, r) => sum + calcEntryAmount(r),
-    0
-  );
+  const totalEntryAmount = rows.reduce((sum, r) => sum + calcEntryAmount(r), 0);
 
   const entryBusinessForSelectedDate = rows
     .filter((r) => r.tool_id && r.start_date === businessDate)
@@ -495,7 +572,7 @@ export default function RentalsPage() {
       const oneDayAmount = Math.max(
         Number(r.qty || 1) * Number(r.daily_rate || 0) -
           Number(r.discount || 0),
-        0
+        0,
       );
 
       return sum + oneDayAmount;
@@ -690,45 +767,59 @@ export default function RentalsPage() {
           </select>
         </div>
 
-        <table>
+        <table style={compactTableStyle}>
+          <colgroup>
+            <col style={{ width: "21%" }} />
+            <col style={{ width: "25%" }} />
+            <col style={{ width: "5%" }} />
+            <col style={{ width: "8%" }} />
+            <col style={{ width: "8%" }} />
+            <col style={{ width: "5%" }} />
+            <col style={{ width: "9%" }} />
+            <col style={{ width: "8%" }} />
+            <col style={{ width: "7%" }} />
+            <col style={{ width: "10%" }} />
+            <col style={{ width: "7%" }} />
+          </colgroup>
           <thead>
             <tr>
-              <th>Customer</th>
-              <th>Tool</th>
-              <th>Qty</th>
-              <th>Daily Rate</th>
-              <th>Start</th>
-              <th>Days</th>
-              <th>Current Total</th>
-              <th>Shop</th>
-              <th>Status</th>
-              <th>Return</th>
-              <th>Actions</th>
+              <th style={compactHeaderStyle}>Customer</th>
+              <th style={compactHeaderStyle}>Tool</th>
+              <th style={compactHeaderStyle}>Qty</th>
+              <th style={compactHeaderStyle}>Daily Rate</th>
+              <th style={compactHeaderStyle}>Start</th>
+              <th style={compactHeaderStyle}>Days</th>
+              <th style={compactHeaderStyle}>Current Total</th>
+              <th style={compactHeaderStyle}>Shop</th>
+              <th style={compactHeaderStyle}>Status</th>
+              <th style={compactHeaderStyle}>Return</th>
+              <th style={compactHeaderStyle}>Actions</th>
             </tr>
           </thead>
 
           <tbody>
             {filteredActiveRentals.map((r) => (
               <tr key={r.id}>
-                <td>{customerName(r.customer_id)}</td>
-                <td>{toolName(r.tool_id)}</td>
-                <td>{r.qty}</td>
-                <td>₹{r.daily_rate}</td>
-                <td>{r.start_date}</td>
-                <td>
+                <td style={compactCellStyle}>{customerName(r.customer_id)}</td>
+                <td style={compactCellStyle}>{toolName(r.tool_id)}</td>
+                <td style={compactCenterCellStyle}>{r.qty}</td>
+                <td style={compactCenterCellStyle}>₹{r.daily_rate}</td>
+                <td style={compactCenterCellStyle}>{r.start_date}</td>
+                <td style={compactCenterCellStyle}>
                   {calcDays(
                     r.start_date,
                     r.end_date,
                     r.status,
-                    r.avoid_sundays !== false
+                    r.avoid_sundays !== false,
                   )}
                 </td>
-                <td>₹{calcTotal(r)}</td>
-                <td>{r.shop || "-"}</td>
-                <td>{r.status}</td>
+                <td style={compactCenterCellStyle}>₹{calcTotal(r)}</td>
+                <td style={compactCenterCellStyle}>{r.shop || "-"}</td>
+                <td style={compactCenterCellStyle}>{r.status}</td>
 
-                <td>
+                <td style={compactCenterCellStyle}>
                   <select
+                    style={compactSelectStyle}
                     value={returnMode[r.id] || ""}
                     onChange={(e) => handleReturn(r.id, e.target.value)}
                   >
@@ -761,7 +852,7 @@ export default function RentalsPage() {
                   )}
                 </td>
 
-                <td>
+                <td style={compactCenterCellStyle}>
                   <button
                     className="btn-red"
                     onClick={() => handleDelete(r.id)}
@@ -774,7 +865,9 @@ export default function RentalsPage() {
 
             {filteredActiveRentals.length === 0 && (
               <tr>
-                <td colSpan={11}>No live rentals</td>
+                <td colSpan={11} style={compactCenterCellStyle}>
+                  No live rentals
+                </td>
               </tr>
             )}
           </tbody>
@@ -1008,8 +1101,7 @@ export default function RentalsPage() {
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns:
-                      "1.1fr 1.4fr 1.1fr 1.5fr 1.1fr 1.3fr",
+                    gridTemplateColumns: "1.1fr 1.4fr 1.1fr 1.5fr 1.1fr 1.3fr",
                     gap: 18,
                     alignItems: "start",
                   }}
@@ -1199,31 +1291,70 @@ export default function RentalsPage() {
           </div>
         )}
 
-        <table>
+        <table style={compactTableStyle}>
+          <colgroup>
+            <col style={{ width: "3%" }} />
+            <col style={{ width: "3%" }} />
+            <col style={{ width: "10%" }} />
+            <col style={{ width: "14%" }} />
+            <col style={{ width: "27%" }} />
+            <col style={{ width: "5%" }} />
+            <col style={{ width: "6%" }} />
+            <col style={{ width: "7%" }} />
+            <col style={{ width: "8%" }} />
+            <col style={{ width: "9%" }} />
+            <col style={{ width: "9%" }} />
+            <col style={{ width: "5%" }} />
+          </colgroup>
           <thead>
             <tr>
-              <th>No</th>
-              <th>Mobile</th>
-              <th>Customer</th>
-              <th>Tool</th>
-              <th>Qty</th>
-              <th>Rate</th>
-              <th>Discount</th>
-              <th>Total</th>
-              <th>Start</th>
-              <th>End</th>
-              <th>Avoid Sundays</th>
+              <th style={compactHeaderStyle}>No</th>
+              <th style={compactHeaderStyle}>⎘</th>
+              <th style={compactHeaderStyle}>Mobile</th>
+              <th style={compactHeaderStyle}>Customer</th>
+              <th style={compactHeaderStyle}>Tool</th>
+              <th style={compactHeaderStyle}>Qty</th>
+              <th style={compactHeaderStyle}>Rate</th>
+              <th style={compactHeaderStyle}>Discount</th>
+              <th style={compactHeaderStyle}>Total</th>
+              <th style={compactHeaderStyle}>Start</th>
+              <th style={compactHeaderStyle}>End</th>
+              <th style={compactHeaderStyle}>Avoid Sundays</th>
             </tr>
           </thead>
 
           <tbody>
             {rows.map((row, index) => (
               <tr key={index}>
-                <td>{index + 1}</td>
+                <td style={compactCenterCellStyle}>{index + 1}</td>
 
-                <td>
+                <td style={compactCenterCellStyle}>
+                  <button
+                    type="button"
+                    title="Copy previous customer"
+                    onClick={() => copyPreviousCustomerDetails(index)}
+                    style={{
+                      width: 28,
+                      height: 28,
+                      borderRadius: 7,
+                      border: "1px solid #bfdbfe",
+                      background: "#eff6ff",
+                      color: "#0057ff",
+                      fontSize: 16,
+                      fontWeight: 950,
+                      lineHeight: 1,
+                      cursor: "pointer",
+                      padding: 0,
+                    }}
+                  >
+                    ⎘
+                  </button>
+                </td>
+
+                <td style={compactCellStyle}>
                   <div style={{ position: "relative" }}>
                     <input
+                      style={compactInputStyle}
                       value={row.mobile}
                       onChange={(e) =>
                         handleMobileChange(index, e.target.value)
@@ -1283,12 +1414,18 @@ export default function RentalsPage() {
                   </div>
                 </td>
 
-                <td>
-                  <input value={row.customer_name} readOnly placeholder="Name" />
+                <td style={compactCellStyle}>
+                  <input
+                    style={compactInputStyle}
+                    value={row.customer_name}
+                    readOnly
+                    placeholder="Name"
+                  />
                 </td>
 
-                <td>
+                <td style={compactCellStyle}>
                   <select
+                    style={compactSelectStyle}
                     value={row.tool_id}
                     onChange={(e) => handleToolChange(index, e.target.value)}
                   >
@@ -1301,16 +1438,18 @@ export default function RentalsPage() {
                   </select>
                 </td>
 
-                <td>
+                <td style={compactCenterCellStyle}>
                   <input
+                    style={compactInputStyle}
                     type="number"
                     value={row.qty}
                     onChange={(e) => changeRow(index, "qty", e.target.value)}
                   />
                 </td>
 
-                <td>
+                <td style={compactCenterCellStyle}>
                   <input
+                    style={compactInputStyle}
                     type="number"
                     value={row.daily_rate}
                     onChange={(e) =>
@@ -1319,8 +1458,9 @@ export default function RentalsPage() {
                   />
                 </td>
 
-                <td>
+                <td style={compactCenterCellStyle}>
                   <input
+                    style={compactInputStyle}
                     type="number"
                     value={row.discount}
                     onChange={(e) =>
@@ -1331,17 +1471,19 @@ export default function RentalsPage() {
 
                 <td
                   style={{
+                    ...compactCenterCellStyle,
                     fontWeight: 950,
                     color: "#0057ff",
-                    textAlign: "right",
+                    textAlign: "center",
                     whiteSpace: "nowrap",
                   }}
                 >
                   ₹{calcEntryAmount(row).toFixed(0)}
                 </td>
 
-                <td>
+                <td style={compactCenterCellStyle}>
                   <input
+                    style={compactInputStyle}
                     type="date"
                     value={row.start_date}
                     onChange={(e) =>
@@ -1350,8 +1492,9 @@ export default function RentalsPage() {
                   />
                 </td>
 
-                <td>
+                <td style={compactCenterCellStyle}>
                   <input
+                    style={compactInputStyle}
                     type="date"
                     value={row.end_date}
                     onChange={(e) =>
@@ -1360,7 +1503,7 @@ export default function RentalsPage() {
                   />
                 </td>
 
-                <td style={{ textAlign: "center" }}>
+                <td style={compactCenterCellStyle}>
                   <input
                     type="checkbox"
                     checked={row.avoid_sundays !== false}
@@ -1452,46 +1595,50 @@ export default function RentalsPage() {
           <thead>
             <tr>
               <th>Customer</th>
-              <th>Tool</th>
-              <th>Qty</th>
-              <th>Daily Rate</th>
-              <th>Start</th>
-              <th>End</th>
-              <th>Days</th>
-              <th>Total</th>
-              <th>Shop</th>
-              <th>Avoid Sundays</th>
-              <th>Status</th>
+              <th style={compactHeaderStyle}>Tool</th>
+              <th style={compactHeaderStyle}>Qty</th>
+              <th style={compactHeaderStyle}>Daily Rate</th>
+              <th style={compactHeaderStyle}>Start</th>
+              <th style={compactHeaderStyle}>End</th>
+              <th style={compactHeaderStyle}>Days</th>
+              <th style={compactHeaderStyle}>Total</th>
+              <th style={compactHeaderStyle}>Shop</th>
+              <th style={compactHeaderStyle}>Avoid Sundays</th>
+              <th style={compactHeaderStyle}>Status</th>
             </tr>
           </thead>
 
           <tbody>
             {filteredReturnedRentals.map((r) => (
               <tr key={r.id}>
-                <td>{customerName(r.customer_id)}</td>
-                <td>{toolName(r.tool_id)}</td>
-                <td>{r.qty}</td>
-                <td>₹{r.daily_rate}</td>
-                <td>{r.start_date}</td>
-                <td>{r.end_date}</td>
-                <td>
+                <td style={compactCellStyle}>{customerName(r.customer_id)}</td>
+                <td style={compactCellStyle}>{toolName(r.tool_id)}</td>
+                <td style={compactCenterCellStyle}>{r.qty}</td>
+                <td style={compactCenterCellStyle}>₹{r.daily_rate}</td>
+                <td style={compactCenterCellStyle}>{r.start_date}</td>
+                <td style={compactCenterCellStyle}>{r.end_date}</td>
+                <td style={compactCenterCellStyle}>
                   {calcDays(
                     r.start_date,
                     r.end_date,
                     r.status,
-                    r.avoid_sundays !== false
+                    r.avoid_sundays !== false,
                   )}
                 </td>
-                <td>₹{calcTotal(r)}</td>
-                <td>{r.shop || "-"}</td>
-                <td>{r.avoid_sundays !== false ? "Yes" : "No"}</td>
-                <td>{r.status}</td>
+                <td style={compactCenterCellStyle}>₹{calcTotal(r)}</td>
+                <td style={compactCenterCellStyle}>{r.shop || "-"}</td>
+                <td style={compactCenterCellStyle}>
+                  {r.avoid_sundays !== false ? "Yes" : "No"}
+                </td>
+                <td style={compactCenterCellStyle}>{r.status}</td>
               </tr>
             ))}
 
             {filteredReturnedRentals.length === 0 && (
               <tr>
-                <td colSpan={11}>No returned rentals</td>
+                <td colSpan={11} style={compactCenterCellStyle}>
+                  No returned rentals
+                </td>
               </tr>
             )}
           </tbody>

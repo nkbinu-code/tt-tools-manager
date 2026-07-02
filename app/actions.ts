@@ -532,6 +532,7 @@ export async function returnRental(id: number, endDate: string) {
       end_date: endDate,
       status: "Returned",
       total_amount: totalAmount,
+      payment_status: "Pending",
     })
     .eq("id", id);
 

@@ -57,17 +57,43 @@ const emptyTool = {
 };
 
 const cellStyle = {
-  padding: "6px 8px",
-  fontWeight: 600,
-  lineHeight: 1.15,
-  fontSize: 14,
+  padding: "9px 8px",
+  fontWeight: 700,
+  lineHeight: 1.2,
+  fontSize: 16,
+  textAlign: "center" as const,
+  verticalAlign: "middle" as const,
 };
 
 const strongCellStyle = {
-  padding: "6px 8px",
+  padding: "9px 8px",
+  fontWeight: 850,
+  lineHeight: 1.2,
+  fontSize: 16,
+  textAlign: "center" as const,
+  verticalAlign: "middle" as const,
+};
+
+const toolNameCellStyle = {
+  ...strongCellStyle,
+  fontSize: 19,
+  fontWeight: 900,
+  minWidth: 360,
+  maxWidth: 520,
+  whiteSpace: "normal" as const,
+};
+
+const tableHeadStyle = {
+  fontSize: 15,
+  fontWeight: 900,
+  textAlign: "center" as const,
+  whiteSpace: "nowrap" as const,
+};
+
+const inputStyle = {
+  fontSize: 15,
   fontWeight: 800,
-  lineHeight: 1.15,
-  fontSize: 14,
+  textAlign: "center" as const,
 };
 
 function numberValue(value: any) {
@@ -185,8 +211,16 @@ export default function ToolsPage() {
 
     if (locations.length === 0) return "-";
 
+    if (locationFilter !== "All") {
+      const selectedQty = Number(dist[locationFilter] || 0);
+      if (selectedQty <= 0) return "-";
+      return selectedQty > 1 ? `${locationFilter} : ${selectedQty}` : locationFilter;
+    }
+
     if (locations.length === 1) {
-      return locations[0];
+      const loc = locations[0];
+      const qty = Number(dist[loc] || 0);
+      return qty > 1 ? `${loc} : ${qty}` : loc;
     }
 
     return locations
@@ -234,7 +268,7 @@ export default function ToolsPage() {
         rental_overdue_days: items[0]?.rental_overdue_days || 0,
       };
     });
-  }, [tools]);
+  }, [tools, locationFilter]);
 
   const filteredTools = groupedTools.filter((tool: any) => {
     if (locationFilter === "All") return true;
@@ -310,6 +344,8 @@ export default function ToolsPage() {
       category: tool.category || "",
       brand: tool.brand || "",
       color: tool.color || "",
+      home_branch: "",
+      current_location: "",
       status: tool.status || "Available",
       greasing_due_days: tool.greasing_due_days || 0,
       oil_change_due_days: tool.oil_change_due_days || 0,
@@ -333,6 +369,9 @@ export default function ToolsPage() {
         category: editRow.category,
         brand: editRow.brand,
         color: editRow.color,
+        home_branch: editRow.home_branch || item.home_branch || "",
+        current_location:
+          editRow.current_location || item.current_location || item.home_branch || "",
         status: editRow.status || item.status || "Available",
         greasing_due_days: editRow.greasing_due_days,
         oil_change_due_days: editRow.oil_change_due_days,
@@ -546,6 +585,20 @@ export default function ToolsPage() {
 
   return (
     <main>
+      <style>{`
+        .tools-clean-table th,
+        .tools-clean-table td {
+          text-align: center;
+          vertical-align: middle;
+        }
+
+        .tools-clean-table input,
+        .tools-clean-table select {
+          font-size: 15px;
+          font-weight: 800;
+          text-align: center;
+        }
+      `}</style>
       <h1>Tools</h1>
 
       <div className="panel">
@@ -588,23 +641,31 @@ export default function ToolsPage() {
         </div>
 
         <div style={{ overflowX: "auto" }}>
-          <table style={{ fontSize: 14, minWidth: 1600 }}>
+          <table
+            className="tools-clean-table"
+            style={{
+              fontSize: 16,
+              minWidth: 1500,
+              tableLayout: "fixed",
+              width: "100%",
+            }}
+          >
             <thead>
               <tr>
-                <th>Tool Name</th>
-                <th>Qty</th>
-                <th>Daily Rent</th>
-                <th>Category</th>
-                <th>Brand</th>
-                <th>Color</th>
-                <th>Home Branch</th>
-                <th>Current Location</th>
-                <th>Status</th>
-                <th>Greasing</th>
-                <th>Oil Change</th>
-                <th>Scheduled</th>
-                <th>Rental Overdue</th>
-                <th>Actions</th>
+                <th style={{ ...tableHeadStyle, width: 390 }}>Tool Name</th>
+                <th style={{ ...tableHeadStyle, width: 70 }}>Qty</th>
+                <th style={{ ...tableHeadStyle, width: 105 }}>Rent</th>
+                <th style={{ ...tableHeadStyle, width: 120 }}>Category</th>
+                <th style={{ ...tableHeadStyle, width: 115 }}>Brand</th>
+                <th style={{ ...tableHeadStyle, width: 90 }}>Color</th>
+                <th style={{ ...tableHeadStyle, width: 150 }}>Home Branch</th>
+                <th style={{ ...tableHeadStyle, width: 170 }}>Current Location</th>
+                <th style={{ ...tableHeadStyle, width: 105 }}>Status</th>
+                <th style={{ ...tableHeadStyle, width: 85 }}>Greasing</th>
+                <th style={{ ...tableHeadStyle, width: 95 }}>Oil</th>
+                <th style={{ ...tableHeadStyle, width: 105 }}>Service</th>
+                <th style={{ ...tableHeadStyle, width: 110 }}>Overdue</th>
+                <th style={{ ...tableHeadStyle, width: 205 }}>Actions</th>
               </tr>
             </thead>
 
@@ -616,6 +677,7 @@ export default function ToolsPage() {
                       <>
                         <td style={cellStyle}>
                           <input
+                            style={inputStyle}
                             value={editRow.tool_name ?? ""}
                             onChange={(e) =>
                               setEditRow({
@@ -630,6 +692,7 @@ export default function ToolsPage() {
 
                         <td style={cellStyle}>
                           <input
+                            style={inputStyle}
                             type="number"
                             value={editRow.daily_rent ?? ""}
                             onChange={(e) =>
@@ -643,6 +706,7 @@ export default function ToolsPage() {
 
                         <td style={cellStyle}>
                           <input
+                            style={inputStyle}
                             value={editRow.category ?? ""}
                             onChange={(e) =>
                               setEditRow({
@@ -655,6 +719,7 @@ export default function ToolsPage() {
 
                         <td style={cellStyle}>
                           <input
+                            style={inputStyle}
                             value={editRow.brand ?? ""}
                             onChange={(e) =>
                               setEditRow({
@@ -667,6 +732,7 @@ export default function ToolsPage() {
 
                         <td style={cellStyle}>
                           <input
+                            style={inputStyle}
                             value={editRow.color ?? ""}
                             onChange={(e) =>
                               setEditRow({
@@ -678,15 +744,44 @@ export default function ToolsPage() {
                         </td>
 
                         <td style={strongCellStyle}>
-                          {tool.home_branch_summary}
+                          <select
+                            style={inputStyle}
+                            value={editRow.home_branch || ""}
+                            onChange={(e) =>
+                              setEditRow({
+                                ...editRow,
+                                home_branch: e.target.value,
+                              })
+                            }
+                          >
+                            <option value="">Keep Same</option>
+                            {branches.map((b) => (
+                              <option key={b}>{b}</option>
+                            ))}
+                          </select>
                         </td>
 
                         <td style={strongCellStyle}>
-                          {tool.current_location_summary}
+                          <select
+                            style={inputStyle}
+                            value={editRow.current_location || ""}
+                            onChange={(e) =>
+                              setEditRow({
+                                ...editRow,
+                                current_location: e.target.value,
+                              })
+                            }
+                          >
+                            <option value="">Keep Same</option>
+                            {[...branches, ...serviceCentres].map((b) => (
+                              <option key={b}>{b}</option>
+                            ))}
+                          </select>
                         </td>
 
                         <td style={cellStyle}>
                           <select
+                            style={inputStyle}
                             value={editRow.status || "Available"}
                             onChange={(e) =>
                               setEditRow({
@@ -786,7 +881,7 @@ export default function ToolsPage() {
                       </>
                     ) : (
                       <>
-                        <td style={strongCellStyle}>{tool.tool_name}</td>
+                        <td style={toolNameCellStyle}>{tool.tool_name}</td>
                         <td style={cellStyle}>{tool.total_qty}</td>
                         <td style={cellStyle}>₹{tool.daily_rent}</td>
                         <td style={cellStyle}>{tool.category}</td>
@@ -876,9 +971,9 @@ export default function ToolsPage() {
                             padding: 10,
                           }}
                         >
-                          <strong>Branch-wise Details: {tool.tool_name}</strong>
+                          <strong style={{ fontSize: 17 }}>Branch-wise Details: {tool.tool_name}</strong>
 
-                          <table style={{ marginTop: 8, fontSize: 13 }}>
+                          <table className="tools-clean-table" style={{ marginTop: 10, fontSize: 15, width: "100%" }}>
                             <thead>
                               <tr>
                                 <th>Branch Row</th>
@@ -1280,7 +1375,7 @@ export default function ToolsPage() {
         </button>
 
         <div style={{ overflowX: "auto", marginTop: 14 }}>
-          <table style={{ minWidth: 1600 }}>
+          <table className="tools-clean-table" style={{ minWidth: 1500, tableLayout: "fixed", width: "100%" }}>
             <thead>
               <tr>
                 <th>No</th>
