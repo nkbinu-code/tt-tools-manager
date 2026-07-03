@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Archive, Download } from "lucide-react";
+import { Archive, Download, ReceiptText } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { getPaymentsData, moveCustomerBalanceToArrears } from "./actions";
+import StatementPopup from "../statements/StatementPopup";
 import { useAppMessage } from "../contexts/AppMessageProvider";
 import {
   calcCustomerTotals,
@@ -75,6 +76,7 @@ export default function PaymentsPage() {
   );
 
   const [arrearsPopup, setArrearsPopup] = useState<any>(null);
+  const [statementPopupOpen, setStatementPopupOpen] = useState(false);
   const [arrearsReason, setArrearsReason] = useState("");
   const [arrearsRemarks, setArrearsRemarks] = useState("");
 
@@ -327,6 +329,15 @@ export default function PaymentsPage() {
     });
   }
 
+  function openStatementPopup() {
+    if (!selectedMobile) {
+      showWarning("Please select a customer first");
+      return;
+    }
+
+    setStatementPopupOpen(true);
+  }
+
   async function confirmMoveToArrears() {
     if (!arrearsPopup) return;
 
@@ -555,6 +566,25 @@ export default function PaymentsPage() {
       <p className="page-subtitle">
         Customer payments, discounts, shop cash received and arrears
       </p>
+
+      {statementPopupOpen && selectedMobile && (
+        <StatementPopup
+          open={statementPopupOpen}
+          onClose={() => setStatementPopupOpen(false)}
+          customer={{
+            ...(selectedCustomer || selectedPending || {}),
+            customer_name:
+              selectedCustomer?.customer_name ||
+              selectedCustomer?.name ||
+              selectedPending?.customer_name ||
+              selectedMobile,
+            mobile: selectedMobile,
+            shop: selectedCustomer?.shop || selectedPending?.shop || "",
+          }}
+          rentals={rentals}
+          payments={payments}
+        />
+      )}
 
       {arrearsPopup && (
         <div
@@ -868,13 +898,19 @@ export default function PaymentsPage() {
             title="Customer Summary"
             subtitle="Selected customer's total business, cash received, discounts, balance and arrears"
             right={
-              <button
-                className="btn-blue"
-                onClick={openArrearsPopup}
-                disabled={selectedBalance <= 0}
-              >
-                <Archive size={16} /> Move to Arrears
-              </button>
+              <div className="action-row">
+                <button className="btn-blue" onClick={openStatementPopup}>
+                  <ReceiptText size={16} /> Statement
+                </button>
+
+                <button
+                  className="btn-blue"
+                  onClick={openArrearsPopup}
+                  disabled={selectedBalance <= 0}
+                >
+                  <Archive size={16} /> Move to Arrears
+                </button>
+              </div>
             }
           />
 
