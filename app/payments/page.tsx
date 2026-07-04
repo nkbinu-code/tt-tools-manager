@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Archive, Download, FileText } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { getPaymentsData, moveCustomerBalanceToArrears } from "./actions";
+import StatementPopup from "../statements/statement-popup";
 import { useAppMessage } from "../contexts/AppMessageProvider";
 import {
   calcCustomerTotals,
@@ -75,6 +76,7 @@ export default function PaymentsPage() {
   );
 
   const [arrearsPopup, setArrearsPopup] = useState<any>(null);
+  const [statementPopupOpen, setStatementPopupOpen] = useState(false);
   const [arrearsReason, setArrearsReason] = useState("");
   const [arrearsRemarks, setArrearsRemarks] = useState("");
 
@@ -328,7 +330,12 @@ export default function PaymentsPage() {
   }
 
   function openStatementPopup() {
-    showWarning("Customer Statement coming soon");
+    if (!selectedMobile) {
+      showWarning("Please select a customer first");
+      return;
+    }
+
+    setStatementPopupOpen(true);
   }
 
   async function confirmMoveToArrears() {
@@ -555,6 +562,17 @@ export default function PaymentsPage() {
 
   return (
     <main>
+      {statementPopupOpen && (
+        <StatementPopup
+          onClose={() => setStatementPopupOpen(false)}
+          onPreview={(data: any) => {
+            console.log("Statement options:", data);
+            setStatementPopupOpen(false);
+            showSuccess("Statement options selected");
+          }}
+        />
+      )}
+
       <h1 className="page-title">Payments</h1>
       <p className="page-subtitle">
         Customer payments, discounts, shop cash received and arrears
