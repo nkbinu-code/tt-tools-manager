@@ -459,12 +459,11 @@ export default function ReportsPage() {
       [subtitle],
       [`Period: ${formatDate(fromDate)} to ${formatDate(toDate)}`],
       [],
-      ["From", "To", "Status", "Shop", "Customer", "Mobile", "Tool", "Qty", "Days", "Rent", "Discount", "Balance"],
+      ["From", "To", "Status", "Customer", "Mobile", "Tool", "Qty", "Days", "Rent", "Discount", "Balance"],
       ...statementRows.map((r) => [
         formatDate(r.from),
         r.to === "LIVE" ? "LIVE" : formatDate(r.to),
         statusText(r),
-        r.shop,
         r.customer,
         r.mobile,
         r.tool,
@@ -481,7 +480,6 @@ export default function ReportsPage() {
     worksheet["!cols"] = [
       { wch: 12 },
       { wch: 12 },
-      { wch: 14 },
       { wch: 14 },
       { wch: 24 },
       { wch: 14 },
@@ -610,7 +608,6 @@ export default function ReportsPage() {
                 <th>From</th>
                 <th>To</th>
                 <th>Status</th>
-                <th>Shop</th>
                 <th>Customer</th>
                 <th>Mobile</th>
                 <th>Tool</th>
@@ -643,7 +640,6 @@ export default function ReportsPage() {
                       {statusText(row)}
                     </span>
                   </td>
-                  <td style={{fontWeight:800}}>{row.shop}</td>
                   <td><strong>{row.customer}</strong></td>
                   <td style={{ fontWeight: 800 }}>{row.mobile}</td>
                   <td>{row.tool}</td>
@@ -657,7 +653,7 @@ export default function ReportsPage() {
 
               {statementRows.length === 0 && (
                 <tr>
-                  <td colSpan={12} style={{ textAlign: "center", padding: 24, fontWeight: 900 }}>
+                  <td colSpan={11} style={{ textAlign: "center", padding: 24, fontWeight: 900 }}>
                     No business statement data found
                   </td>
                 </tr>
@@ -666,7 +662,7 @@ export default function ReportsPage() {
 
             <tfoot>
               <tr>
-                <td colSpan={7}>TOTAL</td>
+                <td colSpan={6}>TOTAL</td>
                 <td style={{ textAlign: "right" }}>{totals.qty}</td>
                 <td style={{ textAlign: "right" }}>{totals.days}</td>
                 <td style={{ textAlign: "right" }}>{rupee(totals.grossBusiness)}</td>

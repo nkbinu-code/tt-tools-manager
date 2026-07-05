@@ -3,7 +3,6 @@
 import { type CSSProperties, useEffect, useMemo, useState } from "react";
 import { Archive, Download, FileText, Search, Share2, Wrench } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import * as XLSX from "xlsx";
 import { getPaymentsData, moveCustomerBalanceToArrears } from "./actions";
 import StatementPopup from "../statements/statement-popup";
 import StatementHeader from "../statements/StatementHeader";
@@ -96,10 +95,6 @@ export default function PaymentsPage() {
   const [closedSearchText, setClosedSearchText] = useState("");
   const [recentShopFilter, setRecentShopFilter] = useState("All Shops");
   const [recentDate, setRecentDate] = useState("");
-  const [allPaymentShopFilter, setAllPaymentShopFilter] = useState("All Shops");
-  const [allPaymentFromDate, setAllPaymentFromDate] = useState("");
-  const [allPaymentToDate, setAllPaymentToDate] = useState("");
-  const [allPaymentSearchText, setAllPaymentSearchText] = useState("");
 
   const [customers, setCustomers] = useState<any[]>([]);
   const [pendingRows, setPendingRows] = useState<any[]>([]);
@@ -712,25 +707,6 @@ export default function PaymentsPage() {
   }
 
 
-  function handlePaymentTopSearch(value: string) {
-    setClosedSearchText(value);
-
-    const exactCustomer = customers.find((c: any) => {
-      const mobile = String(c.mobile || "").trim();
-      const name = String(c.customer_name || c.name || "").trim().toLowerCase();
-      const q = String(value || "").trim().toLowerCase();
-
-      return mobile === String(value || "").trim() || (q.length > 0 && name === q);
-    });
-
-    if (exactCustomer) {
-      const mobile = String(exactCustomer.mobile || "").trim();
-      setCustomerFilter(mobile);
-      updatePaymentRow(0, "mobile", mobile);
-    }
-  }
-
-
   const pendingReturnedForCounter = pendingReturnedRentals
     .filter((row: any) => paymentShopFilter === "All Shops" || row.shop === paymentShopFilter)
     .filter((row: any) => {
@@ -767,104 +743,6 @@ export default function PaymentsPage() {
     .filter((p: any) => recentShopFilter === "All Shops" || p.shop === recentShopFilter)
     .filter((p: any) => !recentDate || String(p.payment_date || "").slice(0, 10) === recentDate)
     .slice(0, 20);
-
-  const allPaymentsReportRows = payments
-    .map((p: any) => {
-      const customer = customers.find((c: any) =>
-        String(c.id || "") === String(p.customer_id || "") ||
-        String(c.mobile || "").trim() === String(p.mobile || p.customer_mobile || "").trim()
-      );
-
-      return {
-        ...p,
-        customer_name: p.customer_name || customer?.customer_name || customer?.name || "-",
-        mobile: p.mobile || p.customer_mobile || customer?.mobile || "-",
-        address: customer?.address || p.address || "-",
-        shop: p.shop || customer?.shop || customer?.branch || "-",
-        payment_date: p.payment_date || p.date || p.created_at || "",
-        received: Number(p.amount || 0),
-        discount: Number(p.discount || 0),
-        mode: p.mode || p.payment_mode || "-",
-        remarks: p.remarks || "",
-      };
-    })
-    .filter((row: any) => allPaymentShopFilter === "All Shops" || row.shop === allPaymentShopFilter)
-    .filter((row: any) => {
-      const d = String(row.payment_date || "").slice(0, 10);
-      if (allPaymentFromDate && d && d < allPaymentFromDate) return false;
-      if (allPaymentToDate && d && d > allPaymentToDate) return false;
-      return true;
-    })
-    .filter((row: any) => {
-      const q = allPaymentSearchText.trim().toLowerCase();
-      if (!q) return true;
-      return `${row.customer_name || ""} ${row.mobile || ""} ${row.address || ""} ${row.shop || ""}`
-        .toLowerCase()
-        .includes(q);
-    })
-    .sort((a: any, b: any) => String(b.payment_date || "").localeCompare(String(a.payment_date || "")));
-
-  const allPaymentsTotalReceived = allPaymentsReportRows.reduce(
-    (sum: number, row: any) => sum + Number(row.received || 0),
-    0
-  );
-
-  function downloadAllPaymentsCsv() {
-    const header = ["Date", "Customer Name", "Mobile", "Address", "Shop", "Received", "Discount", "Mode", "Remarks"];
-    const csvRows = allPaymentsReportRows.map((row: any) => [
-      String(row.payment_date || "").slice(0, 10),
-      row.customer_name,
-      row.mobile,
-      row.address,
-      row.shop,
-      row.received,
-      row.discount,
-      row.mode,
-      row.remarks,
-    ]);
-
-    const csv = [header, ...csvRows]
-      .map((r) => r.map((c) => `"${String(c ?? "").replaceAll('"', '""')}"`).join(","))
-      .join("\n");
-
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "T&T_All_Payments_Report.csv";
-    link.click();
-    URL.revokeObjectURL(url);
-  }
-
-  function downloadAllPaymentsExcel() {
-    const sheetData = [
-      ["T&T ALL PAYMENTS REPORT"],
-      [`Total Payments: ${allPaymentsReportRows.length}`],
-      [`Total Received: ₹${allPaymentsTotalReceived.toFixed(0)}`],
-      [],
-      ["Date", "Customer Name", "Mobile", "Address", "Shop", "Received", "Discount", "Mode", "Remarks"],
-      ...allPaymentsReportRows.map((row: any) => [
-        String(row.payment_date || "").slice(0, 10),
-        row.customer_name,
-        row.mobile,
-        row.address,
-        row.shop,
-        Number(row.received || 0),
-        Number(row.discount || 0),
-        row.mode,
-        row.remarks,
-      ]),
-    ];
-
-    const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
-    worksheet["!cols"] = [
-      { wch: 12 }, { wch: 26 }, { wch: 15 }, { wch: 34 }, { wch: 16 },
-      { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 30 },
-    ];
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "All Payments");
-    XLSX.writeFile(workbook, "T&T_All_Payments_Report.xlsx");
-  }
 
   const oldArrearsRows = arrears.filter((a: any) => {
     const moved = String(a.moved_date || a.created_at || "").slice(0, 10);
@@ -1065,12 +943,28 @@ export default function PaymentsPage() {
             <input type="date" value={paymentFromDate} onChange={(e) => setPaymentFromDate(e.target.value)} style={bigControlStyle} title="From date" />
             <input type="date" value={paymentToDate} onChange={(e) => setPaymentToDate(e.target.value)} style={bigControlStyle} title="To date" />
             <input
-              list="paymentCustomerSearchList"
               value={closedSearchText}
-              onChange={(e) => handlePaymentTopSearch(e.target.value)}
-              placeholder="Search mobile / customer / tool"
+              onChange={(e) => setClosedSearchText(e.target.value)}
+              placeholder="Search name / mobile / tool"
               style={bigControlStyle}
             />
+          </div>
+
+          <div style={{ marginTop: 16 }}>
+            <label style={labelStyle}>Mobile number / customer search</label>
+            <div style={{ position: "relative" }}>
+              <Search size={22} style={{ position: "absolute", left: 14, top: 15, color: "#64748b" }} />
+              <input
+                list="paymentCustomerSearchList"
+                value={customerFilter}
+                onChange={(e) => {
+                  setCustomerFilter(e.target.value);
+                  updatePaymentRow(0, "mobile", e.target.value);
+                }}
+                placeholder="Type mobile or select customer..."
+                style={{ ...bigControlStyle, width: "100%", paddingLeft: 46 }}
+              />
+            </div>
             <datalist id="paymentCustomerSearchList">
               {customers.map((c) => (
                 <option key={c.id} value={c.mobile} label={c.customer_name || c.name} />
@@ -1099,14 +993,13 @@ export default function PaymentsPage() {
                 selectedDiscount={selectedDiscount}
                 selectedAlreadyArrears={selectedAlreadyArrears}
                 selectedBalance={selectedBalance}
-                selectedCustomerPayments={selectedCustomerPayments}
                 activeRentals={selectedActiveRentals}
                 returnedPendingRentals={selectedReturnedPendingRentals}
                 tools={tools}
               />
 
               <div style={paymentFormStyle}>
-                <h3 style={{ margin: "0 0 14px", fontSize: 28, fontWeight: 1000, color: "white", letterSpacing: 0.4 }}>💰 Receive Payment</h3>
+                <h3 style={{ margin: "0 0 14px", fontSize: 22 }}>Receive Payment</h3>
                 <div style={formGridStyle}>
                   <input type="date" value={paymentRows[0]?.payment_date || today()} onChange={(e) => updatePaymentRow(0, "payment_date", e.target.value)} style={bigControlStyle} />
                   <input type="number" value={paymentRows[0]?.amount || ""} onChange={(e) => updatePaymentRow(0, "amount", e.target.value)} placeholder="Amount received" style={bigControlStyle} />
@@ -1117,9 +1010,9 @@ export default function PaymentsPage() {
                 </div>
                 <input value={paymentRows[0]?.remarks || ""} onChange={(e) => updatePaymentRow(0, "remarks", e.target.value)} placeholder="Remarks" style={{ ...bigControlStyle, width: "100%", marginTop: 12 }} />
                 <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
-                  <button className="btn-blue" type="button" onClick={saveQuickPayment} style={{ fontSize: 20, padding: "16px 26px", background: "#16a34a", borderColor: "#16a34a", fontWeight: 1000, boxShadow: "0 10px 22px rgba(22, 163, 74, 0.28)" }}>💵 Save Payment</button>
-                  <button className="btn-gray" type="button" onClick={openStatementPopup} style={{ fontSize: 18, padding: "14px 22px", background: "#2563eb", color: "white", borderColor: "#2563eb", fontWeight: 1000 }}><FileText size={18} /> Statement</button>
-                  <button className="btn-gray" type="button" onClick={openArrearsPopup} disabled={selectedBalance <= 0} style={{ fontSize: 18, padding: "14px 22px", background: "#f97316", color: "white", borderColor: "#f97316", fontWeight: 1000 }}><Archive size={18} /> Move to Arrears</button>
+                  <button className="btn-blue" type="button" onClick={saveQuickPayment} style={{ fontSize: 18, padding: "14px 22px" }}>Save Payment</button>
+                  <button className="btn-gray" type="button" onClick={openStatementPopup}><FileText size={16} /> Statement</button>
+                  <button className="btn-gray" type="button" onClick={openArrearsPopup} disabled={selectedBalance <= 0}><Archive size={16} /> Move to Arrears</button>
                 </div>
               </div>
 
@@ -1145,22 +1038,6 @@ export default function PaymentsPage() {
               )}
             </div>
           )}
-
-          <AllPaymentsReport
-            rows={allPaymentsReportRows}
-            totalReceived={allPaymentsTotalReceived}
-            shops={shops}
-            shopFilter={allPaymentShopFilter}
-            setShopFilter={setAllPaymentShopFilter}
-            fromDate={allPaymentFromDate}
-            setFromDate={setAllPaymentFromDate}
-            toDate={allPaymentToDate}
-            setToDate={setAllPaymentToDate}
-            searchText={allPaymentSearchText}
-            setSearchText={setAllPaymentSearchText}
-            onDownloadCsv={downloadAllPaymentsCsv}
-            onDownloadExcel={downloadAllPaymentsExcel}
-          />
         </section>
 
         <section className="modern-card" style={{ margin: 0 }}>
@@ -1736,95 +1613,6 @@ function InlineCustomerStatement({
   );
 }
 
-function AllPaymentsReport({ rows, totalReceived, shops, shopFilter, setShopFilter, fromDate, setFromDate, toDate, setToDate, searchText, setSearchText, onDownloadCsv, onDownloadExcel }: any) {
-  return (
-    <section style={allPaymentsReportStyle}>
-      <div style={allPaymentsHeaderStyle}>
-        <div>
-          <div style={allPaymentsTitleStyle}>💜 All Payments Report</div>
-          <div style={allPaymentsSubtitleStyle}>View, filter and download all received customer payments.</div>
-        </div>
-        <div style={allPaymentsActionStyle}>
-          <button type="button" className="btn-gray" onClick={onDownloadCsv} style={allPaymentsButtonStyle}>
-            <Download size={16} /> CSV
-          </button>
-          <button type="button" className="btn-blue" onClick={onDownloadExcel} style={allPaymentsButtonStyle}>
-            <Download size={16} /> Excel
-          </button>
-        </div>
-      </div>
-
-      <div style={allPaymentsFilterStyle}>
-        <select value={shopFilter} onChange={(e) => setShopFilter(e.target.value)} style={allPaymentsControlStyle}>
-          {shops.map((shop: string) => <option key={shop}>{shop}</option>)}
-        </select>
-        <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} style={allPaymentsControlStyle} title="From date" />
-        <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} style={allPaymentsControlStyle} title="To date" />
-        <input
-          value={searchText}
-          onChange={(e) => setSearchText(e.target.value)}
-          placeholder="Search customer / mobile / address"
-          style={{ ...allPaymentsControlStyle, minWidth: 260 }}
-        />
-      </div>
-
-      <div style={allPaymentsSummaryStyle}>
-        <div><strong>{rows.length}</strong> payments</div>
-        <div>Total Received: <strong>₹{Number(totalReceived || 0).toFixed(0)}</strong></div>
-      </div>
-
-      <div className="table-wrap" style={{ marginTop: 10, borderRadius: 16, border: "1px solid #c4b5fd", overflow: "auto" }}>
-        <table style={{ minWidth: 980 }}>
-          <thead>
-            <tr>
-              <th style={allPaymentsThStyle}>Date</th>
-              <th style={allPaymentsThStyle}>Customer Name</th>
-              <th style={allPaymentsThStyle}>Mobile</th>
-              <th style={allPaymentsThStyle}>Address</th>
-              <th style={allPaymentsThStyle}>Shop</th>
-              <th style={allPaymentsThRightStyle}>Received</th>
-              <th style={allPaymentsThRightStyle}>Discount</th>
-              <th style={allPaymentsThStyle}>Mode</th>
-              <th style={allPaymentsThStyle}>Remarks</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row: any, index: number) => (
-              <tr key={`${row.id || row.payment_date || "payment"}-${index}`}>
-                <td style={allPaymentsTdStyle}>{formatCardDate(row.payment_date)}</td>
-                <td style={allPaymentsTdStrongStyle}>{row.customer_name || "-"}</td>
-                <td style={allPaymentsTdStyle}>{row.mobile || "-"}</td>
-                <td style={allPaymentsTdStyle}>{row.address || "-"}</td>
-                <td style={allPaymentsTdStyle}>{row.shop || "-"}</td>
-                <td style={allPaymentsTdAmountStyle}>₹{Number(row.received || 0).toFixed(0)}</td>
-                <td style={allPaymentsTdAmountStyle}>₹{Number(row.discount || 0).toFixed(0)}</td>
-                <td style={allPaymentsTdStyle}>{row.mode || "-"}</td>
-                <td style={allPaymentsTdStyle}>{row.remarks || "-"}</td>
-              </tr>
-            ))}
-            {rows.length === 0 && (
-              <tr>
-                <td colSpan={9} style={{ textAlign: "center", padding: 18, fontWeight: 900, color: "#6b21a8" }}>
-                  No payments found
-                </td>
-              </tr>
-            )}
-          </tbody>
-          {rows.length > 0 && (
-            <tfoot>
-              <tr>
-                <td colSpan={5} style={allPaymentsTotalLabelStyle}>TOTAL</td>
-                <td style={allPaymentsTotalAmountStyle}>₹{Number(totalReceived || 0).toFixed(0)}</td>
-                <td colSpan={3} style={allPaymentsTotalBlankStyle}></td>
-              </tr>
-            </tfoot>
-          )}
-        </table>
-      </div>
-    </section>
-  );
-}
-
 function RecentlyClosedForPaymentList({ rows, onReceive }: any) {
   return (
     <div className="table-wrap" style={{ marginTop: 8 }}>
@@ -1835,7 +1623,6 @@ function RecentlyClosedForPaymentList({ rows, onReceive }: any) {
             <th>Mobile</th>
             <th>Tool</th>
             <th>Qty</th>
-            <th>Start Date</th>
             <th>Return Date</th>
             <th>Days</th>
             <th>Amount</th>
@@ -1850,9 +1637,8 @@ function RecentlyClosedForPaymentList({ rows, onReceive }: any) {
               <td>{row.mobile || "-"}</td>
               <td>{row.tool_name || row.tool || "Returned tool"}</td>
               <td>{Number(row.qty || row.quantity || 1)}</td>
-              <td>{formatCardDate(row.start_date || row.rental_date || row.date)}</td>
-              <td>{formatCardDate(row.return_date || row.end_date || row.closed_date)}</td>
-              <td>{paymentRentalDays(row) || Number(row.days || row.total_days || 0) || "-"}</td>
+              <td>{formatCardDate(row.return_date || row.end_date || row.date || row.closed_date)}</td>
+              <td>{Number(row.days || row.total_days || 0) || "-"}</td>
               <td><strong>₹{Number(row.balance || row.pending || row.amount || 0).toFixed(0)}</strong></td>
               <td>{row.shop || "-"}</td>
               <td>
@@ -1869,7 +1655,7 @@ function RecentlyClosedForPaymentList({ rows, onReceive }: any) {
           ))}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={10} style={{ textAlign: "center", fontWeight: 900, padding: 18 }}>
+              <td colSpan={9} style={{ textAlign: "center", fontWeight: 900, padding: 18 }}>
                 No recently closed rentals found
               </td>
             </tr>
@@ -1880,15 +1666,7 @@ function RecentlyClosedForPaymentList({ rows, onReceive }: any) {
   );
 }
 
-function CustomerStatementBox({ selectedCustomer, selectedPending, selectedMobile, selectedTotalBusiness, selectedCashReceived, selectedDiscount, selectedAlreadyArrears, selectedBalance, selectedCustomerPayments, activeRentals, returnedPendingRentals, tools }: any) {
-  const advance = Math.max(
-    0,
-    Number(selectedCashReceived || 0) +
-      Number(selectedDiscount || 0) +
-      Number(selectedAlreadyArrears || 0) -
-      Number(selectedTotalBusiness || 0)
-  );
-
+function CustomerStatementBox({ selectedCustomer, selectedPending, selectedMobile, selectedTotalBusiness, selectedCashReceived, selectedDiscount, selectedAlreadyArrears, selectedBalance, activeRentals, returnedPendingRentals, tools }: any) {
   return (
     <div style={customerBoxStyle}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
@@ -1902,67 +1680,19 @@ function CustomerStatementBox({ selectedCustomer, selectedPending, selectedMobil
         </div>
       </div>
 
+      <div style={statementLineBoxStyle}>
+        <Row label="Business" value={selectedTotalBusiness} />
+        <Row label="Received" value={selectedCashReceived} />
+        <Row label="Discount" value={selectedDiscount} />
+        <Row label="Arrears" value={selectedAlreadyArrears} />
+        <div style={{ borderTop: "1px dashed #cbd5e1", marginTop: 8, paddingTop: 8 }}><Row label="Balance" value={selectedBalance} strong /></div>
+      </div>
+
       <CombinedRentalTable
         activeRentals={activeRentals}
         returnedPendingRentals={returnedPendingRentals}
         tools={tools}
-        paidCredit={Number(selectedCashReceived || 0) + Number(selectedDiscount || 0) + Number(selectedAlreadyArrears || 0)}
       />
-
-      <PaymentHistory payments={selectedCustomerPayments || []} />
-
-      <div style={statementSummaryLineStyle}>
-        <SummaryPill label="Business" value={selectedTotalBusiness} tone="blue" />
-        <SummaryPill label="Received" value={selectedCashReceived} tone="green" />
-        <SummaryPill label="Discount" value={selectedDiscount} tone="purple" />
-        <SummaryPill label="Advance" value={advance} tone="orange" />
-        <SummaryPill label="Arrears" value={selectedAlreadyArrears} tone="red" />
-        <SummaryPill label="Balance" value={selectedBalance} tone="dark" strong />
-      </div>
-    </div>
-  );
-}
-
-function PaymentHistory({ payments }: any) {
-  const rows = [...(payments || [])]
-    .sort((a: any, b: any) => String(b.payment_date || b.date || b.created_at || "").localeCompare(String(a.payment_date || a.date || a.created_at || "")))
-    .slice(0, 8);
-
-  return (
-    <div style={paymentHistoryBoxStyle}>
-      <div style={paymentHistoryTitleStyle}>Payments Received</div>
-      {rows.length === 0 ? (
-        <div style={paymentHistoryEmptyStyle}>No payments received yet</div>
-      ) : (
-        <div style={paymentHistoryGridStyle}>
-          {rows.map((p: any, index: number) => (
-            <div key={`${p.id || "payment"}-${index}`} style={paymentHistoryItemStyle}>
-              <span>{formatCardDate(p.payment_date || p.date || p.created_at)}</span>
-              <strong>₹{Number(p.amount || 0).toFixed(0)}</strong>
-              {Number(p.discount || 0) > 0 && <span>Disc ₹{Number(p.discount || 0).toFixed(0)}</span>}
-              <span>{p.mode || p.payment_mode || "-"}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SummaryPill({ label, value, tone, strong }: any) {
-  const styleMap: any = {
-    blue: { background: "#eff6ff", color: "#0b3f91", borderColor: "#bfdbfe" },
-    green: { background: "#f0fdf4", color: "#166534", borderColor: "#bbf7d0" },
-    purple: { background: "#faf5ff", color: "#7e22ce", borderColor: "#e9d5ff" },
-    orange: { background: "#fff7ed", color: "#c2410c", borderColor: "#fed7aa" },
-    red: { background: "#fef2f2", color: "#b91c1c", borderColor: "#fecaca" },
-    dark: { background: "#0f172a", color: "white", borderColor: "#0f172a" },
-  };
-
-  return (
-    <div style={{ ...summaryPillStyle, ...(styleMap[tone] || styleMap.blue), fontWeight: strong ? 1000 : 900 }}>
-      <span style={{ fontSize: 15, fontWeight: 1000, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.92 }}>{label}</span>
-      <strong style={{ fontSize: 32, lineHeight: 1, fontWeight: 1000 }}>₹{Number(value || 0).toFixed(0)}</strong>
     </div>
   );
 }
@@ -1971,7 +1701,7 @@ function Row({ label, value, strong }: any) {
   return <div style={{ display: "flex", justifyContent: "space-between", fontWeight: strong ? 950 : 850, fontSize: strong ? 18 : 16 }}><span>{label}</span><span>₹{Number(value || 0).toFixed(0)}</span></div>;
 }
 
-function CombinedRentalTable({ activeRentals, returnedPendingRentals, tools, paidCredit = 0 }: any) {
+function CombinedRentalTable({ activeRentals, returnedPendingRentals, tools }: any) {
   const returnedRows = (returnedPendingRentals || []).map((row: any) => ({
     ...row,
     __type: "Returned",
@@ -1984,28 +1714,15 @@ function CombinedRentalTable({ activeRentals, returnedPendingRentals, tools, pai
 
   const rows = [...returnedRows, ...currentRows];
 
-  let creditLeft = Number(paidCredit || 0);
-  const rowsWithBalance = rows.map((row: any) => {
-    const isReturned = row.__type === "Returned";
-    const amount = detailAmount(row, isReturned, tools);
-    const covered = Math.min(Math.max(creditLeft, 0), amount);
-    creditLeft -= covered;
+  const totalReturned = returnedRows.reduce(
+    (sum: number, row: any) => sum + detailAmount(row, true, tools),
+    0
+  );
 
-    return {
-      ...row,
-      __amount: amount,
-      __paidAgainst: covered,
-      __balance: Math.max(0, amount - covered),
-    };
-  });
-
-  const totalReturned = rowsWithBalance
-    .filter((row: any) => row.__type === "Returned")
-    .reduce((sum: number, row: any) => sum + Number(row.__balance || 0), 0);
-
-  const totalCurrent = rowsWithBalance
-    .filter((row: any) => row.__type === "Current")
-    .reduce((sum: number, row: any) => sum + Number(row.__balance || 0), 0);
+  const totalCurrent = currentRows.reduce(
+    (sum: number, row: any) => sum + detailAmount(row, false, tools),
+    0
+  );
 
   const grandTotal = totalReturned + totalCurrent;
 
@@ -2022,71 +1739,67 @@ function CombinedRentalTable({ activeRentals, returnedPendingRentals, tools, pai
             <tr>
               <th style={rentalThSmallStyle}>#</th>
               <th style={rentalThStyle}>Type</th>
-              <th style={rentalThStyle}>Start</th>
-              <th style={rentalThStyle}>End / As On</th>
+              <th style={rentalThStyle}>Date</th>
               <th style={rentalThLeftStyle}>Item</th>
               <th style={rentalThRightStyle}>Qty</th>
               <th style={rentalThRightStyle}>Rent</th>
               <th style={rentalThRightStyle}>Days</th>
               <th style={rentalThRightStyle}>Amount</th>
-              <th style={rentalThRightStyle}>Balance</th>
             </tr>
           </thead>
 
           <tbody>
-            {rowsWithBalance.map((row: any, index: number) => {
+            {rows.map((row: any, index: number) => {
               const isReturned = row.__type === "Returned";
-              const days = paymentRentalDays(row);
-              const rent = `₹${paymentRentalRate(row, tools).toFixed(0)}`;
+              const days = isReturned ? "-" : paymentRentalDays(row);
+              const rent = isReturned ? "-" : `₹${paymentRentalRate(row, tools).toFixed(0)}`;
               const qty = Number(row.qty || row.quantity || 1);
-              const amount = Number(row.__amount || 0);
-              const balance = Number(row.__balance || 0);
+              const amount = detailAmount(row, isReturned, tools);
               const toolName = displayToolName(row, tools);
-              const startDate = formatCardDate(row.start_date || row.rental_date || row.date);
-              const endDate = isReturned
-                ? formatCardDate(row.return_date || row.end_date || row.closed_date)
-                : formatCardDate(new Date());
+              const date = isReturned
+                ? formatCardDate(row.return_date || row.end_date || row.date)
+                : formatCardDate(row.start_date || row.date || row.rental_date);
 
               return (
                 <tr key={`${row.rental_id || row.id || "rental"}-${index}`}>
                   <td style={rentalTdCenterStyle}>{index + 1}</td>
                   <td style={rentalTdStyle}>
                     <span style={isReturned ? returnedBadgeStyle : currentBadgeStyle}>
-                      {isReturned ? "Returned" : "Live"}
+                      {isReturned ? "Returned" : "Current"}
                     </span>
                   </td>
-                  <td style={rentalTdStyle}>{startDate}</td>
-                  <td style={rentalTdStyle}>{endDate}</td>
+                  <td style={rentalTdStyle}>{date}</td>
                   <td style={rentalTdToolStyle}>🔧 {toolName}</td>
                   <td style={rentalTdRightStyle}>{qty}</td>
                   <td style={rentalTdRightStyle}>{rent}</td>
                   <td style={rentalTdRightStyle}>{days}</td>
                   <td style={rentalTdAmountStyle}>₹{amount.toFixed(0)}</td>
-                  <td style={{ ...rentalTdAmountStyle, color: balance > 0 ? "#b91c1c" : "#166534" }}>
-                    ₹{balance.toFixed(0)}
-                  </td>
                 </tr>
               );
             })}
 
-            {rowsWithBalance.length === 0 && (
+            {rows.length === 0 && (
               <tr>
-                <td colSpan={10} style={rentalEmptyCellStyle}>No rental items found</td>
+                <td colSpan={8} style={rentalEmptyCellStyle}>No rental items found</td>
               </tr>
             )}
 
-            {rowsWithBalance.length > 0 && (
+            {rows.length > 0 && (
               <>
+                {totalReturned > 0 && (
+                  <tr>
+                    <td colSpan={7} style={rentalTotalLabelStyle}>Total Returned Pending</td>
+                    <td style={rentalTotalAmountStyle}>₹{totalReturned.toFixed(0)}</td>
+                  </tr>
+                )}
+                {totalCurrent > 0 && (
+                  <tr>
+                    <td colSpan={7} style={rentalTotalLabelStyle}>Total Current Rentals</td>
+                    <td style={rentalTotalAmountStyle}>₹{totalCurrent.toFixed(0)}</td>
+                  </tr>
+                )}
                 <tr>
-                  <td colSpan={9} style={rentalTotalLabelStyle}>Total Returned Pending</td>
-                  <td style={rentalTotalAmountStyle}>₹{totalReturned.toFixed(0)}</td>
-                </tr>
-                <tr>
-                  <td colSpan={9} style={rentalTotalLabelStyle}>Total Current Rentals</td>
-                  <td style={rentalTotalAmountStyle}>₹{totalCurrent.toFixed(0)}</td>
-                </tr>
-                <tr>
-                  <td colSpan={9} style={rentalGrandTotalLabelStyle}>Total Rental Amount</td>
+                  <td colSpan={7} style={rentalGrandTotalLabelStyle}>Total Rental Amount</td>
                   <td style={rentalGrandTotalAmountStyle}>₹{grandTotal.toFixed(0)}</td>
                 </tr>
               </>
@@ -2267,17 +1980,10 @@ const labelStyle: CSSProperties = { display: "block", fontWeight: 950, marginBot
 const smallTitleStyle: CSSProperties = { margin: "0 0 12px", fontSize: 20, color: "#0f172a" };
 const miniCardStyle: CSSProperties = { border: "1px solid #dbeafe", borderRadius: 18, padding: 14, background: "#ffffff", boxShadow: "0 8px 24px rgba(15, 23, 42, 0.06)" };
 const emptyStyle: CSSProperties = { padding: 18, borderRadius: 16, background: "#f8fafc", color: "#64748b", fontWeight: 850, textAlign: "center" };
-const customerBoxStyle: CSSProperties = { border: "2px solid #bfdbfe", background: "#f8fbff", borderRadius: 22, padding: 18, boxShadow: "0 14px 34px rgba(37, 99, 235, 0.10)" };
+const customerBoxStyle: CSSProperties = { border: "1px solid #bfdbfe", background: "#f8fbff", borderRadius: 22, padding: 18 };
 const statementLineBoxStyle: CSSProperties = { display: "grid", gap: 8, marginTop: 16, background: "white", borderRadius: 16, padding: 14, border: "1px solid #e2e8f0" };
-const statementSummaryLineStyle: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(6, minmax(145px, 1fr))", gap: 12, marginTop: 14 };
-const summaryPillStyle: CSSProperties = { display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "flex-start", gap: 8, border: "2px solid", borderRadius: 18, padding: "16px 18px", minHeight: 92, fontSize: 16, whiteSpace: "nowrap", boxShadow: "0 12px 28px rgba(15, 23, 42, 0.12)" };
-const paymentHistoryBoxStyle: CSSProperties = { marginTop: 14, border: "3px solid #2563eb", background: "#ffffff", borderRadius: 18, padding: 14, boxShadow: "0 14px 32px rgba(37, 99, 235, 0.16)" };
-const paymentHistoryTitleStyle: CSSProperties = { fontSize: 22, fontWeight: 1000, color: "#1d4ed8", marginBottom: 10, letterSpacing: 0.2 };
-const paymentHistoryGridStyle: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 };
-const paymentHistoryItemStyle: CSSProperties = { display: "grid", gridTemplateColumns: "90px 82px 78px 1fr", gap: 8, alignItems: "center", border: "1px solid #bfdbfe", borderRadius: 14, padding: "10px 12px", fontSize: 15, fontWeight: 900, color: "#1e293b", background: "#f8fbff" };
-const paymentHistoryEmptyStyle: CSSProperties = { padding: "8px 10px", borderRadius: 12, background: "#f8fafc", color: "#64748b", fontWeight: 850 };
-const paymentFormStyle: CSSProperties = { marginTop: 16, border: "3px solid #a78bfa", borderRadius: 24, padding: 18, background: "linear-gradient(135deg, #6d28d9, #4f46e5)", boxShadow: "0 18px 42px rgba(79, 70, 229, 0.32)" };
-const formGridStyle: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 };
+const paymentFormStyle: CSSProperties = { marginTop: 16, border: "1px solid #dbeafe", borderRadius: 22, padding: 16, background: "white" };
+const formGridStyle: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 };
 const detailRowStyle: CSSProperties = { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", border: "1px solid #e2e8f0", background: "white", padding: 10, borderRadius: 14 };
 
 const detailCardStyle: CSSProperties = { border: "1px solid #e2e8f0", background: "white", padding: 12, borderRadius: 16 };
@@ -2318,7 +2024,7 @@ const statementTotalValueStyle: CSSProperties = { padding: "10px 8px", textAlign
 const rentalTableBoxStyle: CSSProperties = { marginTop: 16, border: "1px solid #bfdbfe", borderRadius: 18, overflow: "hidden", background: "#ffffff" };
 const rentalTableTitleStyle: CSSProperties = { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", padding: "14px 16px", background: "#eff6ff", color: "#002e8a", fontSize: 22, fontWeight: 950 };
 const rentalTableWrapStyle: CSSProperties = { overflowX: "auto" };
-const rentalTableStyle: CSSProperties = { width: "100%", borderCollapse: "collapse", minWidth: 1080 };
+const rentalTableStyle: CSSProperties = { width: "100%", borderCollapse: "collapse", minWidth: 760 };
 const rentalThStyle: CSSProperties = { background: "#0057ff", color: "white", padding: "12px 10px", fontSize: 17, fontWeight: 950, textAlign: "center", whiteSpace: "nowrap" };
 const rentalThSmallStyle: CSSProperties = { ...rentalThStyle, width: 52 };
 const rentalThLeftStyle: CSSProperties = { ...rentalThStyle, textAlign: "left" };
@@ -2335,24 +2041,6 @@ const rentalGrandTotalLabelStyle: CSSProperties = { padding: "14px 10px", textAl
 const rentalGrandTotalAmountStyle: CSSProperties = { padding: "14px 10px", textAlign: "right", background: "#eaf3ff", borderTop: "1px solid #bfdbfe", color: "#0057ff", fontSize: 22, fontWeight: 950 };
 const returnedBadgeStyle: CSSProperties = { display: "inline-block", padding: "5px 10px", borderRadius: 999, background: "#fee2e2", color: "#b91c1c", fontSize: 14, fontWeight: 950 };
 const currentBadgeStyle: CSSProperties = { display: "inline-block", padding: "5px 10px", borderRadius: 999, background: "#dbeafe", color: "#0057ff", fontSize: 14, fontWeight: 950 };
-
-const allPaymentsReportStyle: CSSProperties = { marginTop: 18, border: "4px solid #7c3aed", borderRadius: 24, background: "#ffffff", overflow: "hidden", boxShadow: "0 18px 42px rgba(109, 40, 217, 0.24)" };
-const allPaymentsHeaderStyle: CSSProperties = { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14, flexWrap: "wrap", padding: "18px 20px", background: "linear-gradient(135deg, #6d28d9, #4f46e5)", color: "white" };
-const allPaymentsTitleStyle: CSSProperties = { fontSize: 28, fontWeight: 1000, lineHeight: 1.1, textTransform: "uppercase", letterSpacing: 0.3 };
-const allPaymentsSubtitleStyle: CSSProperties = { marginTop: 4, fontSize: 14, fontWeight: 850, opacity: 0.9 };
-const allPaymentsActionStyle: CSSProperties = { display: "flex", gap: 10, flexWrap: "wrap" };
-const allPaymentsButtonStyle: CSSProperties = { fontWeight: 1000, padding: "10px 14px" };
-const allPaymentsFilterStyle: CSSProperties = { display: "grid", gridTemplateColumns: "150px 150px 150px minmax(240px, 1fr)", gap: 10, padding: 14, background: "#faf5ff", borderBottom: "1px solid #ddd6fe" };
-const allPaymentsControlStyle: CSSProperties = { width: "100%", minHeight: 42, borderRadius: 12, border: "1px solid #c4b5fd", padding: "9px 12px", fontSize: 15, fontWeight: 900, color: "#2e1065", background: "white" };
-const allPaymentsSummaryStyle: CSSProperties = { display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", margin: "12px 14px 0", padding: "12px 14px", borderRadius: 14, background: "#f3e8ff", color: "#581c87", fontSize: 18, fontWeight: 950, border: "1px solid #d8b4fe" };
-const allPaymentsThStyle: CSSProperties = { background: "#581c87", color: "white", padding: "10px 9px", fontSize: 14, fontWeight: 1000, textAlign: "left", whiteSpace: "nowrap" };
-const allPaymentsThRightStyle: CSSProperties = { ...allPaymentsThStyle, textAlign: "right" };
-const allPaymentsTdStyle: CSSProperties = { padding: "10px 9px", borderBottom: "1px solid #ede9fe", fontSize: 14, fontWeight: 850, color: "#1f2937", whiteSpace: "nowrap" };
-const allPaymentsTdStrongStyle: CSSProperties = { ...allPaymentsTdStyle, fontWeight: 1000, color: "#3b0764" };
-const allPaymentsTdAmountStyle: CSSProperties = { ...allPaymentsTdStyle, textAlign: "right", fontWeight: 1000, color: "#166534" };
-const allPaymentsTotalLabelStyle: CSSProperties = { padding: "12px 9px", background: "#4c1d95", color: "white", textAlign: "right", fontSize: 16, fontWeight: 1000 };
-const allPaymentsTotalAmountStyle: CSSProperties = { padding: "12px 9px", background: "#4c1d95", color: "white", textAlign: "right", fontSize: 18, fontWeight: 1000 };
-const allPaymentsTotalBlankStyle: CSSProperties = { padding: "12px 9px", background: "#4c1d95" };
 
 const overlayStyle: CSSProperties = { position: "fixed", inset: 0, background: "rgba(15, 23, 42, 0.65)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 };
 const popupStyle: CSSProperties = { width: "min(560px, 100%)", background: "white", borderRadius: 22, padding: 24, boxShadow: "0 25px 80px rgba(0,0,0,0.35)", border: "1px solid #dbeafe" };

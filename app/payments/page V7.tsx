@@ -3,7 +3,6 @@
 import { type CSSProperties, useEffect, useMemo, useState } from "react";
 import { Archive, Download, FileText, Search, Share2, Wrench } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import * as XLSX from "xlsx";
 import { getPaymentsData, moveCustomerBalanceToArrears } from "./actions";
 import StatementPopup from "../statements/statement-popup";
 import StatementHeader from "../statements/StatementHeader";
@@ -96,10 +95,10 @@ export default function PaymentsPage() {
   const [closedSearchText, setClosedSearchText] = useState("");
   const [recentShopFilter, setRecentShopFilter] = useState("All Shops");
   const [recentDate, setRecentDate] = useState("");
-  const [allPaymentShopFilter, setAllPaymentShopFilter] = useState("All Shops");
-  const [allPaymentFromDate, setAllPaymentFromDate] = useState("");
-  const [allPaymentToDate, setAllPaymentToDate] = useState("");
-  const [allPaymentSearchText, setAllPaymentSearchText] = useState("");
+  const [allPaymentsShopFilter, setAllPaymentsShopFilter] = useState("All Shops");
+  const [allPaymentsFromDate, setAllPaymentsFromDate] = useState("");
+  const [allPaymentsToDate, setAllPaymentsToDate] = useState("");
+  const [allPaymentsSearchText, setAllPaymentsSearchText] = useState("");
 
   const [customers, setCustomers] = useState<any[]>([]);
   const [pendingRows, setPendingRows] = useState<any[]>([]);
@@ -731,6 +730,69 @@ export default function PaymentsPage() {
   }
 
 
+  function customerForPayment(row: any) {
+    return customers.find((c: any) =>
+      String(c.id || "") === String(row.customer_id || "") ||
+      String(c.mobile || "").trim() === String(row.mobile || row.customer_mobile || "").trim()
+    );
+  }
+
+  const allPaymentsReportRows = payments
+    .filter((p: any) => allPaymentsShopFilter === "All Shops" || p.shop === allPaymentsShopFilter)
+    .filter((p: any) => {
+      const d = String(p.payment_date || p.date || p.created_at || "").slice(0, 10);
+      if (allPaymentsFromDate && d && d < allPaymentsFromDate) return false;
+      if (allPaymentsToDate && d && d > allPaymentsToDate) return false;
+      return true;
+    })
+    .map((p: any) => {
+      const customer = customerForPayment(p);
+      return {
+        payment: p,
+        customer_name: p.customer_name || customer?.customer_name || customer?.name || "-",
+        mobile: p.mobile || p.customer_mobile || customer?.mobile || "-",
+        address: customer?.address || p.address || "-",
+        shop: p.shop || customer?.shop || customer?.branch || "-",
+        received: Number(p.amount || 0),
+        payment_date: p.payment_date || p.date || p.created_at || "",
+      };
+    })
+    .filter((row: any) => {
+      const q = allPaymentsSearchText.trim().toLowerCase();
+      if (!q) return true;
+      return `${row.customer_name} ${row.mobile} ${row.address} ${row.shop}`.toLowerCase().includes(q);
+    })
+    .sort((a: any, b: any) => String(b.payment_date || "").localeCompare(String(a.payment_date || "")));
+
+  const allPaymentsTotalReceived = allPaymentsReportRows.reduce(
+    (sum: number, row: any) => sum + Number(row.received || 0),
+    0
+  );
+
+  function downloadAllPaymentsReportCsv() {
+    const header = ["Customer Name", "Mobile", "Address", "Shop", "Received"];
+    const rows = allPaymentsReportRows.map((row: any) => [
+      row.customer_name,
+      row.mobile,
+      row.address,
+      row.shop,
+      row.received,
+    ]);
+
+    const csv = [header, ...rows]
+      .map((r) => r.map((c) => `"${String(c ?? "").replaceAll('"', '""')}"`).join(","))
+      .join("\n");
+
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `All_Payments_Report_${today()}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+
   const pendingReturnedForCounter = pendingReturnedRentals
     .filter((row: any) => paymentShopFilter === "All Shops" || row.shop === paymentShopFilter)
     .filter((row: any) => {
@@ -767,104 +829,6 @@ export default function PaymentsPage() {
     .filter((p: any) => recentShopFilter === "All Shops" || p.shop === recentShopFilter)
     .filter((p: any) => !recentDate || String(p.payment_date || "").slice(0, 10) === recentDate)
     .slice(0, 20);
-
-  const allPaymentsReportRows = payments
-    .map((p: any) => {
-      const customer = customers.find((c: any) =>
-        String(c.id || "") === String(p.customer_id || "") ||
-        String(c.mobile || "").trim() === String(p.mobile || p.customer_mobile || "").trim()
-      );
-
-      return {
-        ...p,
-        customer_name: p.customer_name || customer?.customer_name || customer?.name || "-",
-        mobile: p.mobile || p.customer_mobile || customer?.mobile || "-",
-        address: customer?.address || p.address || "-",
-        shop: p.shop || customer?.shop || customer?.branch || "-",
-        payment_date: p.payment_date || p.date || p.created_at || "",
-        received: Number(p.amount || 0),
-        discount: Number(p.discount || 0),
-        mode: p.mode || p.payment_mode || "-",
-        remarks: p.remarks || "",
-      };
-    })
-    .filter((row: any) => allPaymentShopFilter === "All Shops" || row.shop === allPaymentShopFilter)
-    .filter((row: any) => {
-      const d = String(row.payment_date || "").slice(0, 10);
-      if (allPaymentFromDate && d && d < allPaymentFromDate) return false;
-      if (allPaymentToDate && d && d > allPaymentToDate) return false;
-      return true;
-    })
-    .filter((row: any) => {
-      const q = allPaymentSearchText.trim().toLowerCase();
-      if (!q) return true;
-      return `${row.customer_name || ""} ${row.mobile || ""} ${row.address || ""} ${row.shop || ""}`
-        .toLowerCase()
-        .includes(q);
-    })
-    .sort((a: any, b: any) => String(b.payment_date || "").localeCompare(String(a.payment_date || "")));
-
-  const allPaymentsTotalReceived = allPaymentsReportRows.reduce(
-    (sum: number, row: any) => sum + Number(row.received || 0),
-    0
-  );
-
-  function downloadAllPaymentsCsv() {
-    const header = ["Date", "Customer Name", "Mobile", "Address", "Shop", "Received", "Discount", "Mode", "Remarks"];
-    const csvRows = allPaymentsReportRows.map((row: any) => [
-      String(row.payment_date || "").slice(0, 10),
-      row.customer_name,
-      row.mobile,
-      row.address,
-      row.shop,
-      row.received,
-      row.discount,
-      row.mode,
-      row.remarks,
-    ]);
-
-    const csv = [header, ...csvRows]
-      .map((r) => r.map((c) => `"${String(c ?? "").replaceAll('"', '""')}"`).join(","))
-      .join("\n");
-
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "T&T_All_Payments_Report.csv";
-    link.click();
-    URL.revokeObjectURL(url);
-  }
-
-  function downloadAllPaymentsExcel() {
-    const sheetData = [
-      ["T&T ALL PAYMENTS REPORT"],
-      [`Total Payments: ${allPaymentsReportRows.length}`],
-      [`Total Received: ₹${allPaymentsTotalReceived.toFixed(0)}`],
-      [],
-      ["Date", "Customer Name", "Mobile", "Address", "Shop", "Received", "Discount", "Mode", "Remarks"],
-      ...allPaymentsReportRows.map((row: any) => [
-        String(row.payment_date || "").slice(0, 10),
-        row.customer_name,
-        row.mobile,
-        row.address,
-        row.shop,
-        Number(row.received || 0),
-        Number(row.discount || 0),
-        row.mode,
-        row.remarks,
-      ]),
-    ];
-
-    const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
-    worksheet["!cols"] = [
-      { wch: 12 }, { wch: 26 }, { wch: 15 }, { wch: 34 }, { wch: 16 },
-      { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 30 },
-    ];
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "All Payments");
-    XLSX.writeFile(workbook, "T&T_All_Payments_Report.xlsx");
-  }
 
   const oldArrearsRows = arrears.filter((a: any) => {
     const moved = String(a.moved_date || a.created_at || "").slice(0, 10);
@@ -1145,22 +1109,6 @@ export default function PaymentsPage() {
               )}
             </div>
           )}
-
-          <AllPaymentsReport
-            rows={allPaymentsReportRows}
-            totalReceived={allPaymentsTotalReceived}
-            shops={shops}
-            shopFilter={allPaymentShopFilter}
-            setShopFilter={setAllPaymentShopFilter}
-            fromDate={allPaymentFromDate}
-            setFromDate={setAllPaymentFromDate}
-            toDate={allPaymentToDate}
-            setToDate={setAllPaymentToDate}
-            searchText={allPaymentSearchText}
-            setSearchText={setAllPaymentSearchText}
-            onDownloadCsv={downloadAllPaymentsCsv}
-            onDownloadExcel={downloadAllPaymentsExcel}
-          />
         </section>
 
         <section className="modern-card" style={{ margin: 0 }}>
@@ -1178,6 +1126,69 @@ export default function PaymentsPage() {
           <RecentPaymentList payments={recentPayments} />
         </section>
       </div>
+
+      <section style={allPaymentsReportShellStyle}>
+        <SectionHeader
+          title="All Payments Report"
+          subtitle="View and download all received customer payments."
+          right={
+            <button className="btn-blue" type="button" onClick={downloadAllPaymentsReportCsv} style={allPaymentsDownloadButtonStyle}>
+              <Download size={16} /> Download CSV
+            </button>
+          }
+        />
+
+        <div style={allPaymentsFilterStyle}>
+          <select value={allPaymentsShopFilter} onChange={(e) => setAllPaymentsShopFilter(e.target.value)} style={allPaymentsControlStyle}>
+            {shops.map((shop) => <option key={shop}>{shop}</option>)}
+          </select>
+          <input type="date" value={allPaymentsFromDate} onChange={(e) => setAllPaymentsFromDate(e.target.value)} style={allPaymentsControlStyle} title="From date" />
+          <input type="date" value={allPaymentsToDate} onChange={(e) => setAllPaymentsToDate(e.target.value)} style={allPaymentsControlStyle} title="To date" />
+          <input
+            value={allPaymentsSearchText}
+            onChange={(e) => setAllPaymentsSearchText(e.target.value)}
+            placeholder="Search name / mobile / address / shop"
+            style={allPaymentsControlStyle}
+          />
+        </div>
+
+        <div style={allPaymentsTotalStripStyle}>
+          <span>Total Rows: {allPaymentsReportRows.length}</span>
+          <strong>Total Received: ₹{allPaymentsTotalReceived.toFixed(0)}</strong>
+        </div>
+
+        <div className="table-wrap" style={allPaymentsTableWrapStyle}>
+          <table style={{ minWidth: 920 }}>
+            <thead>
+              <tr>
+                <th style={allPaymentsThStyle}>Customer Name</th>
+                <th style={allPaymentsThStyle}>Mobile</th>
+                <th style={allPaymentsThStyle}>Address</th>
+                <th style={allPaymentsThStyle}>Shop</th>
+                <th style={{ ...allPaymentsThStyle, textAlign: "right" }}>Received</th>
+              </tr>
+            </thead>
+            <tbody>
+              {allPaymentsReportRows.map((row: any, index: number) => (
+                <tr key={`${row.payment?.id || "payment"}-${index}`}>
+                  <td style={allPaymentsTdStyle}><strong>{row.customer_name}</strong></td>
+                  <td style={allPaymentsTdStyle}>{row.mobile}</td>
+                  <td style={allPaymentsTdStyle}>{row.address}</td>
+                  <td style={allPaymentsTdStyle}>{row.shop}</td>
+                  <td style={{ ...allPaymentsTdStyle, textAlign: "right", fontWeight: 1000, color: "#047857" }}>₹{Number(row.received || 0).toFixed(0)}</td>
+                </tr>
+              ))}
+              {allPaymentsReportRows.length === 0 && (
+                <tr>
+                  <td colSpan={5} style={{ ...allPaymentsTdStyle, textAlign: "center", fontWeight: 950, padding: 18 }}>
+                    No payments found
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       <section className="modern-card">
         <SectionHeader
@@ -1736,95 +1747,6 @@ function InlineCustomerStatement({
   );
 }
 
-function AllPaymentsReport({ rows, totalReceived, shops, shopFilter, setShopFilter, fromDate, setFromDate, toDate, setToDate, searchText, setSearchText, onDownloadCsv, onDownloadExcel }: any) {
-  return (
-    <section style={allPaymentsReportStyle}>
-      <div style={allPaymentsHeaderStyle}>
-        <div>
-          <div style={allPaymentsTitleStyle}>💜 All Payments Report</div>
-          <div style={allPaymentsSubtitleStyle}>View, filter and download all received customer payments.</div>
-        </div>
-        <div style={allPaymentsActionStyle}>
-          <button type="button" className="btn-gray" onClick={onDownloadCsv} style={allPaymentsButtonStyle}>
-            <Download size={16} /> CSV
-          </button>
-          <button type="button" className="btn-blue" onClick={onDownloadExcel} style={allPaymentsButtonStyle}>
-            <Download size={16} /> Excel
-          </button>
-        </div>
-      </div>
-
-      <div style={allPaymentsFilterStyle}>
-        <select value={shopFilter} onChange={(e) => setShopFilter(e.target.value)} style={allPaymentsControlStyle}>
-          {shops.map((shop: string) => <option key={shop}>{shop}</option>)}
-        </select>
-        <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} style={allPaymentsControlStyle} title="From date" />
-        <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} style={allPaymentsControlStyle} title="To date" />
-        <input
-          value={searchText}
-          onChange={(e) => setSearchText(e.target.value)}
-          placeholder="Search customer / mobile / address"
-          style={{ ...allPaymentsControlStyle, minWidth: 260 }}
-        />
-      </div>
-
-      <div style={allPaymentsSummaryStyle}>
-        <div><strong>{rows.length}</strong> payments</div>
-        <div>Total Received: <strong>₹{Number(totalReceived || 0).toFixed(0)}</strong></div>
-      </div>
-
-      <div className="table-wrap" style={{ marginTop: 10, borderRadius: 16, border: "1px solid #c4b5fd", overflow: "auto" }}>
-        <table style={{ minWidth: 980 }}>
-          <thead>
-            <tr>
-              <th style={allPaymentsThStyle}>Date</th>
-              <th style={allPaymentsThStyle}>Customer Name</th>
-              <th style={allPaymentsThStyle}>Mobile</th>
-              <th style={allPaymentsThStyle}>Address</th>
-              <th style={allPaymentsThStyle}>Shop</th>
-              <th style={allPaymentsThRightStyle}>Received</th>
-              <th style={allPaymentsThRightStyle}>Discount</th>
-              <th style={allPaymentsThStyle}>Mode</th>
-              <th style={allPaymentsThStyle}>Remarks</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row: any, index: number) => (
-              <tr key={`${row.id || row.payment_date || "payment"}-${index}`}>
-                <td style={allPaymentsTdStyle}>{formatCardDate(row.payment_date)}</td>
-                <td style={allPaymentsTdStrongStyle}>{row.customer_name || "-"}</td>
-                <td style={allPaymentsTdStyle}>{row.mobile || "-"}</td>
-                <td style={allPaymentsTdStyle}>{row.address || "-"}</td>
-                <td style={allPaymentsTdStyle}>{row.shop || "-"}</td>
-                <td style={allPaymentsTdAmountStyle}>₹{Number(row.received || 0).toFixed(0)}</td>
-                <td style={allPaymentsTdAmountStyle}>₹{Number(row.discount || 0).toFixed(0)}</td>
-                <td style={allPaymentsTdStyle}>{row.mode || "-"}</td>
-                <td style={allPaymentsTdStyle}>{row.remarks || "-"}</td>
-              </tr>
-            ))}
-            {rows.length === 0 && (
-              <tr>
-                <td colSpan={9} style={{ textAlign: "center", padding: 18, fontWeight: 900, color: "#6b21a8" }}>
-                  No payments found
-                </td>
-              </tr>
-            )}
-          </tbody>
-          {rows.length > 0 && (
-            <tfoot>
-              <tr>
-                <td colSpan={5} style={allPaymentsTotalLabelStyle}>TOTAL</td>
-                <td style={allPaymentsTotalAmountStyle}>₹{Number(totalReceived || 0).toFixed(0)}</td>
-                <td colSpan={3} style={allPaymentsTotalBlankStyle}></td>
-              </tr>
-            </tfoot>
-          )}
-        </table>
-      </div>
-    </section>
-  );
-}
-
 function RecentlyClosedForPaymentList({ rows, onReceive }: any) {
   return (
     <div className="table-wrap" style={{ marginTop: 8 }}>
@@ -2267,6 +2189,73 @@ const labelStyle: CSSProperties = { display: "block", fontWeight: 950, marginBot
 const smallTitleStyle: CSSProperties = { margin: "0 0 12px", fontSize: 20, color: "#0f172a" };
 const miniCardStyle: CSSProperties = { border: "1px solid #dbeafe", borderRadius: 18, padding: 14, background: "#ffffff", boxShadow: "0 8px 24px rgba(15, 23, 42, 0.06)" };
 const emptyStyle: CSSProperties = { padding: 18, borderRadius: 16, background: "#f8fafc", color: "#64748b", fontWeight: 850, textAlign: "center" };
+const allPaymentsReportShellStyle: CSSProperties = {
+  marginBottom: 22,
+  border: "3px solid #14b8a6",
+  borderRadius: 22,
+  padding: 18,
+  background: "linear-gradient(180deg, #ecfdf5, #ffffff)",
+  boxShadow: "0 18px 44px rgba(20, 184, 166, 0.18)",
+};
+const allPaymentsFilterStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
+  gap: 10,
+  padding: 12,
+  borderRadius: 16,
+  background: "#ccfbf1",
+  border: "1px solid #5eead4",
+};
+const allPaymentsControlStyle: CSSProperties = {
+  minHeight: 48,
+  borderRadius: 12,
+  border: "1px solid #14b8a6",
+  padding: "0 12px",
+  fontSize: 15,
+  fontWeight: 900,
+  background: "white",
+  color: "#064e3b",
+};
+const allPaymentsDownloadButtonStyle: CSSProperties = {
+  background: "#0f766e",
+  borderColor: "#0f766e",
+  color: "white",
+  fontWeight: 1000,
+};
+const allPaymentsTotalStripStyle: CSSProperties = {
+  marginTop: 12,
+  marginBottom: 10,
+  display: "flex",
+  justifyContent: "space-between",
+  gap: 12,
+  flexWrap: "wrap",
+  padding: "12px 14px",
+  borderRadius: 14,
+  background: "#0f766e",
+  color: "white",
+  fontSize: 17,
+  fontWeight: 1000,
+};
+const allPaymentsTableWrapStyle: CSSProperties = {
+  border: "2px solid #14b8a6",
+  borderRadius: 16,
+  overflow: "auto",
+  background: "white",
+};
+const allPaymentsThStyle: CSSProperties = {
+  background: "#0f766e",
+  color: "white",
+  padding: "12px 10px",
+  fontWeight: 1000,
+  whiteSpace: "nowrap",
+};
+const allPaymentsTdStyle: CSSProperties = {
+  padding: "11px 10px",
+  borderBottom: "1px solid #ccfbf1",
+  color: "#064e3b",
+  fontWeight: 850,
+  background: "white",
+};
 const customerBoxStyle: CSSProperties = { border: "2px solid #bfdbfe", background: "#f8fbff", borderRadius: 22, padding: 18, boxShadow: "0 14px 34px rgba(37, 99, 235, 0.10)" };
 const statementLineBoxStyle: CSSProperties = { display: "grid", gap: 8, marginTop: 16, background: "white", borderRadius: 16, padding: 14, border: "1px solid #e2e8f0" };
 const statementSummaryLineStyle: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(6, minmax(145px, 1fr))", gap: 12, marginTop: 14 };
@@ -2335,24 +2324,6 @@ const rentalGrandTotalLabelStyle: CSSProperties = { padding: "14px 10px", textAl
 const rentalGrandTotalAmountStyle: CSSProperties = { padding: "14px 10px", textAlign: "right", background: "#eaf3ff", borderTop: "1px solid #bfdbfe", color: "#0057ff", fontSize: 22, fontWeight: 950 };
 const returnedBadgeStyle: CSSProperties = { display: "inline-block", padding: "5px 10px", borderRadius: 999, background: "#fee2e2", color: "#b91c1c", fontSize: 14, fontWeight: 950 };
 const currentBadgeStyle: CSSProperties = { display: "inline-block", padding: "5px 10px", borderRadius: 999, background: "#dbeafe", color: "#0057ff", fontSize: 14, fontWeight: 950 };
-
-const allPaymentsReportStyle: CSSProperties = { marginTop: 18, border: "4px solid #7c3aed", borderRadius: 24, background: "#ffffff", overflow: "hidden", boxShadow: "0 18px 42px rgba(109, 40, 217, 0.24)" };
-const allPaymentsHeaderStyle: CSSProperties = { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14, flexWrap: "wrap", padding: "18px 20px", background: "linear-gradient(135deg, #6d28d9, #4f46e5)", color: "white" };
-const allPaymentsTitleStyle: CSSProperties = { fontSize: 28, fontWeight: 1000, lineHeight: 1.1, textTransform: "uppercase", letterSpacing: 0.3 };
-const allPaymentsSubtitleStyle: CSSProperties = { marginTop: 4, fontSize: 14, fontWeight: 850, opacity: 0.9 };
-const allPaymentsActionStyle: CSSProperties = { display: "flex", gap: 10, flexWrap: "wrap" };
-const allPaymentsButtonStyle: CSSProperties = { fontWeight: 1000, padding: "10px 14px" };
-const allPaymentsFilterStyle: CSSProperties = { display: "grid", gridTemplateColumns: "150px 150px 150px minmax(240px, 1fr)", gap: 10, padding: 14, background: "#faf5ff", borderBottom: "1px solid #ddd6fe" };
-const allPaymentsControlStyle: CSSProperties = { width: "100%", minHeight: 42, borderRadius: 12, border: "1px solid #c4b5fd", padding: "9px 12px", fontSize: 15, fontWeight: 900, color: "#2e1065", background: "white" };
-const allPaymentsSummaryStyle: CSSProperties = { display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", margin: "12px 14px 0", padding: "12px 14px", borderRadius: 14, background: "#f3e8ff", color: "#581c87", fontSize: 18, fontWeight: 950, border: "1px solid #d8b4fe" };
-const allPaymentsThStyle: CSSProperties = { background: "#581c87", color: "white", padding: "10px 9px", fontSize: 14, fontWeight: 1000, textAlign: "left", whiteSpace: "nowrap" };
-const allPaymentsThRightStyle: CSSProperties = { ...allPaymentsThStyle, textAlign: "right" };
-const allPaymentsTdStyle: CSSProperties = { padding: "10px 9px", borderBottom: "1px solid #ede9fe", fontSize: 14, fontWeight: 850, color: "#1f2937", whiteSpace: "nowrap" };
-const allPaymentsTdStrongStyle: CSSProperties = { ...allPaymentsTdStyle, fontWeight: 1000, color: "#3b0764" };
-const allPaymentsTdAmountStyle: CSSProperties = { ...allPaymentsTdStyle, textAlign: "right", fontWeight: 1000, color: "#166534" };
-const allPaymentsTotalLabelStyle: CSSProperties = { padding: "12px 9px", background: "#4c1d95", color: "white", textAlign: "right", fontSize: 16, fontWeight: 1000 };
-const allPaymentsTotalAmountStyle: CSSProperties = { padding: "12px 9px", background: "#4c1d95", color: "white", textAlign: "right", fontSize: 18, fontWeight: 1000 };
-const allPaymentsTotalBlankStyle: CSSProperties = { padding: "12px 9px", background: "#4c1d95" };
 
 const overlayStyle: CSSProperties = { position: "fixed", inset: 0, background: "rgba(15, 23, 42, 0.65)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 };
 const popupStyle: CSSProperties = { width: "min(560px, 100%)", background: "white", borderRadius: 22, padding: 24, boxShadow: "0 25px 80px rgba(0,0,0,0.35)", border: "1px solid #dbeafe" };

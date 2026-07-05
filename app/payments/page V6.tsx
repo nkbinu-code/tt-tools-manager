@@ -3,7 +3,6 @@
 import { type CSSProperties, useEffect, useMemo, useState } from "react";
 import { Archive, Download, FileText, Search, Share2, Wrench } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import * as XLSX from "xlsx";
 import { getPaymentsData, moveCustomerBalanceToArrears } from "./actions";
 import StatementPopup from "../statements/statement-popup";
 import StatementHeader from "../statements/StatementHeader";
@@ -96,10 +95,6 @@ export default function PaymentsPage() {
   const [closedSearchText, setClosedSearchText] = useState("");
   const [recentShopFilter, setRecentShopFilter] = useState("All Shops");
   const [recentDate, setRecentDate] = useState("");
-  const [allPaymentShopFilter, setAllPaymentShopFilter] = useState("All Shops");
-  const [allPaymentFromDate, setAllPaymentFromDate] = useState("");
-  const [allPaymentToDate, setAllPaymentToDate] = useState("");
-  const [allPaymentSearchText, setAllPaymentSearchText] = useState("");
 
   const [customers, setCustomers] = useState<any[]>([]);
   const [pendingRows, setPendingRows] = useState<any[]>([]);
@@ -768,104 +763,6 @@ export default function PaymentsPage() {
     .filter((p: any) => !recentDate || String(p.payment_date || "").slice(0, 10) === recentDate)
     .slice(0, 20);
 
-  const allPaymentsReportRows = payments
-    .map((p: any) => {
-      const customer = customers.find((c: any) =>
-        String(c.id || "") === String(p.customer_id || "") ||
-        String(c.mobile || "").trim() === String(p.mobile || p.customer_mobile || "").trim()
-      );
-
-      return {
-        ...p,
-        customer_name: p.customer_name || customer?.customer_name || customer?.name || "-",
-        mobile: p.mobile || p.customer_mobile || customer?.mobile || "-",
-        address: customer?.address || p.address || "-",
-        shop: p.shop || customer?.shop || customer?.branch || "-",
-        payment_date: p.payment_date || p.date || p.created_at || "",
-        received: Number(p.amount || 0),
-        discount: Number(p.discount || 0),
-        mode: p.mode || p.payment_mode || "-",
-        remarks: p.remarks || "",
-      };
-    })
-    .filter((row: any) => allPaymentShopFilter === "All Shops" || row.shop === allPaymentShopFilter)
-    .filter((row: any) => {
-      const d = String(row.payment_date || "").slice(0, 10);
-      if (allPaymentFromDate && d && d < allPaymentFromDate) return false;
-      if (allPaymentToDate && d && d > allPaymentToDate) return false;
-      return true;
-    })
-    .filter((row: any) => {
-      const q = allPaymentSearchText.trim().toLowerCase();
-      if (!q) return true;
-      return `${row.customer_name || ""} ${row.mobile || ""} ${row.address || ""} ${row.shop || ""}`
-        .toLowerCase()
-        .includes(q);
-    })
-    .sort((a: any, b: any) => String(b.payment_date || "").localeCompare(String(a.payment_date || "")));
-
-  const allPaymentsTotalReceived = allPaymentsReportRows.reduce(
-    (sum: number, row: any) => sum + Number(row.received || 0),
-    0
-  );
-
-  function downloadAllPaymentsCsv() {
-    const header = ["Date", "Customer Name", "Mobile", "Address", "Shop", "Received", "Discount", "Mode", "Remarks"];
-    const csvRows = allPaymentsReportRows.map((row: any) => [
-      String(row.payment_date || "").slice(0, 10),
-      row.customer_name,
-      row.mobile,
-      row.address,
-      row.shop,
-      row.received,
-      row.discount,
-      row.mode,
-      row.remarks,
-    ]);
-
-    const csv = [header, ...csvRows]
-      .map((r) => r.map((c) => `"${String(c ?? "").replaceAll('"', '""')}"`).join(","))
-      .join("\n");
-
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "T&T_All_Payments_Report.csv";
-    link.click();
-    URL.revokeObjectURL(url);
-  }
-
-  function downloadAllPaymentsExcel() {
-    const sheetData = [
-      ["T&T ALL PAYMENTS REPORT"],
-      [`Total Payments: ${allPaymentsReportRows.length}`],
-      [`Total Received: ₹${allPaymentsTotalReceived.toFixed(0)}`],
-      [],
-      ["Date", "Customer Name", "Mobile", "Address", "Shop", "Received", "Discount", "Mode", "Remarks"],
-      ...allPaymentsReportRows.map((row: any) => [
-        String(row.payment_date || "").slice(0, 10),
-        row.customer_name,
-        row.mobile,
-        row.address,
-        row.shop,
-        Number(row.received || 0),
-        Number(row.discount || 0),
-        row.mode,
-        row.remarks,
-      ]),
-    ];
-
-    const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
-    worksheet["!cols"] = [
-      { wch: 12 }, { wch: 26 }, { wch: 15 }, { wch: 34 }, { wch: 16 },
-      { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 30 },
-    ];
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "All Payments");
-    XLSX.writeFile(workbook, "T&T_All_Payments_Report.xlsx");
-  }
-
   const oldArrearsRows = arrears.filter((a: any) => {
     const moved = String(a.moved_date || a.created_at || "").slice(0, 10);
     if (!moved) return true;
@@ -1106,7 +1003,7 @@ export default function PaymentsPage() {
               />
 
               <div style={paymentFormStyle}>
-                <h3 style={{ margin: "0 0 14px", fontSize: 28, fontWeight: 1000, color: "white", letterSpacing: 0.4 }}>💰 Receive Payment</h3>
+                <h3 style={{ margin: "0 0 14px", fontSize: 28, fontWeight: 1000, color: "white", letterSpacing: 0.4 }}>💰 Receive Customer Payment</h3>
                 <div style={formGridStyle}>
                   <input type="date" value={paymentRows[0]?.payment_date || today()} onChange={(e) => updatePaymentRow(0, "payment_date", e.target.value)} style={bigControlStyle} />
                   <input type="number" value={paymentRows[0]?.amount || ""} onChange={(e) => updatePaymentRow(0, "amount", e.target.value)} placeholder="Amount received" style={bigControlStyle} />
@@ -1145,22 +1042,6 @@ export default function PaymentsPage() {
               )}
             </div>
           )}
-
-          <AllPaymentsReport
-            rows={allPaymentsReportRows}
-            totalReceived={allPaymentsTotalReceived}
-            shops={shops}
-            shopFilter={allPaymentShopFilter}
-            setShopFilter={setAllPaymentShopFilter}
-            fromDate={allPaymentFromDate}
-            setFromDate={setAllPaymentFromDate}
-            toDate={allPaymentToDate}
-            setToDate={setAllPaymentToDate}
-            searchText={allPaymentSearchText}
-            setSearchText={setAllPaymentSearchText}
-            onDownloadCsv={downloadAllPaymentsCsv}
-            onDownloadExcel={downloadAllPaymentsExcel}
-          />
         </section>
 
         <section className="modern-card" style={{ margin: 0 }}>
@@ -1340,6 +1221,13 @@ function InlineCustomerStatement({
 
   const [isSharingJpg, setIsSharingJpg] = useState(false);
 
+  const statementAdvance = Math.max(
+    0,
+    Number(statementPaidTotal || 0) +
+      Number(statementDiscountTotal || 0) -
+      Number(statementRentalTotal || 0)
+  );
+
   async function shareStatementAsJpg() {
     if (isSharingJpg) return;
 
@@ -1476,13 +1364,14 @@ function InlineCustomerStatement({
 
       // Summary boxes
       const boxY = 210;
-      const boxW = 270;
+      const boxW = 220;
       const boxH = 70;
       const summaryBoxes = [
         ["TOTAL BUSINESS", statementRentalTotal, blue],
         ["TOTAL PAID", statementPaidTotal, green],
         ["DISCOUNT", statementDiscountTotal, orange],
         ["BALANCE", statementBalance, red],
+        ["ADVANCE", statementAdvance, orange],
       ];
 
       summaryBoxes.forEach(([label, value, color]: any, i: number) => {
@@ -1554,7 +1443,7 @@ function InlineCustomerStatement({
       const summaryW = 350;
       rect(36, y, summaryW, 44, green);
       text("PAYMENT SUMMARY", 211, y + 30, { size: 20, weight: 950, color: "#ffffff", align: "center" });
-      rect(36, y + 44, summaryW, 150, "#ffffff", "#cbd5e1");
+      rect(36, y + 44, summaryW, 184, "#ffffff", "#cbd5e1");
       const summaryLines = [
         ["Total Business", statementRentalTotal],
         ["Total Paid", statementPaidTotal],
@@ -1569,6 +1458,9 @@ function InlineCustomerStatement({
       text("BALANCE", 60, y + 180, { size: 18, weight: 950, color: red });
       text(":", 210, y + 180, { size: 18, weight: 950, color: red });
       text(money(statementBalance), 355, y + 180, { size: 20, weight: 950, color: red, align: "right" });
+      text("ADVANCE", 60, y + 214, { size: 18, weight: 950, color: orange });
+      text(":", 210, y + 214, { size: 18, weight: 950, color: orange });
+      text(money(statementAdvance), 355, y + 214, { size: 20, weight: 950, color: orange, align: "right" });
 
       const paymentX = 420;
       rect(paymentX, y, 744, 44, blue);
@@ -1600,7 +1492,7 @@ function InlineCustomerStatement({
         text(money(statementPaidTotal), paymentX + 450, totalY + 40, { size: 20, weight: 950, color: blue, align: "right" });
       }
 
-      y += Math.max(220, 86 + Math.max(paymentRows.length, 1) * rowHeight + 64) + 48;
+      y += Math.max(260, 86 + Math.max(paymentRows.length, 1) * rowHeight + 64) + 48;
 
       // Footer addresses
       text("Five Branches, Same Commitment!", width / 2, y, { size: 24, weight: 950, color: red, align: "center" });
@@ -1683,12 +1575,12 @@ function InlineCustomerStatement({
       </div>
 
       <div style={statementInfoGridStyle}>
-        <div><strong>Customer : </strong><span>{customerName}</span></div>
-        <div><strong>Mobile : </strong><span>{selectedMobile}</span></div>
-        <div><strong>Shop : </strong><span>{shop}</span></div>
-        <div><strong>Period : </strong><span>{statementPeriodLabel(statementOptions.period)}</span></div>
-        <div><strong>From : </strong><span>{formatDisplayDate(statementRange.from)}</span></div>
-        <div><strong>To : </strong><span>{formatDisplayDate(statementRange.to)}</span></div>
+        <div><strong style={statementInfoLabelStyle}>Customer : </strong><span style={statementInfoValueStyle}>{customerName}</span></div>
+        <div><strong style={statementInfoLabelStyle}>Mobile : </strong><span style={statementInfoValueStyle}>{selectedMobile}</span></div>
+        <div><strong style={statementInfoLabelStyle}>Shop : </strong><span style={statementInfoValueStyle}>{shop}</span></div>
+        <div><strong style={statementInfoLabelStyle}>Period : </strong><span style={statementInfoValueStyle}>{statementPeriodLabel(statementOptions.period)}</span></div>
+        <div><strong style={statementInfoLabelStyle}>From : </strong><span style={statementInfoValueStyle}>{formatDisplayDate(statementRange.from)}</span></div>
+        <div><strong style={statementInfoLabelStyle}>To : </strong><span style={statementInfoValueStyle}>{formatDisplayDate(statementRange.to)}</span></div>
       </div>
 
       <div style={statementInnerStyle}>
@@ -1715,6 +1607,10 @@ function InlineCustomerStatement({
           discount={statementDiscountTotal}
           balance={statementBalance}
         />
+        <div style={statementAdvanceSummaryStyle}>
+          <span>Advance</span>
+          <strong>₹{Number(statementAdvance || 0).toFixed(0)}</strong>
+        </div>
       </div>
 
       <div style={allShopAddressBoxStyle}>
@@ -1731,95 +1627,6 @@ function InlineCustomerStatement({
 
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
         <button className="btn-gray no-print" type="button" onClick={clearStatement}>Hide Statement</button>
-      </div>
-    </section>
-  );
-}
-
-function AllPaymentsReport({ rows, totalReceived, shops, shopFilter, setShopFilter, fromDate, setFromDate, toDate, setToDate, searchText, setSearchText, onDownloadCsv, onDownloadExcel }: any) {
-  return (
-    <section style={allPaymentsReportStyle}>
-      <div style={allPaymentsHeaderStyle}>
-        <div>
-          <div style={allPaymentsTitleStyle}>💜 All Payments Report</div>
-          <div style={allPaymentsSubtitleStyle}>View, filter and download all received customer payments.</div>
-        </div>
-        <div style={allPaymentsActionStyle}>
-          <button type="button" className="btn-gray" onClick={onDownloadCsv} style={allPaymentsButtonStyle}>
-            <Download size={16} /> CSV
-          </button>
-          <button type="button" className="btn-blue" onClick={onDownloadExcel} style={allPaymentsButtonStyle}>
-            <Download size={16} /> Excel
-          </button>
-        </div>
-      </div>
-
-      <div style={allPaymentsFilterStyle}>
-        <select value={shopFilter} onChange={(e) => setShopFilter(e.target.value)} style={allPaymentsControlStyle}>
-          {shops.map((shop: string) => <option key={shop}>{shop}</option>)}
-        </select>
-        <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} style={allPaymentsControlStyle} title="From date" />
-        <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} style={allPaymentsControlStyle} title="To date" />
-        <input
-          value={searchText}
-          onChange={(e) => setSearchText(e.target.value)}
-          placeholder="Search customer / mobile / address"
-          style={{ ...allPaymentsControlStyle, minWidth: 260 }}
-        />
-      </div>
-
-      <div style={allPaymentsSummaryStyle}>
-        <div><strong>{rows.length}</strong> payments</div>
-        <div>Total Received: <strong>₹{Number(totalReceived || 0).toFixed(0)}</strong></div>
-      </div>
-
-      <div className="table-wrap" style={{ marginTop: 10, borderRadius: 16, border: "1px solid #c4b5fd", overflow: "auto" }}>
-        <table style={{ minWidth: 980 }}>
-          <thead>
-            <tr>
-              <th style={allPaymentsThStyle}>Date</th>
-              <th style={allPaymentsThStyle}>Customer Name</th>
-              <th style={allPaymentsThStyle}>Mobile</th>
-              <th style={allPaymentsThStyle}>Address</th>
-              <th style={allPaymentsThStyle}>Shop</th>
-              <th style={allPaymentsThRightStyle}>Received</th>
-              <th style={allPaymentsThRightStyle}>Discount</th>
-              <th style={allPaymentsThStyle}>Mode</th>
-              <th style={allPaymentsThStyle}>Remarks</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row: any, index: number) => (
-              <tr key={`${row.id || row.payment_date || "payment"}-${index}`}>
-                <td style={allPaymentsTdStyle}>{formatCardDate(row.payment_date)}</td>
-                <td style={allPaymentsTdStrongStyle}>{row.customer_name || "-"}</td>
-                <td style={allPaymentsTdStyle}>{row.mobile || "-"}</td>
-                <td style={allPaymentsTdStyle}>{row.address || "-"}</td>
-                <td style={allPaymentsTdStyle}>{row.shop || "-"}</td>
-                <td style={allPaymentsTdAmountStyle}>₹{Number(row.received || 0).toFixed(0)}</td>
-                <td style={allPaymentsTdAmountStyle}>₹{Number(row.discount || 0).toFixed(0)}</td>
-                <td style={allPaymentsTdStyle}>{row.mode || "-"}</td>
-                <td style={allPaymentsTdStyle}>{row.remarks || "-"}</td>
-              </tr>
-            ))}
-            {rows.length === 0 && (
-              <tr>
-                <td colSpan={9} style={{ textAlign: "center", padding: 18, fontWeight: 900, color: "#6b21a8" }}>
-                  No payments found
-                </td>
-              </tr>
-            )}
-          </tbody>
-          {rows.length > 0 && (
-            <tfoot>
-              <tr>
-                <td colSpan={5} style={allPaymentsTotalLabelStyle}>TOTAL</td>
-                <td style={allPaymentsTotalAmountStyle}>₹{Number(totalReceived || 0).toFixed(0)}</td>
-                <td colSpan={3} style={allPaymentsTotalBlankStyle}></td>
-              </tr>
-            </tfoot>
-          )}
-        </table>
       </div>
     </section>
   );
@@ -1891,7 +1698,12 @@ function CustomerStatementBox({ selectedCustomer, selectedPending, selectedMobil
 
   return (
     <div style={customerBoxStyle}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+      <div style={customerBoxHeaderStyle}>
+        <div style={customerBoxHeaderTitleStyle}>💰 RECEIVE CUSTOMER PAYMENT</div>
+        <div style={customerBoxHeaderSubStyle}>Customer payments, rental details, history and statements</div>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", padding: "4px 4px 0" }}>
         <div>
           <div style={{ fontSize: 24, fontWeight: 950 }}>{selectedCustomer?.customer_name || selectedCustomer?.name || selectedPending?.customer_name || selectedMobile}</div>
           <div style={{ color: "#475569", fontWeight: 850 }}>{selectedMobile} • {selectedCustomer?.shop || selectedCustomer?.branch || selectedPending?.shop || "-"}</div>
@@ -1961,8 +1773,8 @@ function SummaryPill({ label, value, tone, strong }: any) {
 
   return (
     <div style={{ ...summaryPillStyle, ...(styleMap[tone] || styleMap.blue), fontWeight: strong ? 1000 : 900 }}>
-      <span style={{ fontSize: 15, fontWeight: 1000, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.92 }}>{label}</span>
-      <strong style={{ fontSize: 32, lineHeight: 1, fontWeight: 1000 }}>₹{Number(value || 0).toFixed(0)}</strong>
+      <span style={{ fontSize: 17, fontWeight: 1000, textTransform: "uppercase", letterSpacing: 0.6, opacity: 0.95 }}>{label}</span>
+      <strong style={{ fontSize: 42, lineHeight: 1, fontWeight: 1000 }}>₹{Number(value || 0).toFixed(0)}</strong>
     </div>
   );
 }
@@ -2267,16 +2079,19 @@ const labelStyle: CSSProperties = { display: "block", fontWeight: 950, marginBot
 const smallTitleStyle: CSSProperties = { margin: "0 0 12px", fontSize: 20, color: "#0f172a" };
 const miniCardStyle: CSSProperties = { border: "1px solid #dbeafe", borderRadius: 18, padding: 14, background: "#ffffff", boxShadow: "0 8px 24px rgba(15, 23, 42, 0.06)" };
 const emptyStyle: CSSProperties = { padding: 18, borderRadius: 16, background: "#f8fafc", color: "#64748b", fontWeight: 850, textAlign: "center" };
-const customerBoxStyle: CSSProperties = { border: "2px solid #bfdbfe", background: "#f8fbff", borderRadius: 22, padding: 18, boxShadow: "0 14px 34px rgba(37, 99, 235, 0.10)" };
+const customerBoxStyle: CSSProperties = { border: "5px solid #2563eb", background: "linear-gradient(180deg, #eef4ff 0%, #ffffff 34%, #f8fbff 100%)", borderRadius: 26, padding: 18, boxShadow: "0 24px 70px rgba(37, 99, 235, 0.30), 0 0 0 6px rgba(37, 99, 235, 0.08)", marginTop: 18 };
+const customerBoxHeaderStyle: CSSProperties = { margin: "-18px -18px 18px", padding: "18px 22px", borderRadius: "20px 20px 0 0", background: "linear-gradient(135deg, #7c3aed, #2563eb 55%, #0f2a5f)", color: "white", boxShadow: "inset 0 -1px 0 rgba(255,255,255,0.18)" };
+const customerBoxHeaderTitleStyle: CSSProperties = { fontSize: 34, fontWeight: 1000, letterSpacing: 0.8, lineHeight: 1.05 };
+const customerBoxHeaderSubStyle: CSSProperties = { marginTop: 5, fontSize: 15, fontWeight: 850, opacity: 0.9 };
 const statementLineBoxStyle: CSSProperties = { display: "grid", gap: 8, marginTop: 16, background: "white", borderRadius: 16, padding: 14, border: "1px solid #e2e8f0" };
-const statementSummaryLineStyle: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(6, minmax(145px, 1fr))", gap: 12, marginTop: 14 };
-const summaryPillStyle: CSSProperties = { display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "flex-start", gap: 8, border: "2px solid", borderRadius: 18, padding: "16px 18px", minHeight: 92, fontSize: 16, whiteSpace: "nowrap", boxShadow: "0 12px 28px rgba(15, 23, 42, 0.12)" };
-const paymentHistoryBoxStyle: CSSProperties = { marginTop: 14, border: "3px solid #2563eb", background: "#ffffff", borderRadius: 18, padding: 14, boxShadow: "0 14px 32px rgba(37, 99, 235, 0.16)" };
-const paymentHistoryTitleStyle: CSSProperties = { fontSize: 22, fontWeight: 1000, color: "#1d4ed8", marginBottom: 10, letterSpacing: 0.2 };
+const statementSummaryLineStyle: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(6, minmax(155px, 1fr))", gap: 14, marginTop: 16, paddingTop: 16, borderTop: "3px solid #dbeafe" };
+const summaryPillStyle: CSSProperties = { display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "flex-start", gap: 9, border: "3px solid", borderRadius: 20, padding: "18px 20px", minHeight: 112, fontSize: 17, whiteSpace: "nowrap", boxShadow: "0 16px 34px rgba(15, 23, 42, 0.16)" };
+const paymentHistoryBoxStyle: CSSProperties = { marginTop: 16, border: "4px solid #0ea5e9", background: "linear-gradient(180deg, #ffffff, #f0f9ff)", borderRadius: 22, padding: 16, boxShadow: "0 18px 42px rgba(14, 165, 233, 0.24)" };
+const paymentHistoryTitleStyle: CSSProperties = { fontSize: 26, fontWeight: 1000, color: "#075985", marginBottom: 12, letterSpacing: 0.2 };
 const paymentHistoryGridStyle: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 };
 const paymentHistoryItemStyle: CSSProperties = { display: "grid", gridTemplateColumns: "90px 82px 78px 1fr", gap: 8, alignItems: "center", border: "1px solid #bfdbfe", borderRadius: 14, padding: "10px 12px", fontSize: 15, fontWeight: 900, color: "#1e293b", background: "#f8fbff" };
 const paymentHistoryEmptyStyle: CSSProperties = { padding: "8px 10px", borderRadius: 12, background: "#f8fafc", color: "#64748b", fontWeight: 850 };
-const paymentFormStyle: CSSProperties = { marginTop: 16, border: "3px solid #a78bfa", borderRadius: 24, padding: 18, background: "linear-gradient(135deg, #6d28d9, #4f46e5)", boxShadow: "0 18px 42px rgba(79, 70, 229, 0.32)" };
+const paymentFormStyle: CSSProperties = { marginTop: 18, border: "5px solid #c4b5fd", borderRadius: 26, padding: 22, background: "linear-gradient(135deg, #6d28d9, #4f46e5 58%, #1d4ed8)", boxShadow: "0 24px 58px rgba(79, 70, 229, 0.42), 0 0 0 6px rgba(124, 58, 237, 0.10)" };
 const formGridStyle: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 };
 const detailRowStyle: CSSProperties = { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", border: "1px solid #e2e8f0", background: "white", padding: 10, borderRadius: 14 };
 
@@ -2297,7 +2112,10 @@ const textLogoBigStyle: CSSProperties = { fontSize: 38, lineHeight: 1, fontWeigh
 const textLogoSmallStyle: CSSProperties = { fontSize: 17, lineHeight: 1.05, fontWeight: 950, textTransform: "uppercase", letterSpacing: 1.5 };
 const statementTitleStyle: CSSProperties = { fontSize: 26, fontWeight: 950, color: "#0b2a6f", lineHeight: 1.1 };
 const statementPeriodStyle: CSSProperties = { marginTop: 4, fontSize: 15, fontWeight: 900, color: "#334155" };
-const statementInfoGridStyle: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10, marginBottom: 12, fontSize: 15, fontWeight: 850 };
+const statementInfoGridStyle: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 14, marginBottom: 16, fontSize: 23, fontWeight: 950, background: "#eff6ff", border: "2px solid #bfdbfe", borderRadius: 18, padding: "18px 20px", color: "#0f172a", lineHeight: 1.25 };
+const statementInfoLabelStyle: CSSProperties = { color: "#0b2a6f", fontWeight: 1000 };
+const statementInfoValueStyle: CSSProperties = { color: "#0f172a", fontWeight: 950 };
+const statementAdvanceSummaryStyle: CSSProperties = { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, padding: "18px 22px", background: "#fff7ed", color: "#c2410c", borderTop: "2px solid #fed7aa", fontSize: 24, fontWeight: 1000 };
 const statementInnerStyle: CSSProperties = { border: "1px solid #dbeafe", borderRadius: 16, overflow: "hidden", background: "#ffffff" };
 const allShopAddressBoxStyle: CSSProperties = { marginTop: 12, border: "1px solid #dbeafe", borderRadius: 16, padding: 12, background: "#f8fbff" };
 const allShopAddressGridStyle: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(175px, 1fr))", gap: 10 };
@@ -2335,24 +2153,6 @@ const rentalGrandTotalLabelStyle: CSSProperties = { padding: "14px 10px", textAl
 const rentalGrandTotalAmountStyle: CSSProperties = { padding: "14px 10px", textAlign: "right", background: "#eaf3ff", borderTop: "1px solid #bfdbfe", color: "#0057ff", fontSize: 22, fontWeight: 950 };
 const returnedBadgeStyle: CSSProperties = { display: "inline-block", padding: "5px 10px", borderRadius: 999, background: "#fee2e2", color: "#b91c1c", fontSize: 14, fontWeight: 950 };
 const currentBadgeStyle: CSSProperties = { display: "inline-block", padding: "5px 10px", borderRadius: 999, background: "#dbeafe", color: "#0057ff", fontSize: 14, fontWeight: 950 };
-
-const allPaymentsReportStyle: CSSProperties = { marginTop: 18, border: "4px solid #7c3aed", borderRadius: 24, background: "#ffffff", overflow: "hidden", boxShadow: "0 18px 42px rgba(109, 40, 217, 0.24)" };
-const allPaymentsHeaderStyle: CSSProperties = { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14, flexWrap: "wrap", padding: "18px 20px", background: "linear-gradient(135deg, #6d28d9, #4f46e5)", color: "white" };
-const allPaymentsTitleStyle: CSSProperties = { fontSize: 28, fontWeight: 1000, lineHeight: 1.1, textTransform: "uppercase", letterSpacing: 0.3 };
-const allPaymentsSubtitleStyle: CSSProperties = { marginTop: 4, fontSize: 14, fontWeight: 850, opacity: 0.9 };
-const allPaymentsActionStyle: CSSProperties = { display: "flex", gap: 10, flexWrap: "wrap" };
-const allPaymentsButtonStyle: CSSProperties = { fontWeight: 1000, padding: "10px 14px" };
-const allPaymentsFilterStyle: CSSProperties = { display: "grid", gridTemplateColumns: "150px 150px 150px minmax(240px, 1fr)", gap: 10, padding: 14, background: "#faf5ff", borderBottom: "1px solid #ddd6fe" };
-const allPaymentsControlStyle: CSSProperties = { width: "100%", minHeight: 42, borderRadius: 12, border: "1px solid #c4b5fd", padding: "9px 12px", fontSize: 15, fontWeight: 900, color: "#2e1065", background: "white" };
-const allPaymentsSummaryStyle: CSSProperties = { display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", margin: "12px 14px 0", padding: "12px 14px", borderRadius: 14, background: "#f3e8ff", color: "#581c87", fontSize: 18, fontWeight: 950, border: "1px solid #d8b4fe" };
-const allPaymentsThStyle: CSSProperties = { background: "#581c87", color: "white", padding: "10px 9px", fontSize: 14, fontWeight: 1000, textAlign: "left", whiteSpace: "nowrap" };
-const allPaymentsThRightStyle: CSSProperties = { ...allPaymentsThStyle, textAlign: "right" };
-const allPaymentsTdStyle: CSSProperties = { padding: "10px 9px", borderBottom: "1px solid #ede9fe", fontSize: 14, fontWeight: 850, color: "#1f2937", whiteSpace: "nowrap" };
-const allPaymentsTdStrongStyle: CSSProperties = { ...allPaymentsTdStyle, fontWeight: 1000, color: "#3b0764" };
-const allPaymentsTdAmountStyle: CSSProperties = { ...allPaymentsTdStyle, textAlign: "right", fontWeight: 1000, color: "#166534" };
-const allPaymentsTotalLabelStyle: CSSProperties = { padding: "12px 9px", background: "#4c1d95", color: "white", textAlign: "right", fontSize: 16, fontWeight: 1000 };
-const allPaymentsTotalAmountStyle: CSSProperties = { padding: "12px 9px", background: "#4c1d95", color: "white", textAlign: "right", fontSize: 18, fontWeight: 1000 };
-const allPaymentsTotalBlankStyle: CSSProperties = { padding: "12px 9px", background: "#4c1d95" };
 
 const overlayStyle: CSSProperties = { position: "fixed", inset: 0, background: "rgba(15, 23, 42, 0.65)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 };
 const popupStyle: CSSProperties = { width: "min(560px, 100%)", background: "white", borderRadius: 22, padding: 24, boxShadow: "0 25px 80px rgba(0,0,0,0.35)", border: "1px solid #dbeafe" };

@@ -215,6 +215,7 @@ export default function RentalsPage() {
   const [businessDate, setBusinessDate] = useState(today);
   const [liveBranchFilter, setLiveBranchFilter] = useState("All Shops");
   const [liveSearchText, setLiveSearchText] = useState("");
+  const [returnedBranchFilter, setReturnedBranchFilter] = useState("All Shops");
 
   const [newCustomer, setNewCustomer] = useState<any>({ ...emptyNewCustomer });
   const [showAddCustomer, setShowAddCustomer] = useState(false);
@@ -715,6 +716,8 @@ export default function RentalsPage() {
   }
 
   const activeRentals = rentals.filter((r) => r.status === "Active");
+  const returnedRentals = rentals.filter((r) => r.status === "Returned");
+
   const filteredActiveRentals = activeRentals
     .filter((r) => liveBranchFilter === "All Shops" || r.shop === liveBranchFilter)
     .filter((r) => {
@@ -725,6 +728,11 @@ export default function RentalsPage() {
         .toLowerCase()
         .includes(q);
     });
+
+  const filteredReturnedRentals =
+    returnedBranchFilter === "All Shops"
+      ? returnedRentals
+      : returnedRentals.filter((r) => r.shop === returnedBranchFilter);
 
   const entryRows = rows.filter((r) => r.customer_id && r.tool_id);
   const totalRows = entryRows.length;
@@ -760,9 +768,8 @@ export default function RentalsPage() {
   const dayTotalBusiness = entryBusinessForSelectedDate + liveRentalToday;
 
   return (
-    <main className="rentals-premium-page">
-      <style>{premiumRentalStyles}</style>
-      <h1 className="rentals-premium-title">Rentals</h1>
+    <main>
+      <h1>Rentals</h1>
 
       {shopPopupOpen && (
         <div
@@ -1032,6 +1039,158 @@ export default function RentalsPage() {
           </div>
         </div>
       )}
+
+      <div className="panel">
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: 14,
+            gap: 14,
+            flexWrap: "wrap",
+          }}
+        >
+          <h2 style={{ margin: 0 }}>Live Rentals</h2>
+
+          <input
+            value={liveSearchText}
+            onChange={(e) => setLiveSearchText(e.target.value)}
+            placeholder="Search item, name, mobile..."
+            style={liveSearchStyle}
+          />
+        </div>
+
+        <div style={shopTabsStyle}>
+          {["All Shops", ...branches].map((shop) => {
+            const count =
+              shop === "All Shops"
+                ? activeRentals.length
+                : activeRentals.filter((r) => r.shop === shop).length;
+
+            return (
+              <button
+                key={shop}
+                type="button"
+                onClick={() => setLiveBranchFilter(shop)}
+                style={{
+                  ...shopTabStyle,
+                  ...(liveBranchFilter === shop ? activeShopTabStyle : {}),
+                }}
+              >
+                <span>{shop}</span>
+                <strong>{count}</strong>
+              </button>
+            );
+          })}
+        </div>
+
+        <table style={compactTableStyle}>
+          <colgroup>
+            <col style={{ width: "21%" }} />
+            <col style={{ width: "25%" }} />
+            <col style={{ width: "5%" }} />
+            <col style={{ width: "8%" }} />
+            <col style={{ width: "8%" }} />
+            <col style={{ width: "5%" }} />
+            <col style={{ width: "9%" }} />
+            <col style={{ width: "8%" }} />
+            <col style={{ width: "7%" }} />
+            <col style={{ width: "10%" }} />
+            <col style={{ width: "7%" }} />
+          </colgroup>
+          <thead>
+            <tr>
+              <th style={compactHeaderStyle}>Customer</th>
+              <th style={compactHeaderStyle}>Tool</th>
+              <th style={compactHeaderStyle}>Qty</th>
+              <th style={compactHeaderStyle}>Daily Rate</th>
+              <th style={compactHeaderStyle}>Start</th>
+              <th style={compactHeaderStyle}>Days</th>
+              <th style={compactHeaderStyle}>Current Total</th>
+              <th style={compactHeaderStyle}>Shop</th>
+              <th style={compactHeaderStyle}>Status</th>
+              <th style={compactHeaderStyle}>Return</th>
+              <th style={compactHeaderStyle}>Actions</th>
+            </tr>
+          </thead>
+
+          <tbody>
+            {filteredActiveRentals.map((r) => (
+              <tr key={r.id}>
+                <td style={compactCellStyle}>{customerName(r.customer_id)}</td>
+                <td style={compactCellStyle}>{toolName(r.tool_id)}</td>
+                <td style={compactCenterCellStyle}>{r.qty}</td>
+                <td style={compactCenterCellStyle}>₹{r.daily_rate}</td>
+                <td style={compactCenterCellStyle}>{r.start_date}</td>
+                <td style={compactCenterCellStyle}>
+                  {calcDays(
+                    r.start_date,
+                    r.end_date,
+                    r.status,
+                    r.avoid_sundays !== false,
+                  )}
+                </td>
+                <td style={compactCenterCellStyle}>₹{calcTotal(r)}</td>
+                <td style={compactCenterCellStyle}>{r.shop || "-"}</td>
+                <td style={compactCenterCellStyle}>{r.status}</td>
+
+                <td style={compactCenterCellStyle}>
+                  <select
+                    style={compactSelectStyle}
+                    value={returnMode[r.id] || ""}
+                    onChange={(e) => handleReturn(r.id, e.target.value)}
+                  >
+                    <option value="">Return</option>
+                    <option value="Same Day">Same Day</option>
+                    <option value="Pick Date">Pick a Date</option>
+                  </select>
+
+                  {returnMode[r.id] === "Pick Date" && (
+                    <div style={{ marginTop: 6 }}>
+                      <input
+                        type="date"
+                        value={returnDates[r.id] || today}
+                        onChange={(e) =>
+                          setReturnDates({
+                            ...returnDates,
+                            [r.id]: e.target.value,
+                          })
+                        }
+                      />
+
+                      <button
+                        className="btn-green"
+                        style={{ marginTop: 6 }}
+                        onClick={() => handleReturnWithDate(r.id)}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  )}
+                </td>
+
+                <td style={compactCenterCellStyle}>
+                  <button
+                    className="btn-red"
+                    onClick={() => handleDelete(r.id)}
+                  >
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+
+            {filteredActiveRentals.length === 0 && (
+              <tr>
+                <td colSpan={11} style={compactCenterCellStyle}>
+                  No live rentals
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
 
       <div className="panel">
         <h2 style={{ marginTop: 0, marginBottom: 14 }}>New Rentals</h2>
@@ -1727,7 +1886,6 @@ export default function RentalsPage() {
         </div>
       </div>
 
-
       <div className="panel">
         <div
           style={{
@@ -1735,82 +1893,48 @@ export default function RentalsPage() {
             justifyContent: "space-between",
             alignItems: "center",
             marginBottom: 14,
-            gap: 14,
-            flexWrap: "wrap",
           }}
         >
-          <h2 style={{ margin: 0 }}>Live Rentals</h2>
+          <h2 style={{ margin: 0 }}>Returned Rentals</h2>
 
-          <input
-            value={liveSearchText}
-            onChange={(e) => setLiveSearchText(e.target.value)}
-            placeholder="Search item, name, mobile..."
-            style={liveSearchStyle}
-          />
+          <select
+            value={returnedBranchFilter}
+            onChange={(e) => setReturnedBranchFilter(e.target.value)}
+            style={{ width: 220 }}
+          >
+            <option>All Shops</option>
+            {branches.map((b) => (
+              <option key={b}>{b}</option>
+            ))}
+          </select>
         </div>
 
-        <div style={shopTabsStyle}>
-          {["All Shops", ...branches].map((shop) => {
-            const count =
-              shop === "All Shops"
-                ? activeRentals.length
-                : activeRentals.filter((r) => r.shop === shop).length;
-
-            return (
-              <button
-                key={shop}
-                type="button"
-                onClick={() => setLiveBranchFilter(shop)}
-                style={{
-                  ...shopTabStyle,
-                  ...(liveBranchFilter === shop ? activeShopTabStyle : {}),
-                }}
-              >
-                <span>{shop}</span>
-                <strong>{count}</strong>
-              </button>
-            );
-          })}
-        </div>
-
-        <table style={compactTableStyle}>
-          <colgroup>
-            <col style={{ width: "21%" }} />
-            <col style={{ width: "25%" }} />
-            <col style={{ width: "5%" }} />
-            <col style={{ width: "8%" }} />
-            <col style={{ width: "8%" }} />
-            <col style={{ width: "5%" }} />
-            <col style={{ width: "9%" }} />
-            <col style={{ width: "8%" }} />
-            <col style={{ width: "7%" }} />
-            <col style={{ width: "10%" }} />
-            <col style={{ width: "7%" }} />
-          </colgroup>
+        <table>
           <thead>
             <tr>
-              <th style={compactHeaderStyle}>Customer</th>
+              <th>Customer</th>
               <th style={compactHeaderStyle}>Tool</th>
               <th style={compactHeaderStyle}>Qty</th>
               <th style={compactHeaderStyle}>Daily Rate</th>
               <th style={compactHeaderStyle}>Start</th>
+              <th style={compactHeaderStyle}>End</th>
               <th style={compactHeaderStyle}>Days</th>
-              <th style={compactHeaderStyle}>Current Total</th>
+              <th style={compactHeaderStyle}>Total</th>
               <th style={compactHeaderStyle}>Shop</th>
+              <th style={compactHeaderStyle}>Avoid Sundays</th>
               <th style={compactHeaderStyle}>Status</th>
-              <th style={compactHeaderStyle}>Return</th>
-              <th style={compactHeaderStyle}>Actions</th>
             </tr>
           </thead>
 
           <tbody>
-            {filteredActiveRentals.map((r) => (
+            {filteredReturnedRentals.map((r) => (
               <tr key={r.id}>
                 <td style={compactCellStyle}>{customerName(r.customer_id)}</td>
                 <td style={compactCellStyle}>{toolName(r.tool_id)}</td>
                 <td style={compactCenterCellStyle}>{r.qty}</td>
                 <td style={compactCenterCellStyle}>₹{r.daily_rate}</td>
                 <td style={compactCenterCellStyle}>{r.start_date}</td>
+                <td style={compactCenterCellStyle}>{r.end_date}</td>
                 <td style={compactCenterCellStyle}>
                   {calcDays(
                     r.start_date,
@@ -1821,217 +1945,23 @@ export default function RentalsPage() {
                 </td>
                 <td style={compactCenterCellStyle}>₹{calcTotal(r)}</td>
                 <td style={compactCenterCellStyle}>{r.shop || "-"}</td>
+                <td style={compactCenterCellStyle}>
+                  {r.avoid_sundays !== false ? "Yes" : "No"}
+                </td>
                 <td style={compactCenterCellStyle}>{r.status}</td>
-
-                <td style={compactCenterCellStyle}>
-                  <select
-                    style={compactSelectStyle}
-                    value={returnMode[r.id] || ""}
-                    onChange={(e) => handleReturn(r.id, e.target.value)}
-                  >
-                    <option value="">Return</option>
-                    <option value="Same Day">Same Day</option>
-                    <option value="Pick Date">Pick a Date</option>
-                  </select>
-
-                  {returnMode[r.id] === "Pick Date" && (
-                    <div style={{ marginTop: 6 }}>
-                      <input
-                        type="date"
-                        value={returnDates[r.id] || today}
-                        onChange={(e) =>
-                          setReturnDates({
-                            ...returnDates,
-                            [r.id]: e.target.value,
-                          })
-                        }
-                      />
-
-                      <button
-                        className="btn-green"
-                        style={{ marginTop: 6 }}
-                        onClick={() => handleReturnWithDate(r.id)}
-                      >
-                        Save
-                      </button>
-                    </div>
-                  )}
-                </td>
-
-                <td style={compactCenterCellStyle}>
-                  <button
-                    className="btn-red"
-                    onClick={() => handleDelete(r.id)}
-                  >
-                    Delete
-                  </button>
-                </td>
               </tr>
             ))}
 
-            {filteredActiveRentals.length === 0 && (
+            {filteredReturnedRentals.length === 0 && (
               <tr>
                 <td colSpan={11} style={compactCenterCellStyle}>
-                  No live rentals
+                  No returned rentals
                 </td>
               </tr>
             )}
           </tbody>
         </table>
       </div>
-
     </main>
   );
 }
-
-const premiumRentalStyles = `
-  .rentals-premium-page {
-    background: linear-gradient(180deg, #f4f8ff 0%, #eef4ff 38%, #f8fafc 100%);
-    padding: 12px !important;
-  }
-
-  .rentals-premium-title {
-    margin: 0 0 10px !important;
-    padding: 14px 18px !important;
-    border-radius: 18px !important;
-    color: #ffffff !important;
-    font-size: 30px !important;
-    font-weight: 1000 !important;
-    letter-spacing: -0.6px !important;
-    background: linear-gradient(135deg, #0f2a5f 0%, #0057ff 55%, #38bdf8 100%) !important;
-    box-shadow: 0 14px 34px rgba(0, 87, 255, 0.18) !important;
-  }
-
-  .rentals-premium-page .panel {
-    background: rgba(255, 255, 255, 0.96) !important;
-    border: 1px solid #c7d8ff !important;
-    border-radius: 18px !important;
-    box-shadow: 0 16px 38px rgba(15, 42, 95, 0.10) !important;
-    padding: 14px !important;
-    margin-bottom: 12px !important;
-    overflow: hidden !important;
-  }
-
-  .rentals-premium-page .panel h2 {
-    color: #071735 !important;
-    font-weight: 1000 !important;
-    letter-spacing: -0.3px !important;
-    font-size: 23px !important;
-  }
-
-  .rentals-premium-page table {
-    border-collapse: separate !important;
-    border-spacing: 0 !important;
-    width: 100% !important;
-    background: #ffffff !important;
-    border: 1px solid #c7d8ff !important;
-    border-radius: 14px !important;
-    overflow: hidden !important;
-    box-shadow: 0 10px 24px rgba(15, 42, 95, 0.06) !important;
-  }
-
-  .rentals-premium-page thead th {
-    background: linear-gradient(135deg, #0f2a5f, #0057ff) !important;
-    color: #ffffff !important;
-    border: 0 !important;
-    padding: 8px 7px !important;
-    font-size: 12.5px !important;
-    line-height: 1.05 !important;
-    text-transform: uppercase !important;
-    letter-spacing: 0.25px !important;
-  }
-
-  .rentals-premium-page tbody td {
-    border-bottom: 1px solid #e3ecff !important;
-    border-right: 1px solid #edf3ff !important;
-    padding: 6px 7px !important;
-    background: #ffffff !important;
-    color: #0f172a !important;
-  }
-
-  .rentals-premium-page tbody tr:nth-child(even) td {
-    background: #f8fbff !important;
-  }
-
-  .rentals-premium-page tbody tr:hover td {
-    background: #eef6ff !important;
-  }
-
-  .rentals-premium-page input,
-  .rentals-premium-page select,
-  .rentals-premium-page textarea {
-    border: 1px solid #cbdaf8 !important;
-    background: #ffffff !important;
-    color: #071735 !important;
-    border-radius: 10px !important;
-    min-height: 34px !important;
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.85) !important;
-  }
-
-  .rentals-premium-page input:focus,
-  .rentals-premium-page select:focus,
-  .rentals-premium-page textarea:focus {
-    outline: none !important;
-    border-color: #0057ff !important;
-    box-shadow: 0 0 0 3px rgba(0, 87, 255, 0.14) !important;
-  }
-
-  .rentals-premium-page .btn-blue,
-  .rentals-premium-page .btn-green,
-  .rentals-premium-page .btn-gray,
-  .rentals-premium-page .btn-red {
-    border-radius: 999px !important;
-    min-height: 36px !important;
-    padding: 8px 15px !important;
-    font-weight: 1000 !important;
-    box-shadow: 0 8px 18px rgba(15, 42, 95, 0.12) !important;
-  }
-
-  .rentals-premium-page .btn-blue {
-    background: linear-gradient(135deg, #0057ff, #0f2a5f) !important;
-    color: #ffffff !important;
-    border: 1px solid #0057ff !important;
-  }
-
-  .rentals-premium-page .btn-green {
-    background: linear-gradient(135deg, #16a34a, #166534) !important;
-    color: #ffffff !important;
-    border: 1px solid #16a34a !important;
-  }
-
-  .rentals-premium-page .btn-red {
-    background: linear-gradient(135deg, #ef4444, #991b1b) !important;
-    color: #ffffff !important;
-    border: 1px solid #ef4444 !important;
-  }
-
-  .rentals-premium-page .btn-gray {
-    background: #ffffff !important;
-    color: #0f2a5f !important;
-    border: 1px solid #c7d8ff !important;
-  }
-
-  .rentals-premium-page button:hover {
-    transform: translateY(-1px) !important;
-  }
-
-  .rentals-premium-page button {
-    transition: transform 0.12s ease, box-shadow 0.12s ease !important;
-  }
-
-  @media (max-width: 900px) {
-    .rentals-premium-page {
-      padding: 8px !important;
-    }
-
-    .rentals-premium-title {
-      font-size: 24px !important;
-      padding: 12px 14px !important;
-    }
-
-    .rentals-premium-page .panel {
-      padding: 10px !important;
-      border-radius: 14px !important;
-    }
-  }
-`;

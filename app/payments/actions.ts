@@ -4,6 +4,102 @@ import { supabase } from "@/lib/supabase";
 import { revalidatePath } from "next/cache";
 import { buildCustomerBalanceRows } from "../calculations";
 
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function normalize(value: any) {
+  return String(value || "").trim();
+}
+
+function isReturnedRental(rental: any) {
+  const status = String(rental.status || "").trim().toLowerCase();
+
+  return (
+    status === "returned" ||
+    status === "closed" ||
+    status === "completed" ||
+    Boolean(rental.end_date || rental.return_date || rental.closed_date)
+  );
+}
+
+function countRentalDays(start: any, end: any, avoidSundays: any = true) {
+  if (!start) return 1;
+
+  const startDate = new Date(String(start).slice(0, 10));
+  const endDate = new Date(String(end || todayISO()).slice(0, 10));
+
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+    return 1;
+  }
+
+  if (endDate < startDate) return 1;
+
+  const skipSunday =
+    avoidSundays === false || avoidSundays === "false" ? false : true;
+
+  let days = 0;
+  const d = new Date(startDate);
+
+  while (d <= endDate) {
+    const isSunday = d.getDay() === 0;
+    if (!(skipSunday && isSunday)) days++;
+    d.setDate(d.getDate() + 1);
+  }
+
+  return Math.max(days, 1);
+}
+
+function getRentalRate(rental: any, tool: any = {}) {
+  return Number(
+    rental.daily_rate ||
+      rental.unit_price ||
+      rental.daily_rent ||
+      rental.rent ||
+      rental.rate ||
+      tool.daily_rent ||
+      tool.daily_rate ||
+      tool.rent ||
+      tool.rate ||
+      0
+  );
+}
+
+function getRentalTotalAmount(rental: any, tool: any = {}) {
+  const savedTotal = Number(
+    rental.total_amount ||
+      rental.total ||
+      rental.amount ||
+      rental.grand_total ||
+      rental.rent_total ||
+      0
+  );
+
+  if (savedTotal > 0) return savedTotal;
+
+  const qty = Number(rental.qty || rental.quantity || 1);
+  const rate = getRentalRate(rental, tool);
+  const discount = Number(rental.discount || 0);
+  const startDate = rental.start_date || rental.date || rental.rental_date;
+  const endDate =
+    rental.end_date || rental.return_date || rental.closed_date || todayISO();
+
+  const days = countRentalDays(startDate, endDate, rental.avoid_sundays);
+
+  return Math.max(0, qty * rate * days - discount);
+}
+
+function findCustomerForRental(rental: any, customersById: any, customersByMobile: any) {
+  const customerById = customersById[normalize(rental.customer_id)];
+  if (customerById) return customerById;
+
+  return customersByMobile[normalize(rental.mobile || rental.customer_mobile)] || {};
+}
+
+function findToolForRental(rental: any, toolsById: any) {
+  return toolsById[normalize(rental.tool_id || rental.toolId)] || {};
+}
+
 export async function getPaymentsData() {
   const [
     { data: customers, error: customerError },
@@ -28,10 +124,18 @@ export async function getPaymentsData() {
   const arrearsByCustomer: any = {};
 
   (arrears || []).forEach((a: any) => {
-    const key = String(a.customer_id || a.mobile || "").trim();
-    if (!key) return;
-    arrearsByCustomer[key] =
-      Number(arrearsByCustomer[key] || 0) + Number(a.arrears_amount || 0);
+    const customerKey = normalize(a.customer_id);
+    const mobileKey = normalize(a.mobile);
+
+    if (customerKey) {
+      arrearsByCustomer[customerKey] =
+        Number(arrearsByCustomer[customerKey] || 0) + Number(a.arrears_amount || 0);
+    }
+
+    if (mobileKey) {
+      arrearsByCustomer[mobileKey] =
+        Number(arrearsByCustomer[mobileKey] || 0) + Number(a.arrears_amount || 0);
+    }
   });
 
   const rows = buildCustomerBalanceRows(
@@ -40,11 +144,12 @@ export async function getPaymentsData() {
     payments || []
   )
     .map((row: any) => {
-      const key1 = String(row.id || row.customer_id || "").trim();
-      const key2 = String(row.mobile || "").trim();
+      const customerKey = normalize(row.id || row.customer_id);
+      const mobileKey = normalize(row.mobile);
 
       const movedToArrears =
-        Number(arrearsByCustomer[key1] || 0) + Number(arrearsByCustomer[key2] || 0);
+        Number(arrearsByCustomer[customerKey] || 0) +
+        Number(arrearsByCustomer[mobileKey] || 0);
 
       return {
         ...row,
@@ -55,62 +160,118 @@ export async function getPaymentsData() {
     .filter((row: any) => Number(row.balance || 0) > 0);
 
   const customersById: any = {};
+  const customersByMobile: any = {};
+
   (customers || []).forEach((c: any) => {
-    customersById[String(c.id)] = c;
+    const id = normalize(c.id);
+    const mobile = normalize(c.mobile || c.customer_mobile);
+
+    if (id) customersById[id] = c;
+    if (mobile) customersByMobile[mobile] = c;
   });
 
   const toolsById: any = {};
+
   (tools || []).forEach((t: any) => {
-    toolsById[String(t.id)] = t;
+    const id = normalize(t.id);
+    if (id) toolsById[id] = t;
   });
 
   const paymentTotalsByRental: any = {};
+  const paymentTotalsByCustomer: any = {};
 
   (payments || []).forEach((p: any) => {
-    const rentalId = String(p.rental_id || "").trim();
-    if (!rentalId) return;
+    const rentalId = normalize(p.rental_id);
+    const customerId = normalize(p.customer_id);
+    const mobile = normalize(p.mobile || p.customer_mobile);
+    const paidAmount = Number(p.amount || 0);
+    const discountAmount = Number(p.discount || 0);
 
-    if (!paymentTotalsByRental[rentalId]) {
-      paymentTotalsByRental[rentalId] = { paid: 0, discount: 0 };
+    if (rentalId) {
+      if (!paymentTotalsByRental[rentalId]) {
+        paymentTotalsByRental[rentalId] = { paid: 0, discount: 0 };
+      }
+
+      paymentTotalsByRental[rentalId].paid += paidAmount;
+      paymentTotalsByRental[rentalId].discount += discountAmount;
     }
 
-    paymentTotalsByRental[rentalId].paid += Number(p.amount || 0);
-    paymentTotalsByRental[rentalId].discount += Number(p.discount || 0);
+    [customerId, mobile].forEach((key) => {
+      if (!key) return;
+
+      if (!paymentTotalsByCustomer[key]) {
+        paymentTotalsByCustomer[key] = { paid: 0, discount: 0 };
+      }
+
+      paymentTotalsByCustomer[key].paid += paidAmount;
+      paymentTotalsByCustomer[key].discount += discountAmount;
+    });
   });
 
   const pendingReturnedRentals = (rentals || [])
-    .filter((r: any) => String(r.status || "").toLowerCase() === "returned")
+    .filter((r: any) => isReturnedRental(r))
     .map((r: any) => {
-      const rentalId = String(r.id || "");
-      const customer = customersById[String(r.customer_id)] || {};
-      const tool = toolsById[String(r.tool_id)] || {};
-      const totals = paymentTotalsByRental[rentalId] || { paid: 0, discount: 0 };
-      const amount = Number(r.total_amount || 0);
-      const paid = Number(totals.paid || 0);
-      const discount = Number(totals.discount || 0);
+      const rentalId = normalize(r.id || r.rental_id);
+      const customer = findCustomerForRental(r, customersById, customersByMobile);
+      const tool = findToolForRental(r, toolsById);
+
+      const customerId = normalize(r.customer_id || customer.id);
+      const mobile = normalize(customer.mobile || r.mobile || r.customer_mobile);
+      const rentalTotals = paymentTotalsByRental[rentalId] || { paid: 0, discount: 0 };
+
+      /*
+        Important:
+        If payments were saved without rental_id, they should not hide every
+        returned rental for that customer. So rental_id payments are used first.
+      */
+      const amount = getRentalTotalAmount(r, tool);
+      const paid = Number(rentalTotals.paid || 0);
+      const discount = Number(rentalTotals.discount || 0);
       const balance = Math.max(0, amount - paid - discount);
 
       return {
-        rental_id: r.id,
-        customer_id: r.customer_id,
-        customer_name: customer.customer_name || customer.name || r.customer_name || "",
-        mobile: customer.mobile || r.mobile || "",
-        tool_id: r.tool_id,
-        tool_name: tool.tool_name || r.tool_name || "",
-        shop: r.shop || customer.shop || "",
-        start_date: r.start_date || "",
-        end_date: r.end_date || "",
-        return_date: r.end_date || "",
+        rental_id: r.id || r.rental_id || "",
+        customer_id: customerId || "",
+        customer_name:
+          customer.customer_name ||
+          customer.name ||
+          r.customer_name ||
+          r.name ||
+          "",
+        mobile,
+        tool_id: r.tool_id || "",
+        tool_name:
+          tool.tool_name ||
+          tool.name ||
+          r.tool_name ||
+          r.tool ||
+          r.item_name ||
+          "",
+        shop:
+          r.shop ||
+          r.branch ||
+          customer.shop ||
+          customer.branch ||
+          "",
+        start_date: r.start_date || r.date || r.rental_date || "",
+        end_date: r.end_date || r.return_date || r.closed_date || "",
+        return_date: r.return_date || r.end_date || r.closed_date || r.date || "",
         amount,
         paid,
         discount,
         balance,
         payment_status:
-          balance <= 0 ? "Paid" : paid > 0 || discount > 0 ? "Partially Paid" : "Pending",
+          balance <= 0
+            ? "Paid"
+            : paid > 0 || discount > 0
+              ? "Partially Paid"
+              : "Pending",
       };
     })
     .filter((r: any) => Number(r.balance || 0) > 0)
-    .sort((a: any, b: any) => String(b.return_date || "").localeCompare(String(a.return_date || "")));
+    .sort((a: any, b: any) =>
+      String(b.return_date || "").localeCompare(String(a.return_date || ""))
+    );
 
   return { success: true, data: rows, pendingReturnedRentals };
 }
@@ -150,6 +311,7 @@ export async function moveCustomerBalanceToArrears(input: {
   if (error) return { success: false, message: error.message };
 
   revalidatePath("/payments");
+  revalidatePath("/reports");
 
   return { success: true, message: "Balance moved to arrears" };
 }

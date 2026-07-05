@@ -41,47 +41,48 @@ export async function saveCustomer(row: any) {
     };
   }
 
-  const { error } = await supabase.from("customers").insert({
-    customer_name: row.customer_name.trim(),
-    mobile: row.mobile.trim(),
-    address: row.address || "",
-    shop: row.shop || "",
-    notes: row.notes || "",
-  });
+  const mobile = row.mobile.trim();
 
-  if (error) {
-    return {
-      success: false,
-      message: error.message,
-    };
-  }
-
-  revalidatePath("/customers");
-
-  return {
-    success: true,
-    message: "Customer saved successfully",
-  };
-}
-
-export async function updateCustomer(id: number, row: any) {
-  if (!id) {
-    return {
-      success: false,
-      message: "Customer ID missing",
-    };
-  }
-
-  const { error } = await supabase
+  // Check whether customer already exists
+  const { data: existing, error: findError } = await supabase
     .from("customers")
-    .update({
-      customer_name: row.customer_name || "",
-      mobile: row.mobile || "",
+    .select("id")
+    .eq("mobile", mobile)
+    .maybeSingle();
+
+  if (findError) {
+    return {
+      success: false,
+      message: findError.message,
+    };
+  }
+
+  let error;
+
+  if (existing) {
+    // Update existing customer
+    ({ error } = await supabase
+      .from("customers")
+      .update({
+        customer_name: row.customer_name || "",
+        mobile: row.mobile || "",
+        occupation: row.occupation || "",
+        address: row.address || "",
+        shop: row.shop || "",
+        notes: row.notes || "",
+      })
+      .eq("id", existing.id));
+  } else {
+    // Insert new customer
+    ({ error } = await supabase.from("customers").insert({
+      customer_name: row.customer_name.trim(),
+      mobile,
+      occupation: row.occupation || "",
       address: row.address || "",
       shop: row.shop || "",
       notes: row.notes || "",
-    })
-    .eq("id", id);
+    }));
+  }
 
   if (error) {
     return {
@@ -91,34 +92,12 @@ export async function updateCustomer(id: number, row: any) {
   }
 
   revalidatePath("/customers");
+  revalidatePath("/rentals");
 
   return {
     success: true,
-    message: "Customer updated successfully",
-  };
-}
-
-export async function deleteCustomer(id: number) {
-  if (!id) {
-    return {
-      success: false,
-      message: "Customer ID missing",
-    };
-  }
-
-  const { error } = await supabase.from("customers").delete().eq("id", id);
-
-  if (error) {
-    return {
-      success: false,
-      message: error.message,
-    };
-  }
-
-  revalidatePath("/customers");
-
-  return {
-    success: true,
-    message: "Customer deleted successfully",
+    message: existing
+      ? "Customer updated successfully"
+      : "Customer saved successfully",
   };
 }

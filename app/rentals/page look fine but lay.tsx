@@ -118,88 +118,6 @@ const activeShopTabStyle: CSSProperties = {
   boxShadow: "0 10px 22px rgba(0, 87, 255, 0.22)",
 };
 
-const confirmOverlayStyle: CSSProperties = {
-  position: "fixed",
-  inset: 0,
-  background: "rgba(7, 23, 53, 0.58)",
-  zIndex: 100000,
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  padding: 24,
-};
-
-const confirmCardStyle: CSSProperties = {
-  width: "min(520px, 94vw)",
-  background: "#ffffff",
-  borderRadius: 22,
-  overflow: "hidden",
-  boxShadow: "0 28px 80px rgba(15, 23, 42, 0.42)",
-  border: "1px solid #e2e8f0",
-};
-
-const confirmBodyStyle: CSSProperties = {
-  padding: "24px 26px 26px",
-};
-
-const confirmGridStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "1fr 1fr",
-  gap: 12,
-  marginTop: 18,
-};
-
-const confirmInfoStyle: CSSProperties = {
-  background: "#f8fafc",
-  border: "1px solid #e2e8f0",
-  borderRadius: 14,
-  padding: "12px 14px",
-};
-
-const confirmLabelStyle: CSSProperties = {
-  fontSize: 12,
-  fontWeight: 950,
-  color: "#64748b",
-  textTransform: "uppercase",
-  marginBottom: 4,
-};
-
-const confirmValueStyle: CSSProperties = {
-  fontSize: 16,
-  fontWeight: 950,
-  color: "#0f172a",
-};
-
-const confirmButtonRowStyle: CSSProperties = {
-  display: "flex",
-  justifyContent: "flex-end",
-  gap: 12,
-  marginTop: 24,
-  flexWrap: "wrap",
-};
-
-const confirmCancelButtonStyle: CSSProperties = {
-  border: "1px solid #cbd5e1",
-  background: "#ffffff",
-  color: "#0f172a",
-  borderRadius: 12,
-  padding: "13px 20px",
-  fontSize: 16,
-  fontWeight: 950,
-  cursor: "pointer",
-};
-
-const confirmActionButtonStyle: CSSProperties = {
-  border: 0,
-  color: "#ffffff",
-  borderRadius: 12,
-  padding: "13px 22px",
-  fontSize: 16,
-  fontWeight: 950,
-  cursor: "pointer",
-  boxShadow: "0 10px 22px rgba(15, 23, 42, 0.18)",
-};
-
 export default function RentalsPage() {
   const { setAppMessage } = useAppMessage();
 
@@ -215,6 +133,7 @@ export default function RentalsPage() {
   const [businessDate, setBusinessDate] = useState(today);
   const [liveBranchFilter, setLiveBranchFilter] = useState("All Shops");
   const [liveSearchText, setLiveSearchText] = useState("");
+  const [returnedBranchFilter, setReturnedBranchFilter] = useState("All Shops");
 
   const [newCustomer, setNewCustomer] = useState<any>({ ...emptyNewCustomer });
   const [showAddCustomer, setShowAddCustomer] = useState(false);
@@ -232,7 +151,6 @@ export default function RentalsPage() {
   const [mobileSuggestions, setMobileSuggestions] = useState<any>({});
   const [shopPopupOpen, setShopPopupOpen] = useState(false);
   const [popupShop, setPopupShop] = useState("");
-  const [rentalConfirm, setRentalConfirm] = useState<any>(null);
 
   function showError(message: string) {
     setAppMessage({
@@ -462,91 +380,6 @@ export default function RentalsPage() {
     return t ? t.tool_name : "";
   }
 
-
-  function rentalCustomerDetails(row: any) {
-    const customer = customers.find((x) => Number(x.id) === Number(row?.customer_id));
-
-    return {
-      name: customer?.customer_name || row?.customer_name || row?.name || "-",
-      mobile: customer?.mobile || row?.mobile || row?.customer_mobile || "-",
-    };
-  }
-
-  function rentalToolDetails(row: any) {
-    const tool = tools.find((x) => Number(x.id) === Number(row?.tool_id));
-    return tool?.tool_name || row?.tool_name || row?.tool || "-";
-  }
-
-  function openRentalReturnConfirm(id: number, returnDate: string) {
-    const rental = rentals.find((r) => Number(r.id) === Number(id));
-    if (!rental) {
-      showError("Rental not found");
-      return;
-    }
-
-    setRentalConfirm({
-      type: "return",
-      id,
-      returnDate,
-      rental,
-    });
-  }
-
-  function openRentalDeleteConfirm(id: number) {
-    const rental = rentals.find((r) => Number(r.id) === Number(id));
-    if (!rental) {
-      showError("Rental not found");
-      return;
-    }
-
-    setRentalConfirm({
-      type: "delete",
-      id,
-      rental,
-    });
-  }
-
-  function closeRentalConfirm() {
-    if (rentalConfirm?.type === "return") {
-      setReturnMode({ ...returnMode, [rentalConfirm.id]: "" });
-    }
-
-    setRentalConfirm(null);
-  }
-
-  async function confirmRentalAction() {
-    if (!rentalConfirm) return;
-
-    if (rentalConfirm.type === "return") {
-      const res = await returnRental(rentalConfirm.id, rentalConfirm.returnDate);
-
-      if (!res.success) {
-        showError(res.message || "Failed to return rental");
-        return;
-      }
-
-      showSuccess(res.message || "Rental returned successfully");
-      setReturnMode({ ...returnMode, [rentalConfirm.id]: "" });
-      setReturnDates({ ...returnDates, [rentalConfirm.id]: "" });
-      setRentalConfirm(null);
-      await loadData();
-      return;
-    }
-
-    if (rentalConfirm.type === "delete") {
-      const res = await deleteRental(rentalConfirm.id);
-
-      if (!res.success) {
-        showError(res.message || "Failed to delete rental");
-        return;
-      }
-
-      showSuccess(res.message || "Rental deleted successfully");
-      setRentalConfirm(null);
-      await loadData();
-    }
-  }
-
   function calcDays(
     start: string,
     end: string | null,
@@ -696,7 +529,21 @@ export default function RentalsPage() {
       return;
     }
 
-    openRentalReturnConfirm(id, today);
+    const ok = window.confirm("Are you sure you want to return this rental today?");
+    if (!ok) {
+      setReturnMode({ ...returnMode, [id]: "" });
+      return;
+    }
+
+    const res = await returnRental(id, today);
+
+    if (!res.success) {
+      showError(res.message || "Failed to return rental");
+      return;
+    }
+
+    showSuccess(res.message || "Rental returned successfully");
+    await loadData();
   }
 
   async function handleReturnWithDate(id: number) {
@@ -707,14 +554,41 @@ export default function RentalsPage() {
       return;
     }
 
-    openRentalReturnConfirm(id, pickedDate);
+    const ok = window.confirm(`Are you sure you want to return this rental on ${pickedDate}?`);
+    if (!ok) return;
+
+    const res = await returnRental(id, pickedDate);
+
+    if (!res.success) {
+      showError(res.message || "Failed to return rental");
+      return;
+    }
+
+    showSuccess(res.message || "Rental returned successfully");
+
+    setReturnMode({ ...returnMode, [id]: "" });
+    setReturnDates({ ...returnDates, [id]: "" });
+    await loadData();
   }
 
   async function handleDelete(id: number) {
-    openRentalDeleteConfirm(id);
+    const ok = window.confirm("Are you sure you want to delete this rental? This cannot be undone.");
+    if (!ok) return;
+
+    const res = await deleteRental(id);
+
+    if (!res.success) {
+      showError(res.message || "Failed to delete rental");
+      return;
+    }
+
+    showSuccess(res.message || "Rental deleted successfully");
+    await loadData();
   }
 
   const activeRentals = rentals.filter((r) => r.status === "Active");
+  const returnedRentals = rentals.filter((r) => r.status === "Returned");
+
   const filteredActiveRentals = activeRentals
     .filter((r) => liveBranchFilter === "All Shops" || r.shop === liveBranchFilter)
     .filter((r) => {
@@ -725,6 +599,11 @@ export default function RentalsPage() {
         .toLowerCase()
         .includes(q);
     });
+
+  const filteredReturnedRentals =
+    returnedBranchFilter === "All Shops"
+      ? returnedRentals
+      : returnedRentals.filter((r) => r.shop === returnedBranchFilter);
 
   const entryRows = rows.filter((r) => r.customer_id && r.tool_id);
   const totalRows = entryRows.length;
@@ -924,114 +803,157 @@ export default function RentalsPage() {
         </div>
       )}
 
-      {rentalConfirm && (
-        <div style={confirmOverlayStyle}>
-          <div style={confirmCardStyle}>
-            <div
-              style={{
-                background:
-                  rentalConfirm.type === "return"
-                    ? "linear-gradient(135deg, #f97316, #ea580c)"
-                    : "linear-gradient(135deg, #dc2626, #7f1d1d)",
-                color: "white",
-                padding: "24px 26px",
-              }}
-            >
-              <div style={{ fontSize: 34, fontWeight: 1000, lineHeight: 1.1 }}>
-                {rentalConfirm.type === "return" ? "↩ Return Rental" : "🗑 Delete Rental"}
-              </div>
-              <div style={{ marginTop: 8, fontSize: 16, fontWeight: 850, opacity: 0.92 }}>
-                {rentalConfirm.type === "return"
-                  ? "Please confirm before closing this live rental."
-                  : "Please confirm before deleting this rental."}
-              </div>
-            </div>
+      <div className="panel">
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: 14,
+            gap: 14,
+            flexWrap: "wrap",
+          }}
+        >
+          <h2 style={{ margin: 0 }}>Live Rentals</h2>
 
-            <div style={confirmBodyStyle}>
-              {(() => {
-                const customer = rentalCustomerDetails(rentalConfirm.rental);
-                const tool = rentalToolDetails(rentalConfirm.rental);
+          <input
+            value={liveSearchText}
+            onChange={(e) => setLiveSearchText(e.target.value)}
+            placeholder="Search item, name, mobile..."
+            style={liveSearchStyle}
+          />
+        </div>
 
-                return (
-                  <>
-                    <div style={confirmGridStyle}>
-                      <div style={confirmInfoStyle}>
-                        <div style={confirmLabelStyle}>Customer</div>
-                        <div style={confirmValueStyle}>{customer.name}</div>
-                      </div>
+        <div style={shopTabsStyle}>
+          {["All Shops", ...branches].map((shop) => {
+            const count =
+              shop === "All Shops"
+                ? activeRentals.length
+                : activeRentals.filter((r) => r.shop === shop).length;
 
-                      <div style={confirmInfoStyle}>
-                        <div style={confirmLabelStyle}>Mobile</div>
-                        <div style={confirmValueStyle}>{customer.mobile}</div>
-                      </div>
+            return (
+              <button
+                key={shop}
+                type="button"
+                onClick={() => setLiveBranchFilter(shop)}
+                style={{
+                  ...shopTabStyle,
+                  ...(liveBranchFilter === shop ? activeShopTabStyle : {}),
+                }}
+              >
+                <span>{shop}</span>
+                <strong>{count}</strong>
+              </button>
+            );
+          })}
+        </div>
 
-                      <div style={{ ...confirmInfoStyle, gridColumn: "1 / -1" }}>
-                        <div style={confirmLabelStyle}>Tool</div>
-                        <div style={confirmValueStyle}>{tool}</div>
-                      </div>
+        <table style={compactTableStyle}>
+          <colgroup>
+            <col style={{ width: "21%" }} />
+            <col style={{ width: "25%" }} />
+            <col style={{ width: "5%" }} />
+            <col style={{ width: "8%" }} />
+            <col style={{ width: "8%" }} />
+            <col style={{ width: "5%" }} />
+            <col style={{ width: "9%" }} />
+            <col style={{ width: "8%" }} />
+            <col style={{ width: "7%" }} />
+            <col style={{ width: "10%" }} />
+            <col style={{ width: "7%" }} />
+          </colgroup>
+          <thead>
+            <tr>
+              <th style={compactHeaderStyle}>Customer</th>
+              <th style={compactHeaderStyle}>Tool</th>
+              <th style={compactHeaderStyle}>Qty</th>
+              <th style={compactHeaderStyle}>Daily Rate</th>
+              <th style={compactHeaderStyle}>Start</th>
+              <th style={compactHeaderStyle}>Days</th>
+              <th style={compactHeaderStyle}>Current Total</th>
+              <th style={compactHeaderStyle}>Shop</th>
+              <th style={compactHeaderStyle}>Status</th>
+              <th style={compactHeaderStyle}>Return</th>
+              <th style={compactHeaderStyle}>Actions</th>
+            </tr>
+          </thead>
 
-                      <div style={confirmInfoStyle}>
-                        <div style={confirmLabelStyle}>Qty</div>
-                        <div style={confirmValueStyle}>{rentalConfirm.rental?.qty || 1}</div>
-                      </div>
+          <tbody>
+            {filteredActiveRentals.map((r) => (
+              <tr key={r.id}>
+                <td style={compactCellStyle}>{customerName(r.customer_id)}</td>
+                <td style={compactCellStyle}>{toolName(r.tool_id)}</td>
+                <td style={compactCenterCellStyle}>{r.qty}</td>
+                <td style={compactCenterCellStyle}>₹{r.daily_rate}</td>
+                <td style={compactCenterCellStyle}>{r.start_date}</td>
+                <td style={compactCenterCellStyle}>
+                  {calcDays(
+                    r.start_date,
+                    r.end_date,
+                    r.status,
+                    r.avoid_sundays !== false,
+                  )}
+                </td>
+                <td style={compactCenterCellStyle}>₹{calcTotal(r)}</td>
+                <td style={compactCenterCellStyle}>{r.shop || "-"}</td>
+                <td style={compactCenterCellStyle}>{r.status}</td>
 
-                      <div style={confirmInfoStyle}>
-                        <div style={confirmLabelStyle}>Shop</div>
-                        <div style={confirmValueStyle}>{rentalConfirm.rental?.shop || "-"}</div>
-                      </div>
+                <td style={compactCenterCellStyle}>
+                  <select
+                    style={compactSelectStyle}
+                    value={returnMode[r.id] || ""}
+                    onChange={(e) => handleReturn(r.id, e.target.value)}
+                  >
+                    <option value="">Return</option>
+                    <option value="Same Day">Same Day</option>
+                    <option value="Pick Date">Pick a Date</option>
+                  </select>
 
-                      {rentalConfirm.type === "return" && (
-                        <div style={{ ...confirmInfoStyle, gridColumn: "1 / -1" }}>
-                          <div style={confirmLabelStyle}>Return Date</div>
-                          <div style={{ ...confirmValueStyle, color: "#ea580c" }}>
-                            {rentalConfirm.returnDate}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    {rentalConfirm.type === "delete" && (
-                      <div
-                        style={{
-                          marginTop: 18,
-                          background: "#fef2f2",
-                          border: "1px solid #fecaca",
-                          color: "#991b1b",
-                          borderRadius: 14,
-                          padding: "13px 15px",
-                          fontWeight: 950,
-                        }}
-                      >
-                        ⚠ This action cannot be undone.
-                      </div>
-                    )}
-
-                    <div style={confirmButtonRowStyle}>
-                      <button type="button" style={confirmCancelButtonStyle} onClick={closeRentalConfirm}>
-                        Cancel
-                      </button>
+                  {returnMode[r.id] === "Pick Date" && (
+                    <div style={{ marginTop: 6 }}>
+                      <input
+                        type="date"
+                        value={returnDates[r.id] || today}
+                        onChange={(e) =>
+                          setReturnDates({
+                            ...returnDates,
+                            [r.id]: e.target.value,
+                          })
+                        }
+                      />
 
                       <button
-                        type="button"
-                        style={{
-                          ...confirmActionButtonStyle,
-                          background:
-                            rentalConfirm.type === "return"
-                              ? "linear-gradient(135deg, #f97316, #ea580c)"
-                              : "linear-gradient(135deg, #dc2626, #991b1b)",
-                        }}
-                        onClick={confirmRentalAction}
+                        className="btn-green"
+                        style={{ marginTop: 6 }}
+                        onClick={() => handleReturnWithDate(r.id)}
                       >
-                        {rentalConfirm.type === "return" ? "Return Rental" : "Delete Rental"}
+                        Save
                       </button>
                     </div>
-                  </>
-                );
-              })()}
-            </div>
-          </div>
-        </div>
-      )}
+                  )}
+                </td>
+
+                <td style={compactCenterCellStyle}>
+                  <button
+                    className="btn-red"
+                    onClick={() => handleDelete(r.id)}
+                  >
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+
+            {filteredActiveRentals.length === 0 && (
+              <tr>
+                <td colSpan={11} style={compactCenterCellStyle}>
+                  No live rentals
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
 
       <div className="panel">
         <h2 style={{ marginTop: 0, marginBottom: 14 }}>New Rentals</h2>
@@ -1727,7 +1649,6 @@ export default function RentalsPage() {
         </div>
       </div>
 
-
       <div className="panel">
         <div
           style={{
@@ -1735,82 +1656,48 @@ export default function RentalsPage() {
             justifyContent: "space-between",
             alignItems: "center",
             marginBottom: 14,
-            gap: 14,
-            flexWrap: "wrap",
           }}
         >
-          <h2 style={{ margin: 0 }}>Live Rentals</h2>
+          <h2 style={{ margin: 0 }}>Returned Rentals</h2>
 
-          <input
-            value={liveSearchText}
-            onChange={(e) => setLiveSearchText(e.target.value)}
-            placeholder="Search item, name, mobile..."
-            style={liveSearchStyle}
-          />
+          <select
+            value={returnedBranchFilter}
+            onChange={(e) => setReturnedBranchFilter(e.target.value)}
+            style={{ width: 220 }}
+          >
+            <option>All Shops</option>
+            {branches.map((b) => (
+              <option key={b}>{b}</option>
+            ))}
+          </select>
         </div>
 
-        <div style={shopTabsStyle}>
-          {["All Shops", ...branches].map((shop) => {
-            const count =
-              shop === "All Shops"
-                ? activeRentals.length
-                : activeRentals.filter((r) => r.shop === shop).length;
-
-            return (
-              <button
-                key={shop}
-                type="button"
-                onClick={() => setLiveBranchFilter(shop)}
-                style={{
-                  ...shopTabStyle,
-                  ...(liveBranchFilter === shop ? activeShopTabStyle : {}),
-                }}
-              >
-                <span>{shop}</span>
-                <strong>{count}</strong>
-              </button>
-            );
-          })}
-        </div>
-
-        <table style={compactTableStyle}>
-          <colgroup>
-            <col style={{ width: "21%" }} />
-            <col style={{ width: "25%" }} />
-            <col style={{ width: "5%" }} />
-            <col style={{ width: "8%" }} />
-            <col style={{ width: "8%" }} />
-            <col style={{ width: "5%" }} />
-            <col style={{ width: "9%" }} />
-            <col style={{ width: "8%" }} />
-            <col style={{ width: "7%" }} />
-            <col style={{ width: "10%" }} />
-            <col style={{ width: "7%" }} />
-          </colgroup>
+        <table>
           <thead>
             <tr>
-              <th style={compactHeaderStyle}>Customer</th>
+              <th>Customer</th>
               <th style={compactHeaderStyle}>Tool</th>
               <th style={compactHeaderStyle}>Qty</th>
               <th style={compactHeaderStyle}>Daily Rate</th>
               <th style={compactHeaderStyle}>Start</th>
+              <th style={compactHeaderStyle}>End</th>
               <th style={compactHeaderStyle}>Days</th>
-              <th style={compactHeaderStyle}>Current Total</th>
+              <th style={compactHeaderStyle}>Total</th>
               <th style={compactHeaderStyle}>Shop</th>
+              <th style={compactHeaderStyle}>Avoid Sundays</th>
               <th style={compactHeaderStyle}>Status</th>
-              <th style={compactHeaderStyle}>Return</th>
-              <th style={compactHeaderStyle}>Actions</th>
             </tr>
           </thead>
 
           <tbody>
-            {filteredActiveRentals.map((r) => (
+            {filteredReturnedRentals.map((r) => (
               <tr key={r.id}>
                 <td style={compactCellStyle}>{customerName(r.customer_id)}</td>
                 <td style={compactCellStyle}>{toolName(r.tool_id)}</td>
                 <td style={compactCenterCellStyle}>{r.qty}</td>
                 <td style={compactCenterCellStyle}>₹{r.daily_rate}</td>
                 <td style={compactCenterCellStyle}>{r.start_date}</td>
+                <td style={compactCenterCellStyle}>{r.end_date}</td>
                 <td style={compactCenterCellStyle}>
                   {calcDays(
                     r.start_date,
@@ -1821,68 +1708,27 @@ export default function RentalsPage() {
                 </td>
                 <td style={compactCenterCellStyle}>₹{calcTotal(r)}</td>
                 <td style={compactCenterCellStyle}>{r.shop || "-"}</td>
+                <td style={compactCenterCellStyle}>
+                  {r.avoid_sundays !== false ? "Yes" : "No"}
+                </td>
                 <td style={compactCenterCellStyle}>{r.status}</td>
-
-                <td style={compactCenterCellStyle}>
-                  <select
-                    style={compactSelectStyle}
-                    value={returnMode[r.id] || ""}
-                    onChange={(e) => handleReturn(r.id, e.target.value)}
-                  >
-                    <option value="">Return</option>
-                    <option value="Same Day">Same Day</option>
-                    <option value="Pick Date">Pick a Date</option>
-                  </select>
-
-                  {returnMode[r.id] === "Pick Date" && (
-                    <div style={{ marginTop: 6 }}>
-                      <input
-                        type="date"
-                        value={returnDates[r.id] || today}
-                        onChange={(e) =>
-                          setReturnDates({
-                            ...returnDates,
-                            [r.id]: e.target.value,
-                          })
-                        }
-                      />
-
-                      <button
-                        className="btn-green"
-                        style={{ marginTop: 6 }}
-                        onClick={() => handleReturnWithDate(r.id)}
-                      >
-                        Save
-                      </button>
-                    </div>
-                  )}
-                </td>
-
-                <td style={compactCenterCellStyle}>
-                  <button
-                    className="btn-red"
-                    onClick={() => handleDelete(r.id)}
-                  >
-                    Delete
-                  </button>
-                </td>
               </tr>
             ))}
 
-            {filteredActiveRentals.length === 0 && (
+            {filteredReturnedRentals.length === 0 && (
               <tr>
                 <td colSpan={11} style={compactCenterCellStyle}>
-                  No live rentals
+                  No returned rentals
                 </td>
               </tr>
             )}
           </tbody>
         </table>
       </div>
-
     </main>
   );
 }
+
 
 const premiumRentalStyles = `
   .rentals-premium-page {

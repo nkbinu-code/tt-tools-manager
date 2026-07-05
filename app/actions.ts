@@ -348,32 +348,69 @@ export async function getCustomers(search: string = "") {
 }
 
 export async function saveCustomer(row: any) {
-  if (
-    !row.customer_name ||
-    !row.mobile ||
-    !row.occupation ||
-    !row.address ||
-    !row.shop
-  ) {
+  if (!row.customer_name || !row.mobile) {
     return {
       success: false,
-      message: "Customer name, mobile, occupation, address and shop are required",
+      message: "Customer name and mobile are required",
     };
   }
 
-  const { error } = await supabase.from("customers").insert({
-    customer_name: row.customer_name,
-    mobile: row.mobile,
-    occupation: row.occupation || "",
-    address: row.address || "",
-    shop: row.shop || "",
-    notes: row.notes || "",
-  });
+  const mobile = String(row.mobile || "").trim();
+  const customerName = String(row.customer_name || "").trim();
 
-  if (error) return { success: false, message: error.message };
+  const { data: existing, error: findError } = await supabase
+    .from("customers")
+    .select("id")
+    .eq("mobile", mobile)
+    .maybeSingle();
+
+  if (findError) {
+    return {
+      success: false,
+      message: findError.message,
+    };
+  }
+
+  let error;
+
+  if (existing) {
+    ({ error } = await supabase
+      .from("customers")
+      .update({
+        customer_name: customerName,
+        occupation: row.occupation || "",
+        address: row.address || "",
+        shop: row.shop || "",
+        notes: row.notes || "",
+      })
+      .eq("id", existing.id));
+  } else {
+    ({ error } = await supabase.from("customers").insert({
+      customer_name: customerName,
+      mobile,
+      occupation: row.occupation || "",
+      address: row.address || "",
+      shop: row.shop || "",
+      notes: row.notes || "",
+    }));
+  }
+
+  if (error) {
+    return {
+      success: false,
+      message: error.message,
+    };
+  }
 
   revalidatePath("/customers");
-  return { success: true, message: "Customer saved successfully" };
+  revalidatePath("/rentals");
+
+  return {
+    success: true,
+    message: existing
+      ? "Customer updated successfully"
+      : "Customer saved successfully",
+  };
 }
 
 export async function updateCustomer(id: number, row: any) {

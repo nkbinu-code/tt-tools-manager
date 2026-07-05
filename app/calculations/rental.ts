@@ -16,8 +16,8 @@ export function toNumber(value: any) {
     const start = new Date(formatDate(startDate));
     const end = new Date(formatDate(endDate) || formatDate(new Date()));
   
-    if (isNaN(start.getTime()) || isNaN(end.getTime())) return 0;
-    if (end < start) return 0;
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) return 1;
+    if (end < start) return 1;
   
     let days = 0;
     const current = new Date(start);
@@ -32,13 +32,13 @@ export function toNumber(value: any) {
       current.setDate(current.getDate() + 1);
     }
   
-    return days;
+    return Math.max(days, 1);
   }
   
   export function calculateRentalTotal(rental: any) {
     const qty = toNumber(rental.qty || rental.quantity || 1);
     const rate = toNumber(
-      rental.daily_rate || rental.unit_price || rental.rent || 0
+      rental.daily_rate || rental.unit_price || rental.daily_rent || rental.rent || rental.rate || 0
     );
     const discount = toNumber(rental.discount || 0);
   
