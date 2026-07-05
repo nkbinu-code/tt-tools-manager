@@ -1361,6 +1361,8 @@ function InlineCustomerStatement({
       canvas.height = height * scale;
 
       const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      
       if (!ctx) {
         alert("Could not create statement image");
         return;
