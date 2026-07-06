@@ -696,7 +696,17 @@ export default function RentalsPage() {
       return;
     }
 
-    openRentalReturnConfirm(id, today);
+    const rental = rentals.find((r) => Number(r.id) === Number(id));
+
+    if (mode === "Same Day") {
+      openRentalReturnConfirm(id, rental?.start_date || today);
+      return;
+    }
+
+    if (mode === "Today") {
+      openRentalReturnConfirm(id, today);
+      return;
+    }
   }
 
   async function handleReturnWithDate(id: number) {
@@ -1831,6 +1841,7 @@ export default function RentalsPage() {
                   >
                     <option value="">Return</option>
                     <option value="Same Day">Same Day</option>
+                    <option value="Today">Today</option>
                     <option value="Pick Date">Pick a Date</option>
                   </select>
 
