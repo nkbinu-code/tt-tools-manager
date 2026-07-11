@@ -275,7 +275,7 @@ export default async function Dashboard() {
   );
 }
 
-function DashboardStripCard({ title, value, icon: Icon, gradient, glow, dot, accent }: any) {
+function DashboardStripCard({ title, value, gradient, glow, dot, accent }: any) {
   return (
     <div
       style={{
@@ -283,31 +283,24 @@ function DashboardStripCard({ title, value, icon: Icon, gradient, glow, dot, acc
         borderRadius: "8px 8px 42px 42px",
         padding: "18px 14px 22px",
         background: gradient,
-        boxShadow: `0 22px 44px ${glow}, inset 0 1px 0 rgba(255,255,255,0.28)`,
+        boxShadow: `0 16px 30px ${glow}`,
         color: "#ffffff",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        justifyContent: "space-between",
+        justifyContent: "flex-start",
         textAlign: "center",
         position: "relative",
         overflow: "hidden",
-        border: "1px solid rgba(255,255,255,0.22)",
+        border: "1px solid rgba(255,255,255,0.14)",
       }}
     >
-      <div style={cardShineStyle} />
-      <div style={{ ...cardCircleOneStyle, background: dot }} />
-      <div style={{ ...cardCircleTwoStyle, background: dot }} />
+
+      <div style={captionStyle}>{title}</div>
 
       <div style={cardAccentPillStyle}>{accent}</div>
 
-      <div style={iconBoxStyle}>
-        <Icon size={34} strokeWidth={2.8} color="#ffffff" />
-      </div>
-
       <div style={valueStyle}>{value}</div>
-
-      <div style={captionStyle}>{title}</div>
     </div>
   );
 }
@@ -413,84 +406,55 @@ const cardStripStyle: any = {
   alignItems: "stretch",
 };
 
-const cardShineStyle: any = {
-  position: "absolute",
-  left: -55,
-  top: -85,
-  width: 155,
-  height: 230,
-  transform: "rotate(28deg)",
-  background: "rgba(255,255,255,0.18)",
-};
 
-const cardCircleOneStyle: any = {
-  position: "absolute",
-  width: 90,
-  height: 90,
-  right: -44,
-  top: 34,
-  borderRadius: "50%",
-  opacity: 0.2,
-};
 
-const cardCircleTwoStyle: any = {
-  position: "absolute",
-  width: 62,
-  height: 62,
-  left: -28,
-  bottom: 46,
-  borderRadius: "50%",
-  opacity: 0.18,
-};
 
 const cardAccentPillStyle: any = {
   position: "relative",
   zIndex: 1,
-  alignSelf: "flex-start",
-  fontSize: 13,
+  alignSelf: "center",
+  fontSize: 12,
   lineHeight: 1,
   letterSpacing: 1.2,
-  fontWeight: 1000,
+  fontWeight: 900,
   color: "#ffffff",
-  background: "rgba(255,255,255,0.18)",
-  border: "1px solid rgba(255,255,255,0.22)",
+  background: "rgba(255,255,255,0.16)",
+  border: "1px solid rgba(255,255,255,0.20)",
   borderRadius: 999,
-  padding: "8px 10px",
+  padding: "7px 10px",
+  marginTop: 8,
 };
 
-const iconBoxStyle: any = {
-  position: "relative",
-  zIndex: 1,
-  width: 70,
-  height: 70,
-  borderRadius: 22,
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  background: "rgba(255,255,255,0.18)",
-  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.28), 0 12px 22px rgba(0,0,0,0.16)",
-};
 
 const valueStyle: any = {
   position: "relative",
   zIndex: 1,
-  fontSize: 52,
-  lineHeight: 1,
-  fontWeight: 1000,
+  fontFamily: '"Simplifica", "Arial Narrow", "Roboto Condensed", "Segoe UI Light", sans-serif',
+  fontSize: "clamp(76px, 6.2vw, 110px)",
+  lineHeight: 0.86,
+  fontWeight: 100,
+  letterSpacing: -5,
   color: "#ffffff",
-  textShadow: "0 10px 22px rgba(0,0,0,0.22)",
   wordBreak: "break-word",
+  marginTop: "auto",
+  marginBottom: 0,
 };
 
 const captionStyle: any = {
   position: "relative",
   zIndex: 1,
-  fontSize: 24,
-  lineHeight: 1.08,
-  fontWeight: 1000,
-  color: "#ffffff",
+  fontFamily: '"Simplifica", "Arial Narrow", "Roboto Condensed", "Segoe UI Light", sans-serif',
+  fontSize: 26,
+  lineHeight: 1.02,
+  fontWeight: 200,
+  letterSpacing: 0.1,
+  color: "rgba(255,255,255,0.96)",
   whiteSpace: "pre-line",
-  textShadow: "0 6px 14px rgba(0,0,0,0.22)",
+  minHeight: 58,
+  display: "flex",
+  alignItems: "flex-start",
+  justifyContent: "center",
+  textAlign: "center",
 };
 
 const sectionTitleStyle: any = {
