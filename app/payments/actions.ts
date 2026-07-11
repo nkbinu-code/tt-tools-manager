@@ -50,18 +50,35 @@ function countRentalDays(start: any, end: any, avoidSundays: any = true) {
   return Math.max(days, 1);
 }
 
+function hasRentalValue(value: any) {
+  return value !== undefined && value !== null && String(value).trim() !== "";
+}
+
+function firstRentalNumber(...values: any[]) {
+  const value = values.find(hasRentalValue);
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
 function getRentalRate(rental: any, tool: any = {}) {
-  return Number(
-    rental.daily_rate ||
-      rental.unit_price ||
-      rental.daily_rent ||
-      rental.rent ||
-      rental.rate ||
-      tool.daily_rent ||
-      tool.daily_rate ||
-      tool.rent ||
-      tool.rate ||
-      0
+  const directRateSource = [
+    rental.daily_rate,
+    rental.unit_price,
+    rental.daily_rent,
+    rental.rent,
+    rental.rate,
+  ].find(hasRentalValue);
+
+  if (directRateSource !== undefined) {
+    return firstRentalNumber(directRateSource);
+  }
+
+  return firstRentalNumber(
+    tool.daily_rent,
+    tool.daily_rate,
+    tool.rent,
+    tool.rate,
+    0
   );
 }
 
@@ -274,6 +291,77 @@ export async function getPaymentsData() {
     );
 
   return { success: true, data: rows, pendingReturnedRentals };
+}
+
+
+export async function updatePaymentEntry(input: {
+  id: any;
+  payment_date?: string;
+  rental_id?: any;
+  customer_id?: any;
+  customer_name?: string;
+  mobile?: string;
+  shop?: string;
+  amount?: number;
+  discount?: number;
+  mode?: string;
+  remarks?: string;
+}) {
+  const id = normalize(input.id);
+
+  if (!id) {
+    return { success: false, message: "Payment id not found" };
+  }
+
+  const amount = Number(input.amount || 0);
+  const discount = Number(input.discount || 0);
+
+  if (amount <= 0 && discount <= 0) {
+    return { success: false, message: "Please enter payment amount or round off" };
+  }
+
+  const mode = normalize(input.mode || "Cash");
+
+  const { error } = await supabase
+    .from("payments")
+    .update({
+      payment_date: normalize(input.payment_date) || todayISO(),
+      rental_id: input.rental_id || null,
+      customer_id: input.customer_id || null,
+      customer_name: normalize(input.customer_name),
+      mobile: normalize(input.mobile),
+      shop: normalize(input.shop),
+      amount,
+      discount,
+      mode,
+      payment_mode: mode,
+      remarks: normalize(input.remarks),
+    })
+    .eq("id", id);
+
+  if (error) return { success: false, message: error.message };
+
+  revalidatePath("/payments");
+  revalidatePath("/reports");
+
+  return { success: true, message: "Payment updated" };
+}
+
+export async function deletePaymentEntry(idValue: any) {
+  const id = normalize(idValue);
+
+  if (!id) {
+    return { success: false, message: "Payment id not found" };
+  }
+
+  const { error } = await supabase.from("payments").delete().eq("id", id);
+
+  if (error) return { success: false, message: error.message };
+
+  revalidatePath("/payments");
+  revalidatePath("/reports");
+
+  return { success: true, message: "Payment deleted" };
 }
 
 export async function moveCustomerBalanceToArrears(input: {

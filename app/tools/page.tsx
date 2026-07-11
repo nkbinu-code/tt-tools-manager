@@ -10,6 +10,7 @@ import {
   getToolHistory,
 } from "../actions";
 import { useAppMessage } from "../contexts/AppMessageProvider";
+import { supabase } from "@/lib/supabase";
 
 const branches = ["Karuvannur", "Ollur", "Kachery", "Mulayam Rd", "Pattikkad"];
 
@@ -40,10 +41,17 @@ const shortNames: any = {
   "Brotech Tools": "BT",
 };
 
+const shopCodeSet = new Set(branches.map((name) => shortNames[name] || name));
+const serviceCodeSet = new Set(
+  serviceCentres.map((name) => shortNames[name] || name),
+);
+
+
 const emptyTool = {
   tool_name: "",
   total_qty: 1,
   daily_rent: 0,
+  purchase_cost: 0,
   category: "",
   brand: "",
   color: "",
@@ -74,12 +82,23 @@ const strongCellStyle = {
   verticalAlign: "middle" as const,
 };
 
+const compactLocationCellStyle = {
+  ...strongCellStyle,
+  padding: "8px 6px",
+  fontSize: 14,
+  whiteSpace: "normal" as const,
+  overflow: "visible" as const,
+  lineHeight: 1.35,
+};
+
+
 const toolNameCellStyle = {
   ...strongCellStyle,
+  textAlign: "left" as const,
   fontSize: 19,
   fontWeight: 900,
-  minWidth: 360,
-  maxWidth: 520,
+  minWidth: 440,
+  maxWidth: 620,
   whiteSpace: "normal" as const,
 };
 
@@ -106,11 +125,133 @@ function rowForSave(row: any) {
     ...row,
     total_qty: numberValue(row.total_qty || 1),
     daily_rent: numberValue(row.daily_rent),
+    purchase_cost: numberValue(row.purchase_cost),
     greasing_due_days: numberValue(row.greasing_due_days),
     oil_change_due_days: numberValue(row.oil_change_due_days),
     scheduled_service_due_days: numberValue(row.scheduled_service_due_days),
     rental_overdue_days: numberValue(row.rental_overdue_days),
   };
+}
+
+function cleanDate(value: any) {
+  return String(value || "").slice(0, 10);
+}
+
+function countRentalDays(startValue: any, endValue: any, avoidSundays = true) {
+  const start = cleanDate(startValue);
+  const end = cleanDate(endValue || new Date().toISOString().slice(0, 10));
+
+  if (!start || !end) return 1;
+
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return 1;
+  if (endDate < startDate) return 1;
+
+  let days = 0;
+  const d = new Date(startDate);
+
+  while (d <= endDate) {
+    const isSunday = d.getDay() === 0;
+    if (!(avoidSundays && isSunday)) days++;
+    d.setDate(d.getDate() + 1);
+  }
+
+  return Math.max(days, 1);
+}
+
+function rentalAmountForTool(row: any, tool: any) {
+  if (Number(row.total_amount || 0) > 0) return numberValue(row.total_amount);
+
+  const qty = numberValue(row.qty || row.quantity || 1) || 1;
+  const rate = numberValue(row.daily_rate || row.daily_rent || row.unit_price || row.rate || tool?.daily_rent || 0);
+  const days = countRentalDays(
+    row.start_date || row.date || row.rental_date || row.created_at,
+    row.end_date || row.return_date || row.closed_date,
+    row.avoid_sundays !== false,
+  );
+
+  return Math.max(qty * rate * days - numberValue(row.discount), 0);
+}
+
+function serviceCostValue(row: any) {
+  return numberValue(row.cost || row.service_cost || row.amount || row.total_cost);
+}
+
+function toolDueValues(tool: any) {
+  return [
+    numberValue(tool.greasing_due_days),
+    numberValue(tool.oil_change_due_days),
+    numberValue(tool.scheduled_service_due_days),
+  ];
+}
+
+function toolServiceStatus(tool: any) {
+  const dueValues = toolDueValues(tool);
+  const passedValues = dueValues.filter((value) => value < 0);
+
+  if (passedValues.length === 0) {
+    return {
+      color: "#16a34a",
+      rgb: "22, 163, 74",
+      textColor: "#064e3b",
+      shadow: "inset 6px 0 0 rgba(22, 163, 74, 0.85)",
+    };
+  }
+
+  const worstPassed = Math.min(...passedValues);
+
+  if (worstPassed <= -30) {
+    return {
+      color: "#450a0a",
+      rgb: "69, 10, 10",
+      textColor: "#ffffff",
+      shadow: "inset 6px 0 0 rgba(69, 10, 10, 0.95)",
+    };
+  }
+
+  if (worstPassed <= -15) {
+    return {
+      color: "#7f1d1d",
+      rgb: "127, 29, 29",
+      textColor: "#ffffff",
+      shadow: "inset 6px 0 0 rgba(127, 29, 29, 0.95)",
+    };
+  }
+
+  return {
+    color: "#991b1b",
+    rgb: "153, 27, 27",
+    textColor: "#ffffff",
+    shadow: "inset 6px 0 0 rgba(153, 27, 27, 0.9)",
+  };
+}
+
+function toolNameDueStyle(tool: any) {
+  const status = toolServiceStatus(tool);
+
+  return {
+    ...toolNameCellStyle,
+    color: "#064e3b",
+    textShadow: "none",
+    background: `linear-gradient(90deg, rgba(${status.rgb}, 0.96) 0%, rgba(${status.rgb}, 0.54) 44%, rgba(${status.rgb}, 0) 100%)`,
+    boxShadow: status.shadow,
+  };
+}
+
+function formatDueCell(value: any) {
+  const days = numberValue(value);
+
+  if (days < 0) {
+    return (
+      <span style={{ color: "#7f1d1d", fontWeight: 1000 }}>
+        {days} <span style={{ fontSize: 12 }}>({Math.abs(days)} gone)</span>
+      </span>
+    );
+  }
+
+  return <span>{days}</span>;
 }
 
 export default function ToolsPage() {
@@ -121,8 +262,12 @@ export default function ToolsPage() {
   );
 
   const [tools, setTools] = useState<any[]>([]);
+  const [rentals, setRentals] = useState<any[]>([]);
+  const [serviceRows, setServiceRows] = useState<any[]>([]);
   const [search, setSearch] = useState("");
   const [locationFilter, setLocationFilter] = useState("All");
+  const [sortKey, setSortKey] = useState("tool_name");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [editingGroupKey, setEditingGroupKey] = useState<string | null>(null);
   const [editRow, setEditRow] = useState<any>({});
   const [openDetailsKey, setOpenDetailsKey] = useState<string | null>(null);
@@ -143,6 +288,14 @@ export default function ToolsPage() {
 
     if (res.success) {
       setTools(res.data || []);
+
+      const [{ data: rentalData }, { data: serviceData }] = await Promise.all([
+        supabase.from("rentals").select("*"),
+        supabase.from("services").select("*"),
+      ]);
+
+      setRentals(rentalData || []);
+      setServiceRows(serviceData || []);
     } else {
       showError(res.message || "Failed to load tools");
     }
@@ -207,25 +360,79 @@ export default function ToolsPage() {
       dist[loc] = (dist[loc] || 0) + Number(item.total_qty || 1);
     });
 
-    const locations = Object.keys(dist);
+    const orderedLocations = [...branches, ...serviceCentres].filter(
+      (loc) => Number(dist[loc] || 0) > 0,
+    );
+
+    const otherLocations = Object.keys(dist)
+      .filter(
+        (loc) =>
+          Number(dist[loc] || 0) > 0 &&
+          !branches.includes(loc) &&
+          !serviceCentres.includes(loc),
+      )
+      .sort();
+
+    const locations = [...orderedLocations, ...otherLocations];
 
     if (locations.length === 0) return "-";
 
     if (locationFilter !== "All") {
       const selectedQty = Number(dist[locationFilter] || 0);
       if (selectedQty <= 0) return "-";
-      return selectedQty > 1 ? `${locationFilter} : ${selectedQty}` : locationFilter;
-    }
-
-    if (locations.length === 1) {
-      const loc = locations[0];
-      const qty = Number(dist[loc] || 0);
-      return qty > 1 ? `${loc} : ${qty}` : loc;
+      const code = shortNames[locationFilter] || locationFilter;
+      return selectedQty === 1 ? code : `${code}(${selectedQty})`;
     }
 
     return locations
-      .map((loc) => `${shortNames[loc] || loc}: ${dist[loc]}`)
-      .join("   ");
+      .map((loc) => {
+        const code = shortNames[loc] || loc;
+        const qty = Number(dist[loc] || 0);
+        return qty === 1 ? code : `${code}(${qty})`;
+      })
+      .join(" ");
+  }
+
+  function renderLocationSummary(summary: string) {
+    const text = String(summary || "-").trim();
+    if (!text || text === "-") return "-";
+
+    return (
+      <span
+        style={{
+          display: "inline-flex",
+          gap: 7,
+          rowGap: 3,
+          alignItems: "center",
+          justifyContent: "center",
+          flexWrap: "wrap",
+          whiteSpace: "normal",
+          width: "100%",
+        }}
+      >
+        {text.split(/\s+/).map((part, index) => {
+          const code = part.replace(/\(.*/, "");
+          const isService = serviceCodeSet.has(code);
+          const isShop = shopCodeSet.has(code);
+
+          return (
+            <span key={`${part}-${index}`} style={{ whiteSpace: "nowrap" }}>
+              <strong
+                style={{
+                  color: isService ? "#f97316" : isShop ? "#0057ff" : "#0f172a",
+                  fontWeight: 1000,
+                }}
+              >
+                {code}
+              </strong>
+              <span style={{ color: "#0f172a", fontWeight: 850 }}>
+                {part.slice(code.length)}
+              </span>
+            </span>
+          );
+        })}
+      </span>
+    );
   }
 
   const groupedTools = useMemo(() => {
@@ -253,9 +460,41 @@ export default function ToolsPage() {
         0
       );
 
+      const toolIds = new Set(items.map((item: any) => String(item.id || "")));
+      const toolNames = new Set(items.map((item: any) => String(item.tool_name || "").trim().toLowerCase()));
+
+      const earned_total = rentals
+        .filter((r: any) => {
+          const rentalToolId = String(r.tool_id || "");
+          const rentalToolName = String(r.tool_name || r.tool || "").trim().toLowerCase();
+          return (rentalToolId && toolIds.has(rentalToolId)) || (rentalToolName && toolNames.has(rentalToolName));
+        })
+        .reduce((sum: number, r: any) => {
+          const matchedTool = items.find((item: any) => String(item.id || "") === String(r.tool_id || "")) || items[0];
+          return sum + rentalAmountForTool(r, matchedTool);
+        }, 0);
+
+      const purchase_cost = items.reduce(
+        (sum: number, item: any) => sum + numberValue(item.purchase_cost || item.purchase_price || item.cost_price),
+        0,
+      );
+
+      const service_cost = serviceRows
+        .filter((s: any) => {
+          const serviceToolId = String(s.tool_id || "");
+          const serviceToolName = String(s.tool_name || s.tool || "").trim().toLowerCase();
+          return (serviceToolId && toolIds.has(serviceToolId)) || (serviceToolName && toolNames.has(serviceToolName));
+        })
+        .reduce((sum: number, s: any) => sum + serviceCostValue(s), 0);
+
       return {
         ...group,
         total_qty: totalQty,
+        purchase_cost,
+        earned_total,
+        spent_total: service_cost,
+        service_cost,
+        profit_total: earned_total - purchase_cost - service_cost,
         home_branch_summary: makeLocationSummary(items, "home_branch"),
         current_location_summary: makeLocationSummary(
           items,
@@ -268,21 +507,111 @@ export default function ToolsPage() {
         rental_overdue_days: items[0]?.rental_overdue_days || 0,
       };
     });
-  }, [tools, locationFilter]);
+  }, [tools, locationFilter, rentals, serviceRows]);
 
-  const filteredTools = groupedTools.filter((tool: any) => {
-    if (locationFilter === "All") return true;
+  function handleSort(key: string) {
+    if (sortKey === key) {
+      setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
+      return;
+    }
 
-    return tool.grouped_items.some((item: any) => {
-      return (
-        item.home_branch === locationFilter ||
-        item.current_location === locationFilter ||
-        item.service_centre === locationFilter ||
-        item.physical_location === locationFilter ||
-        String(item.display_location || "").includes(locationFilter)
-      );
+    setSortKey(key);
+    setSortDirection(key === "earned_total" || key === "spent_total" || key === "profit_total" ? "desc" : "asc");
+  }
+
+  function sortArrow(key: string) {
+    if (sortKey !== key) return "";
+    return sortDirection === "asc" ? " ▲" : " ▼";
+  }
+
+  function sortableHeader(label: string, key: string, style: any) {
+    return (
+      <button
+        type="button"
+        className="tools-sort-button"
+        onClick={() => handleSort(key)}
+        style={{
+          width: "100%",
+          border: 0,
+          background: "transparent",
+          color: "inherit",
+          font: "inherit",
+          fontWeight: 1000,
+          textAlign: style?.textAlign || "center",
+          cursor: "pointer",
+          padding: 0,
+        }}
+      >
+        {label}{sortArrow(key)}
+      </button>
+    );
+  }
+
+  function sortValue(tool: any, key: string) {
+    if (key === "tool_name") return String(tool.tool_name || "").toLowerCase();
+    if (key === "total_qty") return Number(tool.total_qty || 0);
+    if (key === "daily_rent") return Number(tool.daily_rent || 0);
+    if (key === "purchase_cost") return Number(tool.purchase_cost || 0);
+    if (key === "earned_total") return Number(tool.earned_total || 0);
+    if (key === "spent_total") return Number(tool.spent_total || 0);
+    if (key === "profit_total") return Number(tool.profit_total || 0);
+    if (key === "category") return String(tool.category || "").toLowerCase();
+    if (key === "brand") return String(tool.brand || "").toLowerCase();
+    if (key === "color") return String(tool.color || "").toLowerCase();
+    if (key === "home_branch") return String(tool.home_branch_summary || "").toLowerCase();
+    if (key === "current_location") return String(tool.current_location_summary || "").toLowerCase();
+    if (key === "status") return String(tool.status || "").toLowerCase();
+    if (key === "greasing_due_days") return Number(tool.greasing_due_days || 0);
+    if (key === "oil_change_due_days") return Number(tool.oil_change_due_days || 0);
+    if (key === "scheduled_service_due_days") return Number(tool.scheduled_service_due_days || 0);
+    if (key === "rental_overdue_days") return Number(tool.rental_overdue_days || 0);
+    return "";
+  }
+
+  const filteredTools = useMemo(() => {
+    const base = groupedTools.filter((tool: any) => {
+      if (locationFilter === "All") return true;
+
+      return tool.grouped_items.some((item: any) => {
+        return (
+          item.home_branch === locationFilter ||
+          item.current_location === locationFilter ||
+          item.service_centre === locationFilter ||
+          item.physical_location === locationFilter ||
+          String(item.display_location || "").includes(locationFilter)
+        );
+      });
     });
-  });
+
+    return [...base].sort((a: any, b: any) => {
+      const aValue = sortValue(a, sortKey);
+      const bValue = sortValue(b, sortKey);
+
+      if (typeof aValue === "number" && typeof bValue === "number") {
+        return sortDirection === "asc" ? aValue - bValue : bValue - aValue;
+      }
+
+      const result = String(aValue).localeCompare(String(bValue));
+      return sortDirection === "asc" ? result : -result;
+    });
+  }, [groupedTools, locationFilter, sortKey, sortDirection]);
+
+  const toolSummary = useMemo(() => {
+    const purchase = filteredTools.reduce((sum: number, tool: any) => sum + Number(tool.purchase_cost || 0), 0);
+    const earned = filteredTools.reduce((sum: number, tool: any) => sum + Number(tool.earned_total || 0), 0);
+    const spent = filteredTools.reduce((sum: number, tool: any) => sum + Number(tool.spent_total || 0), 0);
+    const profit = earned - purchase - spent;
+
+    return {
+      tools: filteredTools.length,
+      qty: filteredTools.reduce((sum: number, tool: any) => sum + Number(tool.total_qty || 0), 0),
+      purchase,
+      earned,
+      spent,
+      profit,
+      service: filteredTools.filter((tool: any) => String(tool.status || "").toLowerCase() === "service").length,
+    };
+  }, [filteredTools]);
 
   const historyOptions = tools.filter((tool) => {
     const q = historySearch.trim().toLowerCase();
@@ -341,6 +670,7 @@ export default function ToolsPage() {
     setEditRow({
       tool_name: tool.tool_name || "",
       daily_rent: tool.daily_rent || 0,
+      purchase_cost: tool.purchase_cost || 0,
       category: tool.category || "",
       brand: tool.brand || "",
       color: tool.color || "",
@@ -366,6 +696,7 @@ export default function ToolsPage() {
         ...item,
         tool_name: editRow.tool_name,
         daily_rent: editRow.daily_rent,
+        purchase_cost: editRow.purchase_cost,
         category: editRow.category,
         brand: editRow.brand,
         color: editRow.color,
@@ -498,6 +829,9 @@ export default function ToolsPage() {
             daily_rent: Number(
               row.daily_rent || row.Rent || row.rent || row["Daily Rent"] || 0
             ),
+            purchase_cost: Number(
+              row.purchase_cost || row["Purchase Cost"] || row["Purchase Price"] || 0
+            ),
             category: String(row.category || row.Category || "").trim(),
             brand: String(row.brand || row.Brand || "").trim(),
             color: String(row.color || row.Color || "").trim(),
@@ -562,6 +896,75 @@ export default function ToolsPage() {
     await loadTools("");
   }
 
+
+  function downloadToolsExcel() {
+    const sheetData = [
+      [
+        "Tool Name",
+        "Qty",
+        "Daily Rent",
+        "Purchase Cost",
+        "Earned",
+        "Spent",
+        "Profit",
+        "Category",
+        "Brand",
+        "Color",
+        "Home Branch",
+        "Current Location",
+        "Status",
+        "Greasing",
+        "Oil Change",
+        "Scheduled Service",
+        "Rental Overdue",
+      ],
+      ...filteredTools.map((tool: any) => [
+        tool.tool_name,
+        tool.total_qty,
+        Number(tool.daily_rent || 0),
+        Number(tool.purchase_cost || 0),
+        Number(tool.earned_total || 0),
+        Number(tool.spent_total || 0),
+        Number(tool.profit_total || 0),
+        tool.category,
+        tool.brand,
+        tool.color,
+        tool.home_branch_summary,
+        tool.current_location_summary,
+        tool.status,
+        Number(tool.greasing_due_days || 0),
+        Number(tool.oil_change_due_days || 0),
+        Number(tool.scheduled_service_due_days || 0),
+        Number(tool.rental_overdue_days || 0),
+      ]),
+    ];
+
+    const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
+    worksheet["!cols"] = [
+      { wch: 42 },
+      { wch: 8 },
+      { wch: 12 },
+      { wch: 14 },
+      { wch: 12 },
+      { wch: 12 },
+      { wch: 12 },
+      { wch: 16 },
+      { wch: 14 },
+      { wch: 12 },
+      { wch: 24 },
+      { wch: 28 },
+      { wch: 12 },
+      { wch: 10 },
+      { wch: 12 },
+      { wch: 16 },
+      { wch: 16 },
+    ];
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Tools List");
+    XLSX.writeFile(workbook, "T&T_Tools_List.xlsx");
+  }
+
   async function handleHistorySearch(toolId: string) {
     setHistoryToolId(toolId);
 
@@ -592,11 +995,23 @@ export default function ToolsPage() {
           vertical-align: middle;
         }
 
+        .tools-clean-table .tool-name-cell {
+          text-align: left !important;
+        }
+
         .tools-clean-table input,
         .tools-clean-table select {
           font-size: 15px;
           font-weight: 800;
           text-align: center;
+        }
+
+        .tools-sort-button:hover {
+          color: #0057ff !important;
+        }
+
+        .tools-clean-table .location-summary-cell {
+          white-space: nowrap !important;
         }
       `}</style>
       <h1>Tools</h1>
@@ -619,6 +1034,10 @@ export default function ToolsPage() {
             style={{ width: 420 }}
           />
 
+          <button className="btn-blue" type="button" onClick={downloadToolsExcel}>
+            Download Excel
+          </button>
+
           <select
             value={locationFilter}
             onChange={(e) => setLocationFilter(e.target.value)}
@@ -640,32 +1059,52 @@ export default function ToolsPage() {
           </select>
         </div>
 
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(6, minmax(170px, 1fr))",
+            gap: 14,
+            marginBottom: 18,
+          }}
+        >
+          <ToolSummaryCard title="Tool Items" value={toolSummary.tools} />
+          <ToolSummaryCard title="Qty" value={toolSummary.qty} />
+          <ToolSummaryCard title="Purchase" value={`₹${toolSummary.purchase.toFixed(0)}`} />
+          <ToolSummaryCard title="Earned" value={`₹${toolSummary.earned.toFixed(0)}`} />
+          <ToolSummaryCard title="Spent" value={`₹${toolSummary.spent.toFixed(0)}`} />
+          <ToolSummaryCard title="Profit" value={`₹${toolSummary.profit.toFixed(0)}`} danger={toolSummary.profit < 0} success={toolSummary.profit >= 0} />
+        </div>
+
         <div style={{ overflowX: "auto" }}>
           <table
             className="tools-clean-table"
             style={{
               fontSize: 16,
-              minWidth: 1500,
+              minWidth: 1940,
               tableLayout: "fixed",
               width: "100%",
             }}
           >
             <thead>
               <tr>
-                <th style={{ ...tableHeadStyle, width: 390 }}>Tool Name</th>
-                <th style={{ ...tableHeadStyle, width: 70 }}>Qty</th>
-                <th style={{ ...tableHeadStyle, width: 105 }}>Rent</th>
-                <th style={{ ...tableHeadStyle, width: 120 }}>Category</th>
-                <th style={{ ...tableHeadStyle, width: 115 }}>Brand</th>
-                <th style={{ ...tableHeadStyle, width: 90 }}>Color</th>
-                <th style={{ ...tableHeadStyle, width: 150 }}>Home Branch</th>
-                <th style={{ ...tableHeadStyle, width: 170 }}>Current Location</th>
-                <th style={{ ...tableHeadStyle, width: 105 }}>Status</th>
-                <th style={{ ...tableHeadStyle, width: 85 }}>Greasing</th>
-                <th style={{ ...tableHeadStyle, width: 95 }}>Oil</th>
-                <th style={{ ...tableHeadStyle, width: 105 }}>Service</th>
-                <th style={{ ...tableHeadStyle, width: 110 }}>Overdue</th>
-                <th style={{ ...tableHeadStyle, width: 205 }}>Actions</th>
+                <th style={{ ...tableHeadStyle, width: 440, textAlign: "left" }}>{sortableHeader("Tool Name", "tool_name", { textAlign: "left" })}</th>
+                <th style={{ ...tableHeadStyle, width: 55 }}>{sortableHeader("Qty", "total_qty", tableHeadStyle)}</th>
+                <th style={{ ...tableHeadStyle, width: 72 }}>{sortableHeader("Rent", "daily_rent", tableHeadStyle)}</th>
+                <th style={{ ...tableHeadStyle, width: 85 }}>{sortableHeader("Purchase", "purchase_cost", tableHeadStyle)}</th>
+                <th style={{ ...tableHeadStyle, width: 82 }}>{sortableHeader("Earned", "earned_total", tableHeadStyle)}</th>
+                <th style={{ ...tableHeadStyle, width: 80 }}>{sortableHeader("Spent", "spent_total", tableHeadStyle)}</th>
+                <th style={{ ...tableHeadStyle, width: 85 }}>{sortableHeader("Profit", "profit_total", tableHeadStyle)}</th>
+                <th style={{ ...tableHeadStyle, width: 118 }}>{sortableHeader("Category", "category", tableHeadStyle)}</th>
+                <th style={{ ...tableHeadStyle, width: 70 }}>{sortableHeader("Brand", "brand", tableHeadStyle)}</th>
+                <th style={{ ...tableHeadStyle, width: 60 }}>{sortableHeader("Color", "color", tableHeadStyle)}</th>
+                <th style={{ ...tableHeadStyle, width: 220 }}>{sortableHeader("Home", "home_branch", tableHeadStyle)}</th>
+                <th style={{ ...tableHeadStyle, width: 265 }}>{sortableHeader("Location", "current_location", tableHeadStyle)}</th>
+                <th style={{ ...tableHeadStyle, width: 75 }}>{sortableHeader("Status", "status", tableHeadStyle)}</th>
+                <th style={{ ...tableHeadStyle, width: 76 }}>{sortableHeader("Grease", "greasing_due_days", tableHeadStyle)}</th>
+                <th style={{ ...tableHeadStyle, width: 76 }}>{sortableHeader("Oil", "oil_change_due_days", tableHeadStyle)}</th>
+                <th style={{ ...tableHeadStyle, width: 84 }}>{sortableHeader("Service", "scheduled_service_due_days", tableHeadStyle)}</th>
+                <th style={{ ...tableHeadStyle, width: 84 }}>{sortableHeader("Overdue", "rental_overdue_days", tableHeadStyle)}</th>
+                <th style={{ ...tableHeadStyle, width: 222 }}>Actions</th>
               </tr>
             </thead>
 
@@ -702,6 +1141,31 @@ export default function ToolsPage() {
                               })
                             }
                           />
+                        </td>
+                        <td style={cellStyle}>
+                          <input
+                            style={inputStyle}
+                            type="number"
+                            value={editRow.purchase_cost ?? ""}
+                            onChange={(e) =>
+                              setEditRow({
+                                ...editRow,
+                                purchase_cost: e.target.value,
+                              })
+                            }
+                          />
+                        </td>
+
+                        <td style={cellStyle}>₹{Number(tool.earned_total || 0).toFixed(0)}</td>
+                        <td style={cellStyle}>₹{Number(tool.spent_total || 0).toFixed(0)}</td>
+                        <td
+                          style={{
+                            ...cellStyle,
+                            color: Number(tool.profit_total || 0) >= 0 ? "#16a34a" : "#dc2626",
+                            fontWeight: 950,
+                          }}
+                        >
+                          ₹{Number(tool.profit_total || 0).toFixed(0)}
                         </td>
 
                         <td style={cellStyle}>
@@ -881,29 +1345,35 @@ export default function ToolsPage() {
                       </>
                     ) : (
                       <>
-                        <td style={toolNameCellStyle}>{tool.tool_name}</td>
+                        <td className="tool-name-cell" style={toolNameDueStyle(tool)}>{tool.tool_name}</td>
                         <td style={cellStyle}>{tool.total_qty}</td>
                         <td style={cellStyle}>₹{tool.daily_rent}</td>
+                        <td style={cellStyle}>₹{Number(tool.purchase_cost || 0).toFixed(0)}</td>
+                        <td style={cellStyle}>₹{Number(tool.earned_total || 0).toFixed(0)}</td>
+                        <td style={cellStyle}>₹{Number(tool.spent_total || 0).toFixed(0)}</td>
+                        <td
+                          style={{
+                            ...cellStyle,
+                            color: Number(tool.profit_total || 0) >= 0 ? "#16a34a" : "#dc2626",
+                            fontWeight: 950,
+                          }}
+                        >
+                          ₹{Number(tool.profit_total || 0).toFixed(0)}
+                        </td>
                         <td style={cellStyle}>{tool.category}</td>
                         <td style={cellStyle}>{tool.brand}</td>
                         <td style={cellStyle}>{tool.color}</td>
-                        <td style={strongCellStyle}>
-                          {tool.home_branch_summary}
+                        <td style={compactLocationCellStyle}>
+                          {renderLocationSummary(tool.home_branch_summary)}
                         </td>
-                        <td style={strongCellStyle}>
-                          {tool.current_location_summary}
+                        <td style={compactLocationCellStyle}>
+                          {renderLocationSummary(tool.current_location_summary)}
                         </td>
                         <td style={cellStyle}>{tool.status}</td>
-                        <td style={cellStyle}>{tool.greasing_due_days || 0}</td>
-                        <td style={cellStyle}>
-                          {tool.oil_change_due_days || 0}
-                        </td>
-                        <td style={cellStyle}>
-                          {tool.scheduled_service_due_days || 0}
-                        </td>
-                        <td style={cellStyle}>
-                          {tool.rental_overdue_days || 0}
-                        </td>
+                        <td style={cellStyle}>{formatDueCell(tool.greasing_due_days)}</td>
+                        <td style={cellStyle}>{formatDueCell(tool.oil_change_due_days)}</td>
+                        <td style={cellStyle}>{formatDueCell(tool.scheduled_service_due_days)}</td>
+                        <td style={cellStyle}>{formatDueCell(tool.rental_overdue_days)}</td>
 
                         <td style={{ padding: "4px" }}>
                           <div
@@ -963,7 +1433,7 @@ export default function ToolsPage() {
 
                   {openDetailsKey === tool.group_key && (
                     <tr>
-                      <td colSpan={14} style={{ padding: 0 }}>
+                      <td colSpan={18} style={{ padding: 0 }}>
                         <div
                           style={{
                             background: "#f8fafc",
@@ -978,6 +1448,7 @@ export default function ToolsPage() {
                               <tr>
                                 <th>Branch Row</th>
                                 <th>Qty</th>
+                                <th>Purchase</th>
                                 <th>Home Branch</th>
                                 <th>Current Location</th>
                                 <th>Status</th>
@@ -1004,6 +1475,19 @@ export default function ToolsPage() {
                                             setDetailEditRow({
                                               ...detailEditRow,
                                               total_qty: e.target.value,
+                                            })
+                                          }
+                                        />
+                                      </td>
+
+                                      <td>
+                                        <input
+                                          type="number"
+                                          value={detailEditRow.purchase_cost ?? 0}
+                                          onChange={(e) =>
+                                            setDetailEditRow({
+                                              ...detailEditRow,
+                                              purchase_cost: e.target.value,
                                             })
                                           }
                                         />
@@ -1160,15 +1644,14 @@ export default function ToolsPage() {
                                     <>
                                       <td>{item.tool_name}</td>
                                       <td>{item.total_qty}</td>
+                                      <td>₹{Number(item.purchase_cost || 0).toFixed(0)}</td>
                                       <td>{item.home_branch}</td>
                                       <td>{item.current_location}</td>
                                       <td>{item.status}</td>
-                                      <td>{item.greasing_due_days || 0}</td>
-                                      <td>{item.oil_change_due_days || 0}</td>
-                                      <td>
-                                        {item.scheduled_service_due_days || 0}
-                                      </td>
-                                      <td>{item.rental_overdue_days || 0}</td>
+                                      <td>{formatDueCell(item.greasing_due_days)}</td>
+                                      <td>{formatDueCell(item.oil_change_due_days)}</td>
+                                      <td>{formatDueCell(item.scheduled_service_due_days)}</td>
+                                      <td>{formatDueCell(item.rental_overdue_days)}</td>
                                       <td>
                                         <button
                                           className="btn-blue"
@@ -1212,7 +1695,7 @@ export default function ToolsPage() {
 
               {filteredTools.length === 0 && (
                 <tr>
-                  <td colSpan={14}>No tools found</td>
+                  <td colSpan={18}>No tools found</td>
                 </tr>
               )}
             </tbody>
@@ -1317,7 +1800,7 @@ export default function ToolsPage() {
         <h2>Bulk Import Tools From Excel</h2>
 
         <p style={{ marginTop: 0 }}>
-          Excel columns: Tool Name, Qty, Daily Rent, Category, Brand, Color,
+          Excel columns: Tool Name, Qty, Daily Rent, Purchase Cost, Category, Brand, Color,
           Home Branch, Current Location, Status, Greasing, Oil Change,
           Scheduled Service, Rental Overdue
         </p>
@@ -1382,6 +1865,7 @@ export default function ToolsPage() {
                 <th>Tool Name</th>
                 <th>Qty</th>
                 <th>Daily Rent</th>
+                <th>Purchase Cost</th>
                 <th>Category</th>
                 <th>Brand</th>
                 <th>Color</th>
@@ -1425,6 +1909,16 @@ export default function ToolsPage() {
                       value={r.daily_rent}
                       onChange={(e) =>
                         changeRow(i, "daily_rent", e.target.value)
+                      }
+                    />
+                  </td>
+
+                  <td>
+                    <input
+                      type="number"
+                      value={r.purchase_cost}
+                      onChange={(e) =>
+                        changeRow(i, "purchase_cost", e.target.value)
                       }
                     />
                   </td>
@@ -1545,5 +2039,46 @@ export default function ToolsPage() {
         </div>
       </div>
     </main>
+  );
+}
+
+function ToolSummaryCard({ title, value, danger = false, success = false }: any) {
+  return (
+    <div
+      style={{
+        border: "2px solid #bfdbfe",
+        background: danger ? "#fef2f2" : success ? "#f0fdf4" : "#eff6ff",
+        borderRadius: 18,
+        padding: "24px 22px",
+        minHeight: 145,
+        fontWeight: 1000,
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: "center",
+        boxShadow: "0 10px 24px rgba(15, 23, 42, 0.08)",
+      }}
+    >
+      <div
+        style={{
+          fontSize: 24,
+          lineHeight: 1.05,
+          color: "#475569",
+          textTransform: "uppercase",
+          letterSpacing: 0.4,
+        }}
+      >
+        {title}
+      </div>
+      <div
+        style={{
+          fontSize: 50,
+          lineHeight: 1.05,
+          marginTop: 8,
+          color: danger ? "#dc2626" : success ? "#16a34a" : "#0f2a5f",
+        }}
+      >
+        {value}
+      </div>
+    </div>
   );
 }

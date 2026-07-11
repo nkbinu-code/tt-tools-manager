@@ -26,13 +26,22 @@ function buildCustomerBalances(
   rentals: any[],
   payments: any[]
 ) {
-  return buildCustomerBalanceRows(customers, rentals, payments).map((row: any) => ({
-    ...row,
-    rental_total: row.total_business || row.business || 0,
-    received_total: row.total_paid || row.received || 0,
-    discount_total: row.total_discount || row.discount || 0,
-    balance: row.balance || 0,
-  }));
+  return buildCustomerBalanceRows(customers, rentals, payments).map((row: any) => {
+    const sourceCustomer = customers.find(
+      (customer: any) =>
+        String(customer.id || "") === String(row.id || row.customer_id || "") ||
+        String(customer.mobile || "").trim() === String(row.mobile || "").trim()
+    );
+
+    return {
+      ...row,
+      rating: Number(row.rating ?? sourceCustomer?.rating ?? 10),
+      rental_total: row.total_business || row.business || 0,
+      received_total: row.total_paid || row.received || 0,
+      discount_total: row.total_discount || row.discount || 0,
+      balance: row.balance || 0,
+    };
+  });
 }
 
 /* DASHBOARD */
@@ -382,6 +391,7 @@ export async function saveCustomer(row: any) {
         address: row.address || "",
         shop: row.shop || "",
         notes: row.notes || "",
+        rating: Number(row.rating || 10),
       })
       .eq("id", existing.id));
   } else {
@@ -392,6 +402,7 @@ export async function saveCustomer(row: any) {
       address: row.address || "",
       shop: row.shop || "",
       notes: row.notes || "",
+      rating: Number(row.rating || 10),
     }));
   }
 
@@ -423,6 +434,7 @@ export async function updateCustomer(id: number, row: any) {
       address: row.address || "",
       shop: row.shop || "",
       notes: row.notes || "",
+      rating: Number(row.rating || 10),
     })
     .eq("id", id);
 

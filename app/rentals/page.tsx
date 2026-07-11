@@ -1,6 +1,7 @@
 "use client";
 
 import { type CSSProperties, useEffect, useState } from "react";
+import { supabase } from "@/lib/supabase";
 import {
   getRentalPageData,
   saveRentals,
@@ -35,7 +36,128 @@ const emptyNewCustomer = {
   address: "",
   shop: "",
   notes: "",
+  rating: 10,
 };
+
+const RENTAL_DRAFT_KEY = "tt_rentals_page_draft_v1";
+
+
+function normalizeCustomerRating(value: any) {
+  const rating = Number(value ?? 10);
+  if (!Number.isFinite(rating)) return 10;
+  return Math.min(10, Math.max(1, Math.round(rating)));
+}
+
+function customerRatingColor(value: any) {
+  const rating = normalizeCustomerRating(value);
+  const colors: Record<number, string> = {
+    1: "#991b1b",
+    2: "#dc2626",
+    3: "#f97316",
+    4: "#f59e0b",
+    5: "#eab308",
+    6: "#84cc16",
+    7: "#65a30d",
+    8: "#22c55e",
+    9: "#16a34a",
+    10: "#15803d",
+  };
+  return colors[rating] || colors[10];
+}
+
+function customerReliabilityBadge(value: any) {
+  const rating = normalizeCustomerRating(value);
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        minWidth: 46,
+        padding: "6px 12px",
+        borderRadius: 999,
+        background: customerRatingColor(rating),
+        color: "#ffffff",
+        fontWeight: 1000,
+      }}
+    >
+      {rating}/10
+    </span>
+  );
+}
+
+
+function isRentalRowFilled(row: any) {
+  return Boolean(
+    row?.customer_id ||
+    row?.mobile ||
+    row?.customer_name ||
+    row?.tool_id ||
+    Number(row?.qty || 0) !== 1 ||
+    Number(row?.daily_rate || 0) !== 0 ||
+    Number(row?.discount || 0) !== 0 ||
+    row?.end_date ||
+    row?.status !== "Active" ||
+    row?.shop ||
+    row?.avoid_sundays === false,
+  );
+}
+
+function countDraftRows(rows: any[]) {
+  return (rows || []).filter(isRentalRowFilled).length;
+}
+
+function compressRowNumbers(rowNumbers: number[]) {
+  const sorted = Array.from(new Set(rowNumbers))
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b);
+
+  if (sorted.length === 0) return "-";
+
+  const ranges: string[] = [];
+  let start = sorted[0];
+  let previous = sorted[0];
+
+  for (let i = 1; i < sorted.length; i++) {
+    const current = sorted[i];
+
+    if (current === previous + 1) {
+      previous = current;
+      continue;
+    }
+
+    ranges.push(start === previous ? String(start) : `${start}–${previous}`);
+    start = current;
+    previous = current;
+  }
+
+  ranges.push(start === previous ? String(start) : `${start}–${previous}`);
+  return ranges.join(", ");
+}
+
+function formatSaveDate(value: any) {
+  if (!value || value === "Multiple Dates") return value || "-";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function formatDraftSavedTime(value: any) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
 
 const compactTableStyle = {
   width: "100%",
@@ -233,6 +355,13 @@ export default function RentalsPage() {
   const [shopPopupOpen, setShopPopupOpen] = useState(false);
   const [popupShop, setPopupShop] = useState("");
   const [rentalConfirm, setRentalConfirm] = useState<any>(null);
+  const [partialReturn, setPartialReturn] = useState<any>(null);
+  const [partialReturnQty, setPartialReturnQty] = useState("1");
+  const [partialReturnDate, setPartialReturnDate] = useState(today);
+  const [draftChecked, setDraftChecked] = useState(false);
+  const [draftPrompt, setDraftPrompt] = useState<any>(null);
+  const [draftStatus, setDraftStatus] = useState("Draft not saved yet");
+  const [draftSaveTick, setDraftSaveTick] = useState(0);
 
   function showError(message: string) {
     setAppMessage({
@@ -284,6 +413,107 @@ export default function RentalsPage() {
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(RENTAL_DRAFT_KEY);
+      if (raw) {
+        const draft = JSON.parse(raw);
+        if (draft?.rows?.length && countDraftRows(draft.rows) > 0) {
+          setDraftPrompt(draft);
+          setDraftStatus(
+            `Draft found from ${formatDraftSavedTime(draft.savedAt)}`,
+          );
+        }
+      }
+    } catch (error) {
+      console.error("Failed to read rental draft", error);
+    } finally {
+      setDraftChecked(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!draftChecked) return;
+
+    const filledCount = countDraftRows(rows);
+    if (
+      filledCount === 0 &&
+      !selectedBranch &&
+      bulkDate === today &&
+      businessDate === today
+    ) {
+      return;
+    }
+
+    setDraftStatus("Saving draft...");
+
+    const timer = window.setTimeout(() => {
+      try {
+        const draft = {
+          rows,
+          selectedBranch,
+          bulkDate,
+          businessDate,
+          savedAt: new Date().toISOString(),
+        };
+
+        window.localStorage.setItem(RENTAL_DRAFT_KEY, JSON.stringify(draft));
+        setDraftStatus(
+          `Draft saved ${new Date().toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" })}`,
+        );
+      } catch (error) {
+        console.error("Failed to save rental draft", error);
+        setDraftStatus("Draft could not be saved");
+      }
+    }, 900);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    rows,
+    selectedBranch,
+    bulkDate,
+    businessDate,
+    draftChecked,
+    draftSaveTick,
+  ]);
+
+  function restoreRentalDraft() {
+    if (!draftPrompt) return;
+
+    setRows(
+      draftPrompt.rows?.length
+        ? draftPrompt.rows
+        : Array.from({ length: 20 }, () => ({ ...emptyRental })),
+    );
+    setSelectedBranch(draftPrompt.selectedBranch || "");
+    setBulkDate(draftPrompt.bulkDate || today);
+    setBusinessDate(draftPrompt.businessDate || today);
+    setDraftStatus(
+      `Draft restored from ${formatDraftSavedTime(draftPrompt.savedAt)}`,
+    );
+    setDraftPrompt(null);
+  }
+
+  function clearRentalDraft(showMessage = true) {
+    try {
+      window.localStorage.removeItem(RENTAL_DRAFT_KEY);
+    } catch (error) {
+      console.error("Failed to clear rental draft", error);
+    }
+
+    setDraftPrompt(null);
+    setDraftStatus("Draft cleared");
+
+    if (showMessage) {
+      showSuccess("Rental draft cleared");
+    }
+  }
+
+  function saveRentalDraftNow() {
+    setDraftSaveTick((value) => value + 1);
+    showSuccess("Rental draft saved in this browser");
+  }
 
   function changeRow(index: number, field: string, value: any) {
     const updated = [...rows];
@@ -376,6 +606,12 @@ export default function RentalsPage() {
       setRows(updated);
       setShowAddCustomer(false);
       setAddCustomerRowIndex(null);
+
+      if (normalizeCustomerRating(exact.rating) <= 3) {
+        showWarning(
+          `Proceed with caution. Customer Reliability: ${normalizeCustomerRating(exact.rating)}/10`,
+        );
+      }
     } else {
       updated[index] = {
         ...updated[index],
@@ -462,9 +698,10 @@ export default function RentalsPage() {
     return t ? t.tool_name : "";
   }
 
-
   function rentalCustomerDetails(row: any) {
-    const customer = customers.find((x) => Number(x.id) === Number(row?.customer_id));
+    const customer = customers.find(
+      (x) => Number(x.id) === Number(row?.customer_id),
+    );
 
     return {
       name: customer?.customer_name || row?.customer_name || row?.name || "-",
@@ -518,14 +755,15 @@ export default function RentalsPage() {
     if (!rentalConfirm) return;
 
     if (rentalConfirm.type === "return") {
-      const res = await returnRental(rentalConfirm.id, rentalConfirm.returnDate);
+      const res = await returnRental(
+        rentalConfirm.id,
+        rentalConfirm.returnDate,
+      );
 
       if (!res.success) {
         showError(res.message || "Failed to return rental");
         return;
       }
-
-      showSuccess(res.message || "Rental returned successfully");
       setReturnMode({ ...returnMode, [rentalConfirm.id]: "" });
       setReturnDates({ ...returnDates, [rentalConfirm.id]: "" });
       setRentalConfirm(null);
@@ -668,6 +906,7 @@ export default function RentalsPage() {
   async function confirmSaveRentals() {
     setLoading(true);
 
+
     const rowsWithBranch = rows.map((r) => ({
       ...r,
       shop: selectedBranch,
@@ -682,8 +921,7 @@ export default function RentalsPage() {
       showError(res.message || "Failed to save rentals");
       return;
     }
-
-    showSuccess(res.message || "Rentals saved successfully");
+    clearRentalDraft(false);
     setRows(Array.from({ length: 20 }, () => ({ ...emptyRental })));
     await loadData();
   }
@@ -707,6 +945,11 @@ export default function RentalsPage() {
       openRentalReturnConfirm(id, today);
       return;
     }
+
+    if (mode === "Partial Return") {
+      openPartialReturnPopup(id);
+      return;
+    }
   }
 
   async function handleReturnWithDate(id: number) {
@@ -720,13 +963,116 @@ export default function RentalsPage() {
     openRentalReturnConfirm(id, pickedDate);
   }
 
+  function openPartialReturnPopup(id: number) {
+    const rental = rentals.find((r) => Number(r.id) === Number(id));
+
+    if (!rental) {
+      showError("Rental not found");
+      return;
+    }
+
+    const liveQty = Number(rental.qty || 1);
+
+    if (liveQty <= 1) {
+      showWarning("Partial return is available only when quantity is more than 1");
+      setReturnMode({ ...returnMode, [id]: "" });
+      return;
+    }
+
+    setPartialReturn({ id, rental });
+    setPartialReturnQty("1");
+    setPartialReturnDate(today);
+    setReturnMode({ ...returnMode, [id]: "Partial Return" });
+  }
+
+  async function confirmPartialReturn() {
+    if (!partialReturn) return;
+
+    const rental = partialReturn.rental;
+    const rentalId = partialReturn.id;
+    const liveQty = Number(rental?.qty || 1);
+    const returnQty = Number(partialReturnQty || 0);
+    const returnDate = partialReturnDate || today;
+
+    if (!returnQty || returnQty <= 0) {
+      showWarning("Please enter return quantity");
+      return;
+    }
+
+    if (returnQty > liveQty) {
+      showWarning("Return quantity cannot be more than live quantity");
+      return;
+    }
+
+    if (returnQty === liveQty) {
+      const res = await returnRental(rentalId, returnDate);
+
+      if (!res.success) {
+        showError(res.message || "Failed to return rental");
+        return;
+      }
+      setPartialReturn(null);
+      setReturnMode({ ...returnMode, [rentalId]: "" });
+      await loadData();
+      return;
+    }
+
+    const remainingQty = liveQty - returnQty;
+    const returnedDays = calcDays(
+      rental.start_date,
+      returnDate,
+      "Returned",
+      rental.avoid_sundays !== false,
+    );
+
+    const returnedAmount = Math.max(
+      returnedDays * returnQty * Number(rental.daily_rate || 0),
+      0,
+    );
+
+    const { id, created_at, updated_at, total_amount, ...copySource } = rental;
+
+    const returnedRental: any = {
+      ...copySource,
+      qty: returnQty,
+      end_date: returnDate,
+      status: "Returned",
+    };
+
+    if ("total_amount" in rental) {
+      returnedRental.total_amount = returnedAmount;
+    }
+
+    const insertRes = await supabase.from("rentals").insert([returnedRental]);
+
+    if (insertRes.error) {
+      showError(insertRes.error.message);
+      return;
+    }
+
+    const updateRes = await supabase
+      .from("rentals")
+      .update({ qty: remainingQty })
+      .eq("id", rentalId);
+
+    if (updateRes.error) {
+      showError(updateRes.error.message);
+      return;
+    }
+    setPartialReturn(null);
+    setReturnMode({ ...returnMode, [rentalId]: "" });
+    await loadData();
+  }
+
   async function handleDelete(id: number) {
     openRentalDeleteConfirm(id);
   }
 
   const activeRentals = rentals.filter((r) => r.status === "Active");
   const filteredActiveRentals = activeRentals
-    .filter((r) => liveBranchFilter === "All Shops" || r.shop === liveBranchFilter)
+    .filter(
+      (r) => liveBranchFilter === "All Shops" || r.shop === liveBranchFilter,
+    )
     .filter((r) => {
       const q = liveSearchText.trim().toLowerCase();
       if (!q) return true;
@@ -746,10 +1092,6 @@ export default function RentalsPage() {
 
   const totalEntryAmount = rows.reduce((sum, r) => sum + calcEntryAmount(r), 0);
 
-  const entryBusinessForSelectedDate = rows
-    .filter((r) => r.tool_id && r.start_date === businessDate)
-    .reduce((sum, r) => sum + calcEntryAmount(r), 0);
-
   const liveRentalToday = activeRentals
     .filter((r) => {
       const branchOk = selectedBranch ? r.shop === selectedBranch : true;
@@ -767,12 +1109,136 @@ export default function RentalsPage() {
       return sum + oneDayAmount;
     }, 0);
 
-  const dayTotalBusiness = entryBusinessForSelectedDate + liveRentalToday;
+  const dayTotalBusiness = totalEntryAmount + liveRentalToday;
+
+  const lowReliabilityRows = rows
+    .map((row, index) => {
+      const customer = customers.find(
+        (c: any) =>
+          String(c.id || "") === String(row.customer_id || "") ||
+          String(c.mobile || "").trim() === String(row.mobile || "").trim(),
+      );
+      const rating = normalizeCustomerRating(customer?.rating);
+
+      if (!customer || rating > 3) return null;
+
+      return {
+        index,
+        rowNumber: index + 1,
+        rating,
+        name: customer.customer_name || row.customer_name || "Customer",
+        mobile: customer.mobile || row.mobile || "-",
+      };
+    })
+    .filter(Boolean) as any[];
+
+  const lowReliabilityGroups = Array.from(
+    lowReliabilityRows
+      .reduce((map: Map<string, any>, item: any) => {
+        const key = `${item.mobile}-${item.name}-${item.rating}`;
+        const existing = map.get(key) || {
+          name: item.name,
+          mobile: item.mobile,
+          rating: item.rating,
+          rowNumbers: [],
+        };
+
+        existing.rowNumbers.push(item.rowNumber);
+        map.set(key, existing);
+        return map;
+      }, new Map())
+      .values(),
+  );
+
+  const confirmRows = validRows();
+  const confirmRowsCount = confirmRows.length;
+  const confirmQty = confirmRows.reduce(
+    (sum, row) => sum + Number(row.qty || 0),
+    0,
+  );
+  const confirmAmount = confirmRows.reduce(
+    (sum, row) => sum + calcEntryAmount(row),
+    0,
+  );
 
   return (
     <main className="rentals-premium-page">
       <style>{premiumRentalStyles}</style>
       <h1 className="rentals-premium-title">Rentals</h1>
+
+      {draftPrompt && (
+        <div style={confirmOverlayStyle}>
+          <div style={confirmCardStyle}>
+            <div
+              style={{
+                background: "linear-gradient(135deg, #0057ff, #0f2a5f)",
+                color: "white",
+                padding: "24px 26px",
+              }}
+            >
+              <div style={{ fontSize: 34, fontWeight: 1000, lineHeight: 1.1 }}>
+                📄 Rental Draft Found
+              </div>
+              <div
+                style={{
+                  marginTop: 8,
+                  fontSize: 16,
+                  fontWeight: 850,
+                  opacity: 0.92,
+                }}
+              >
+                Your unsaved rental entries were saved in this browser.
+              </div>
+            </div>
+
+            <div style={confirmBodyStyle}>
+              <div style={confirmGridStyle}>
+                <div style={confirmInfoStyle}>
+                  <div style={confirmLabelStyle}>Saved</div>
+                  <div style={confirmValueStyle}>
+                    {formatDraftSavedTime(draftPrompt.savedAt) || "Recently"}
+                  </div>
+                </div>
+
+                <div style={confirmInfoStyle}>
+                  <div style={confirmLabelStyle}>Rows</div>
+                  <div style={confirmValueStyle}>
+                    {countDraftRows(draftPrompt.rows || [])}
+                  </div>
+                </div>
+
+                <div style={{ ...confirmInfoStyle, gridColumn: "1 / -1" }}>
+                  <div style={confirmLabelStyle}>Shop</div>
+                  <div style={confirmValueStyle}>
+                    {draftPrompt.selectedBranch || "Not selected"}
+                  </div>
+                </div>
+              </div>
+
+              <div style={confirmButtonRowStyle}>
+                <button
+                  type="button"
+                  style={confirmCancelButtonStyle}
+                  onClick={() => clearRentalDraft(true)}
+                >
+                  Start New
+                </button>
+
+                <button
+                  type="button"
+                  style={{
+                    ...confirmActionButtonStyle,
+                    background: "linear-gradient(135deg, #0057ff, #0f2a5f)",
+                  }}
+                  onClick={restoreRentalDraft}
+                >
+                  Restore Draft
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {shopPopupOpen && (
         <div
@@ -868,71 +1334,230 @@ export default function RentalsPage() {
       )}
 
       {showConfirm && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.55)",
-            zIndex: 99999,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 24,
-          }}
-        >
+        <div style={confirmOverlayStyle}>
           <div
             style={{
-              background: "#b91c1c",
-              color: "white",
-              padding: 40,
-              borderRadius: 18,
-              width: "min(560px, 94vw)",
-              textAlign: "center",
-              boxShadow: "0 20px 60px rgba(0,0,0,0.4)",
+              ...confirmCardStyle,
+              width: "min(420px, 94vw)",
             }}
           >
-            <div style={{ fontSize: 44, fontWeight: 900, marginBottom: 20 }}>
-              {selectedBranch}
-            </div>
-
-            <div style={{ fontSize: 34, fontWeight: 800, marginBottom: 30 }}>
-              {confirmDate}
-            </div>
-
-            <button
-              onClick={confirmSaveRentals}
-              disabled={loading}
+            <div
               style={{
-                background: "white",
-                color: "#b91c1c",
-                padding: "16px 28px",
-                borderRadius: 10,
-                fontSize: 18,
-                fontWeight: 900,
-                marginRight: 12,
-                cursor: "pointer",
-              }}
-            >
-              {loading ? "Saving..." : "CONFIRM SAVE"}
-            </button>
-
-            <button
-              onClick={() => setShowConfirm(false)}
-              style={{
-                background: "#111827",
+                background: "linear-gradient(135deg, #0f2a5f, #0057ff)",
                 color: "white",
-                padding: "16px 28px",
-                borderRadius: 10,
-                fontSize: 18,
-                fontWeight: 900,
-                cursor: "pointer",
+                padding: "18px 20px",
               }}
             >
-              CANCEL
-            </button>
+              <div style={{ fontSize: 26, fontWeight: 1000 }}>
+                Confirm Save Rentals
+              </div>
+              <div style={{ marginTop: 6, fontSize: 14, fontWeight: 850 }}>
+                Please check before saving.
+              </div>
+            </div>
+
+            <div style={{ padding: 20 }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 10,
+                }}
+              >
+                <div style={confirmInfoStyle}>
+                  <div style={confirmLabelStyle}>Shop</div>
+                  <div style={confirmValueStyle}>{selectedBranch || "-"}</div>
+                </div>
+
+                <div style={confirmInfoStyle}>
+                  <div style={confirmLabelStyle}>Date</div>
+                  <div style={confirmValueStyle}>
+                    {formatSaveDate(confirmDate)}
+                  </div>
+                </div>
+
+                <div style={confirmInfoStyle}>
+                  <div style={confirmLabelStyle}>Rows</div>
+                  <div style={confirmValueStyle}>{confirmRowsCount}</div>
+                </div>
+
+                <div style={confirmInfoStyle}>
+                  <div style={confirmLabelStyle}>Qty</div>
+                  <div style={confirmValueStyle}>{confirmQty}</div>
+                </div>
+
+                <div style={{ ...confirmInfoStyle, gridColumn: "1 / -1" }}>
+                  <div style={confirmLabelStyle}>Amount</div>
+                  <div
+                    style={{
+                      ...confirmValueStyle,
+                      color: "#0057ff",
+                      fontSize: 22,
+                    }}
+                  >
+                    ₹{confirmAmount.toFixed(0)}
+                  </div>
+                </div>
+              </div>
+
+              <div style={confirmButtonRowStyle}>
+                <button
+                  type="button"
+                  style={confirmCancelButtonStyle}
+                  onClick={() => setShowConfirm(false)}
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="button"
+                  style={{
+                    ...confirmActionButtonStyle,
+                    background: "linear-gradient(135deg, #0057ff, #0f2a5f)",
+                  }}
+                  onClick={confirmSaveRentals}
+                  disabled={loading}
+                >
+                  {loading ? "Saving..." : "Save"}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
+
+      {partialReturn && (() => {
+        const rental = partialReturn.rental || {};
+        const customer = rentalCustomerDetails(rental);
+        const tool = rentalToolDetails(rental);
+        const liveQty = Number(rental.qty || 1);
+        const returnQty = Number(partialReturnQty || 0);
+        const remainingQty = Math.max(liveQty - returnQty, 0);
+
+        return (
+          <div style={confirmOverlayStyle}>
+            <div style={confirmCardStyle}>
+              <div
+                style={{
+                  background: "linear-gradient(135deg, #2563eb, #0f2a5f)",
+                  color: "white",
+                  padding: "24px 26px",
+                }}
+              >
+                <div style={{ fontSize: 34, fontWeight: 1000, lineHeight: 1.1 }}>
+                  ↩ Partial Return
+                </div>
+                <div
+                  style={{
+                    marginTop: 8,
+                    fontSize: 16,
+                    fontWeight: 850,
+                    opacity: 0.92,
+                  }}
+                >
+                  Return only part of this live rental quantity.
+                </div>
+              </div>
+
+              <div style={confirmBodyStyle}>
+                <div style={confirmGridStyle}>
+                  <div style={confirmInfoStyle}>
+                    <div style={confirmLabelStyle}>Customer</div>
+                    <div style={confirmValueStyle}>{customer.name}</div>
+                  </div>
+
+                  <div style={confirmInfoStyle}>
+                    <div style={confirmLabelStyle}>Mobile</div>
+                    <div style={confirmValueStyle}>{customer.mobile}</div>
+                  </div>
+
+                  <div style={{ ...confirmInfoStyle, gridColumn: "1 / -1" }}>
+                    <div style={confirmLabelStyle}>Tool</div>
+                    <div style={confirmValueStyle}>{tool}</div>
+                  </div>
+
+                  <div style={confirmInfoStyle}>
+                    <div style={confirmLabelStyle}>Live Qty</div>
+                    <div style={confirmValueStyle}>{liveQty}</div>
+                  </div>
+
+                  <div style={confirmInfoStyle}>
+                    <div style={confirmLabelStyle}>Remaining Qty</div>
+                    <div
+                      style={{
+                        ...confirmValueStyle,
+                        color: remainingQty < 0 ? "#dc2626" : "#16a34a",
+                      }}
+                    >
+                      {remainingQty}
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: 12,
+                    marginTop: 18,
+                  }}
+                >
+                  <div>
+                    <div style={confirmLabelStyle}>Return Qty</div>
+                    <input
+                      type="number"
+                      min="1"
+                      max={liveQty}
+                      value={partialReturnQty}
+                      onChange={(e) => setPartialReturnQty(e.target.value)}
+                      style={{
+                        width: "100%",
+                        fontSize: 20,
+                        fontWeight: 950,
+                        textAlign: "center",
+                      }}
+                    />
+                  </div>
+
+                  <div>
+                    <div style={confirmLabelStyle}>Return Date</div>
+                    <input
+                      type="date"
+                      value={partialReturnDate}
+                      onChange={(e) => setPartialReturnDate(e.target.value)}
+                      style={{ width: "100%", fontWeight: 950 }}
+                    />
+                  </div>
+                </div>
+
+                <div style={confirmButtonRowStyle}>
+                  <button
+                    type="button"
+                    style={confirmCancelButtonStyle}
+                    onClick={() => {
+                      setPartialReturn(null);
+                      setReturnMode({ ...returnMode, [partialReturn.id]: "" });
+                    }}
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="button"
+                    style={{
+                      ...confirmActionButtonStyle,
+                      background: "linear-gradient(135deg, #2563eb, #0f2a5f)",
+                    }}
+                    onClick={confirmPartialReturn}
+                  >
+                    Confirm Partial Return
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {rentalConfirm && (
         <div style={confirmOverlayStyle}>
@@ -948,9 +1573,18 @@ export default function RentalsPage() {
               }}
             >
               <div style={{ fontSize: 34, fontWeight: 1000, lineHeight: 1.1 }}>
-                {rentalConfirm.type === "return" ? "↩ Return Rental" : "🗑 Delete Rental"}
+                {rentalConfirm.type === "return"
+                  ? "↩ Return Rental"
+                  : "🗑 Delete Rental"}
               </div>
-              <div style={{ marginTop: 8, fontSize: 16, fontWeight: 850, opacity: 0.92 }}>
+              <div
+                style={{
+                  marginTop: 8,
+                  fontSize: 16,
+                  fontWeight: 850,
+                  opacity: 0.92,
+                }}
+              >
                 {rentalConfirm.type === "return"
                   ? "Please confirm before closing this live rental."
                   : "Please confirm before deleting this rental."}
@@ -975,25 +1609,35 @@ export default function RentalsPage() {
                         <div style={confirmValueStyle}>{customer.mobile}</div>
                       </div>
 
-                      <div style={{ ...confirmInfoStyle, gridColumn: "1 / -1" }}>
+                      <div
+                        style={{ ...confirmInfoStyle, gridColumn: "1 / -1" }}
+                      >
                         <div style={confirmLabelStyle}>Tool</div>
                         <div style={confirmValueStyle}>{tool}</div>
                       </div>
 
                       <div style={confirmInfoStyle}>
                         <div style={confirmLabelStyle}>Qty</div>
-                        <div style={confirmValueStyle}>{rentalConfirm.rental?.qty || 1}</div>
+                        <div style={confirmValueStyle}>
+                          {rentalConfirm.rental?.qty || 1}
+                        </div>
                       </div>
 
                       <div style={confirmInfoStyle}>
                         <div style={confirmLabelStyle}>Shop</div>
-                        <div style={confirmValueStyle}>{rentalConfirm.rental?.shop || "-"}</div>
+                        <div style={confirmValueStyle}>
+                          {rentalConfirm.rental?.shop || "-"}
+                        </div>
                       </div>
 
                       {rentalConfirm.type === "return" && (
-                        <div style={{ ...confirmInfoStyle, gridColumn: "1 / -1" }}>
+                        <div
+                          style={{ ...confirmInfoStyle, gridColumn: "1 / -1" }}
+                        >
                           <div style={confirmLabelStyle}>Return Date</div>
-                          <div style={{ ...confirmValueStyle, color: "#ea580c" }}>
+                          <div
+                            style={{ ...confirmValueStyle, color: "#ea580c" }}
+                          >
                             {rentalConfirm.returnDate}
                           </div>
                         </div>
@@ -1017,7 +1661,11 @@ export default function RentalsPage() {
                     )}
 
                     <div style={confirmButtonRowStyle}>
-                      <button type="button" style={confirmCancelButtonStyle} onClick={closeRentalConfirm}>
+                      <button
+                        type="button"
+                        style={confirmCancelButtonStyle}
+                        onClick={closeRentalConfirm}
+                      >
                         Cancel
                       </button>
 
@@ -1032,7 +1680,9 @@ export default function RentalsPage() {
                         }}
                         onClick={confirmRentalAction}
                       >
-                        {rentalConfirm.type === "return" ? "Return Rental" : "Delete Rental"}
+                        {rentalConfirm.type === "return"
+                          ? "Return Rental"
+                          : "Delete Rental"}
                       </button>
                     </div>
                   </>
@@ -1059,8 +1709,8 @@ export default function RentalsPage() {
               background: "#eff6ff",
               border: "1px solid #bfdbfe",
               borderRadius: 12,
-              padding: "20px 18px",
-              minHeight: 96,
+              padding: "14px 16px",
+              minHeight: 90,
               fontWeight: 900,
             }}
           >
@@ -1073,8 +1723,8 @@ export default function RentalsPage() {
               background: "#f0fdf4",
               border: "1px solid #bbf7d0",
               borderRadius: 12,
-              padding: "20px 18px",
-              minHeight: 96,
+              padding: "14px 16px",
+              minHeight: 90,
               fontWeight: 900,
             }}
           >
@@ -1087,8 +1737,8 @@ export default function RentalsPage() {
               background: "#fff7ed",
               border: "1px solid #fed7aa",
               borderRadius: 12,
-              padding: "20px 18px",
-              minHeight: 96,
+              padding: "14px 16px",
+              minHeight: 90,
               fontWeight: 900,
             }}
           >
@@ -1103,8 +1753,8 @@ export default function RentalsPage() {
               background: "#f8fafc",
               border: "1px solid #cbd5e1",
               borderRadius: 12,
-              padding: "20px 18px",
-              minHeight: 96,
+              padding: "14px 16px",
+              minHeight: 90,
               fontWeight: 900,
             }}
           >
@@ -1119,8 +1769,8 @@ export default function RentalsPage() {
               background: "linear-gradient(135deg, #1d4ed8, #0f172a)",
               color: "white",
               borderRadius: 12,
-              padding: "20px 18px",
-              minHeight: 96,
+              padding: "14px 16px",
+              minHeight: 90,
               fontWeight: 900,
               boxShadow: "0 10px 22px rgba(29,78,216,0.25)",
             }}
@@ -1149,15 +1799,15 @@ export default function RentalsPage() {
             background: "#f8fafc",
             border: "1px solid #cbd5e1",
             borderRadius: 12,
-            padding: 14,
+            padding: "10px 12px",
             marginBottom: 14,
             display: "grid",
-            gridTemplateColumns: "190px 190px 1fr 180px",
+            gridTemplateColumns: "auto auto minmax(260px, 1fr) 230px auto",
             gap: 10,
             alignItems: "center",
           }}
         >
-          <div>
+          <div style={{ minWidth: 170 }}>
             <div style={{ fontSize: 12, fontWeight: 900, color: "#475569" }}>
               Entry Date
             </div>
@@ -1165,23 +1815,66 @@ export default function RentalsPage() {
               type="date"
               value={bulkDate}
               onChange={(e) => setBulkDate(e.target.value)}
-              style={{ fontWeight: 800 }}
+              style={{ fontWeight: 800, height: 40 }}
             />
           </div>
 
           <button
             className="btn-gray"
             onClick={applyDateToAllRows}
-            style={{ fontWeight: 900 }}
+            style={{ fontWeight: 900, whiteSpace: "nowrap" }}
           >
-            Apply To All Rows
+            Apply Date
           </button>
 
-          <select
-            value={selectedBranch}
-            onChange={(e) => setSelectedBranch(e.target.value)}
-            style={{ fontWeight: 800 }}
+          <div
+            style={{
+              background: "#ecfdf5",
+              border: "1px solid #bbf7d0",
+              borderRadius: 12,
+              color: "#166534",
+              fontWeight: 950,
+              padding: "8px 10px",
+              display: "flex",
+              justifyContent: "center",
+              gap: 10,
+              alignItems: "center",
+              flexWrap: "wrap",
+              minHeight: 42,
+            }}
           >
+            <span>💾 {draftStatus}</span>
+            <button
+              type="button"
+              className="btn-gray"
+              onClick={saveRentalDraftNow}
+              style={{ padding: "8px 10px", fontWeight: 900 }}
+            >
+              Save Draft
+            </button>
+            <button
+              type="button"
+              className="btn-gray"
+              onClick={() => clearRentalDraft(true)}
+              style={{ padding: "8px 10px", fontWeight: 900 }}
+            >
+              Clear Draft
+            </button>
+          </div>
+
+          <select
+  value={selectedBranch}
+  onChange={(e) => setSelectedBranch(e.target.value)}
+  style={{
+    width: 230,
+    minWidth: 230,
+    height: 42,
+    padding: "0 36px 0 12px",
+    fontWeight: 900,
+    fontSize: 15,
+    whiteSpace: "nowrap",
+  }}
+>
             <option value="">Select Shop</option>
             {branches.map((b) => (
               <option key={b}>{b}</option>
@@ -1192,7 +1885,7 @@ export default function RentalsPage() {
             className="btn-blue"
             onClick={askSaveConfirmation}
             disabled={loading}
-            style={{ fontWeight: 900 }}
+            style={{ fontWeight: 900, padding: "10px 14px", whiteSpace: "nowrap" }}
           >
             Save Rentals
           </button>
@@ -1460,6 +2153,42 @@ export default function RentalsPage() {
           </div>
         )}
 
+        {lowReliabilityGroups.length > 0 && (
+          <div
+            style={{
+              marginBottom: 14,
+              borderRadius: 14,
+              border: "2px solid #f97316",
+              background: "linear-gradient(135deg, #fff7ed, #ffedd5)",
+              color: "#9a3412",
+              padding: "14px 16px",
+              fontWeight: 950,
+              boxShadow: "0 10px 22px rgba(249, 115, 22, 0.16)",
+            }}
+          >
+            <div style={{ fontSize: 20, fontWeight: 1000 }}>
+              ⚠️ PROCEED WITH CAUTION
+            </div>
+            {lowReliabilityGroups.map((item: any) => (
+              <div
+                key={`${item.mobile}-${item.name}-${item.rating}`}
+                style={{
+                  marginTop: 10,
+                  display: "grid",
+                  gridTemplateColumns: "1.2fr 1fr auto 1.1fr",
+                  gap: 10,
+                  alignItems: "center",
+                }}
+              >
+                <div>Customer: {item.name}</div>
+                <div>Mobile: {item.mobile}</div>
+                <div>{customerReliabilityBadge(item.rating)}</div>
+                <div>Applied to rows: {compressRowNumbers(item.rowNumbers)}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
         <table style={compactTableStyle}>
           <colgroup>
             <col style={{ width: "3%" }} />
@@ -1469,11 +2198,10 @@ export default function RentalsPage() {
             <col style={{ width: "27%" }} />
             <col style={{ width: "5%" }} />
             <col style={{ width: "6%" }} />
-            <col style={{ width: "7%" }} />
             <col style={{ width: "8%" }} />
-            <col style={{ width: "9%" }} />
-            <col style={{ width: "9%" }} />
-            <col style={{ width: "5%" }} />
+            <col style={{ width: "8%" }} />
+            <col style={{ width: "8%" }} />
+            <col style={{ width: "8%" }} />
           </colgroup>
           <thead>
             <tr>
@@ -1484,11 +2212,10 @@ export default function RentalsPage() {
               <th style={compactHeaderStyle}>Tool</th>
               <th style={compactHeaderStyle}>Qty</th>
               <th style={compactHeaderStyle}>Rate</th>
-              <th style={compactHeaderStyle}>Discount</th>
               <th style={compactHeaderStyle}>Total</th>
               <th style={compactHeaderStyle}>Start</th>
               <th style={compactHeaderStyle}>End</th>
-              <th style={compactHeaderStyle}>Avoid Sundays</th>
+              <th style={{ ...compactHeaderStyle, whiteSpace: "normal", lineHeight: 1.05 }}>Avoid Sunday</th>
             </tr>
           </thead>
 
@@ -1571,6 +2298,12 @@ export default function RentalsPage() {
                               });
 
                               setShowAddCustomer(false);
+
+                              if (normalizeCustomerRating(c.rating) <= 3) {
+                                showWarning(
+                                  `Proceed with caution. Customer Reliability: ${normalizeCustomerRating(c.rating)}/10`,
+                                );
+                              }
                             }}
                           >
                             <strong>{c.mobile}</strong>
@@ -1627,16 +2360,6 @@ export default function RentalsPage() {
                   />
                 </td>
 
-                <td style={compactCenterCellStyle}>
-                  <input
-                    style={compactInputStyle}
-                    type="number"
-                    value={row.discount}
-                    onChange={(e) =>
-                      changeRow(index, "discount", e.target.value)
-                    }
-                  />
-                </td>
 
                 <td
                   style={{
@@ -1726,6 +2449,14 @@ export default function RentalsPage() {
             </button>
 
             <button
+              className="btn-gray"
+              style={{ marginLeft: 8 }}
+              onClick={() => clearRentalDraft(true)}
+            >
+              Clear Draft
+            </button>
+
+            <button
               className="btn-blue"
               style={{ marginLeft: 8, fontWeight: 900 }}
               onClick={askSaveConfirmation}
@@ -1736,7 +2467,6 @@ export default function RentalsPage() {
           </div>
         </div>
       </div>
-
 
       <div className="panel">
         <div
@@ -1805,7 +2535,7 @@ export default function RentalsPage() {
               <th style={compactHeaderStyle}>Daily Rate</th>
               <th style={compactHeaderStyle}>Start</th>
               <th style={compactHeaderStyle}>Days</th>
-              <th style={compactHeaderStyle}>Current Total</th>
+              <th style={compactHeaderStyle}>Daily Total</th>
               <th style={compactHeaderStyle}>Shop</th>
               <th style={compactHeaderStyle}>Status</th>
               <th style={compactHeaderStyle}>Return</th>
@@ -1829,7 +2559,7 @@ export default function RentalsPage() {
                     r.avoid_sundays !== false,
                   )}
                 </td>
-                <td style={compactCenterCellStyle}>₹{calcTotal(r)}</td>
+                <td style={compactCenterCellStyle}>₹{(Number(r.qty || 1) * Number(r.daily_rate || 0)).toFixed(0)}</td>
                 <td style={compactCenterCellStyle}>{r.shop || "-"}</td>
                 <td style={compactCenterCellStyle}>{r.status}</td>
 
@@ -1843,6 +2573,7 @@ export default function RentalsPage() {
                     <option value="Same Day">Same Day</option>
                     <option value="Today">Today</option>
                     <option value="Pick Date">Pick a Date</option>
+                    <option value="Partial Return">Partial Return</option>
                   </select>
 
                   {returnMode[r.id] === "Pick Date" && (
@@ -1890,7 +2621,6 @@ export default function RentalsPage() {
           </tbody>
         </table>
       </div>
-
     </main>
   );
 }

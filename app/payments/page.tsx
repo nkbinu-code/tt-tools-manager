@@ -9,7 +9,12 @@ import {
 } from "react";
 import { Download } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import { getPaymentsData, moveCustomerBalanceToArrears } from "./actions";
+import {
+  deletePaymentEntry,
+  getPaymentsData,
+  moveCustomerBalanceToArrears,
+  updatePaymentEntry,
+} from "./actions";
 import StatementPrintStyles from "../statements/StatementPrintStyles";
 import { useAppMessage } from "../contexts/AppMessageProvider";
 import { rowMobile, rowToolName } from "../calculations";
@@ -88,8 +93,10 @@ export default function PaymentsPage() {
   const [customerFilter, setCustomerFilter] = useState("");
   const [paymentShopFilter, setPaymentShopFilter] = useState("All Shops");
   const [closedSearchText, setClosedSearchText] = useState("");
+  const [paymentQuickSearch, setPaymentQuickSearch] = useState("");
   const [recentShopFilter, setRecentShopFilter] = useState("All Shops");
-  const [recentDate, setRecentDate] = useState("");
+  const [recentFromDate, setRecentFromDate] = useState("");
+  const [recentToDate, setRecentToDate] = useState("");
 
   const [customers, setCustomers] = useState<any[]>([]);
   const [pendingRows, setPendingRows] = useState<any[]>([]);
@@ -111,6 +118,8 @@ export default function PaymentsPage() {
   );
 
   const [arrearsPopup, setArrearsPopup] = useState<any>(null);
+  const [editPaymentForm, setEditPaymentForm] = useState<any>(null);
+  const [deletePaymentPopup, setDeletePaymentPopup] = useState<any>(null);
   const [statementOptions, setStatementOptions] = useState<any>(null);
   const [arrearsReason, setArrearsReason] = useState("");
   const [arrearsRemarks, setArrearsRemarks] = useState("");
@@ -292,7 +301,6 @@ export default function PaymentsPage() {
     });
 
     setCustomerFilter(row.mobile || "");
-    showSuccess("Payment row filled. Enter amount and save payment.");
   }
 
   function updateCashRow(index: number, field: string, value: string) {
@@ -313,7 +321,7 @@ export default function PaymentsPage() {
       Number(firstRow.amount || 0) <= 0 &&
       Number(firstRow.discount || 0) <= 0
     ) {
-      showWarning("Please enter payment amount or discount");
+      showWarning("Please enter payment amount or round off");
       return;
     }
 
@@ -347,6 +355,111 @@ export default function PaymentsPage() {
 
   async function saveQuickPayment() {
     await saveCustomerPayments();
+  }
+
+  function openEditPayment(payment: any) {
+    const mobile = String(payment.mobile || payment.customer_mobile || "").trim();
+
+    setEditPaymentForm({
+      id: payment.id || "",
+      original_customer_id: payment.customer_id || "",
+      original_mobile: mobile,
+      rental_id: payment.rental_id || "",
+      payment_date: String(payment.payment_date || payment.date || today()).slice(0, 10),
+      customer_name: payment.customer_name || "",
+      mobile,
+      shop: payment.shop || payment.branch || "",
+      amount: String(payment.amount ?? ""),
+      discount: String(payment.discount ?? ""),
+      mode: payment.mode || payment.payment_mode || "Cash",
+      remarks: payment.remarks || "",
+    });
+  }
+
+  function updateEditPaymentField(field: string, value: string) {
+    setEditPaymentForm((prev: any) => {
+      if (!prev) return prev;
+
+      const updated = { ...prev, [field]: value };
+
+      if (field === "mobile") {
+        const customer = findCustomerByMobile(value);
+        if (customer) {
+          updated.customer_name = customer.customer_name || customer.name || "";
+          updated.shop = customer.shop || customer.branch || updated.shop || "";
+        }
+      }
+
+      return updated;
+    });
+  }
+
+  async function saveEditedPayment() {
+    if (!editPaymentForm?.id) {
+      showError("Payment id not found");
+      return;
+    }
+
+    const amount = Number(editPaymentForm.amount || 0);
+    const discount = Number(editPaymentForm.discount || 0);
+
+    if (amount <= 0 && discount <= 0) {
+      showWarning("Please enter payment amount or round off");
+      return;
+    }
+
+    const customer = findCustomerByMobile(editPaymentForm.mobile);
+    const mobileChanged =
+      String(editPaymentForm.mobile || "").trim() !==
+      String(editPaymentForm.original_mobile || "").trim();
+
+    const res: any = await updatePaymentEntry({
+      id: editPaymentForm.id,
+      payment_date: editPaymentForm.payment_date || today(),
+      rental_id: mobileChanged ? null : editPaymentForm.rental_id || null,
+      customer_id:
+        customer?.id ||
+        (mobileChanged ? null : editPaymentForm.original_customer_id || null),
+      customer_name:
+        customer?.customer_name || customer?.name || editPaymentForm.customer_name || "",
+      mobile: editPaymentForm.mobile || "",
+      shop:
+        editPaymentForm.shop ||
+        customer?.shop ||
+        customer?.branch ||
+        "",
+      amount,
+      discount,
+      mode: editPaymentForm.mode || "Cash",
+      remarks: editPaymentForm.remarks || "",
+    });
+
+    if (!res.success) {
+      showError(res.message || "Failed to update payment");
+      return;
+    }
+
+    setEditPaymentForm(null);
+    await loadData();
+    showSuccess("Payment updated successfully");
+  }
+
+  async function confirmDeletePayment() {
+    if (!deletePaymentPopup?.id) {
+      showError("Payment id not found");
+      return;
+    }
+
+    const res: any = await deletePaymentEntry(deletePaymentPopup.id);
+
+    if (!res.success) {
+      showError(res.message || "Failed to delete payment");
+      return;
+    }
+
+    setDeletePaymentPopup(null);
+    await loadData();
+    showSuccess("Payment deleted successfully");
   }
 
   async function saveShopCash() {
@@ -629,15 +742,34 @@ export default function PaymentsPage() {
         .reduce((sum, a) => sum + Number(a.arrears_amount || 0), 0),
     }));
 
-  const visiblePayments = payments.filter((p) => {
-    const matchMonth = sameMonth(p.payment_date);
-    const matchSelectedShop =
-      shopFilter === "All Shops" || p.shop === shopFilter;
-    const matchCustomer =
-      !selectedMobile || String(p.mobile || "").trim() === selectedMobile;
+  const recentPayments = payments
+    .filter((p: any) => {
+      const paymentShop = String(p.shop || p.branch || "").trim();
+      return recentShopFilter === "All Shops" || paymentShop === recentShopFilter;
+    })
+    .filter((p: any) => {
+      const paymentCustomerId = String(p.customer_id || "").trim();
+      const paymentMobile = String(p.mobile || p.customer_mobile || "").trim();
 
-    return matchMonth && matchSelectedShop && matchCustomer;
-  });
+      if (!selectedMobile && !selectedCustomerId) return true;
+
+      return (
+        (selectedCustomerId && paymentCustomerId === selectedCustomerId) ||
+        (selectedMobile && paymentMobile === selectedMobile)
+      );
+    })
+    .filter((p: any) => {
+      const d = String(p.payment_date || p.date || p.created_at || "").slice(0, 10);
+      if (recentFromDate && d && d < recentFromDate) return false;
+      if (recentToDate && d && d > recentToDate) return false;
+      return true;
+    })
+    .sort((a: any, b: any) =>
+      String(b.payment_date || b.date || b.created_at || "").localeCompare(
+        String(a.payment_date || a.date || a.created_at || ""),
+      ),
+    )
+    .slice(0, 100);
 
   const statementRange = useMemo(
     () => getStatementRange(statementOptions),
@@ -705,12 +837,12 @@ export default function PaymentsPage() {
       "Mobile",
       "Shop",
       "Amount",
-      "Discount",
+      "Round Off",
       "Mode",
       "Remarks",
     ];
 
-    const rows = visiblePayments.map((p) => [
+    const rows = recentPayments.map((p: any) => [
       p.payment_date,
       p.customer_name,
       p.mobile,
@@ -738,46 +870,63 @@ export default function PaymentsPage() {
     URL.revokeObjectURL(url);
   }
 
+  function findCustomerBySearchText(value: string) {
+    const q = String(value || "").trim().toLowerCase();
+    const digits = String(value || "").replace(/\D/g, "").trim();
+
+    if (!q && !digits) return null;
+
+    return (
+      customers.find((c: any) => {
+        const mobile = String(c.mobile || "").replace(/\D/g, "").trim();
+        const name = String(c.customer_name || c.name || "")
+          .trim()
+          .toLowerCase();
+
+        return (
+          (digits && mobile === digits) ||
+          (q.length > 0 && name === q)
+        );
+      }) || null
+    );
+  }
+
+  function selectCustomerForPayments(customer: any) {
+    if (!customer) return;
+
+    const mobile = String(customer.mobile || "").trim();
+    if (!mobile) return;
+
+    setCustomerFilter(mobile);
+    updatePaymentRow(0, "mobile", mobile);
+    setStatementOptions({
+      type: "combined",
+      period: "thisMonth",
+      fromDate: monthStart(),
+      toDate: today(),
+    });
+  }
+
   function handlePaymentTopSearch(value: string) {
     setClosedSearchText(value);
 
-    const exactCustomer = customers.find((c: any) => {
-      const mobile = String(c.mobile || "").trim();
-      const name = String(c.customer_name || c.name || "")
-        .trim()
-        .toLowerCase();
-      const q = String(value || "")
-        .trim()
-        .toLowerCase();
-
-      return (
-        mobile === String(value || "").trim() || (q.length > 0 && name === q)
-      );
-    });
-
+    const exactCustomer = findCustomerBySearchText(value);
     if (exactCustomer) {
-      const mobile = String(exactCustomer.mobile || "").trim();
-      setCustomerFilter(mobile);
-      updatePaymentRow(0, "mobile", mobile);
+      selectCustomerForPayments(exactCustomer);
     }
   }
 
-  const recentPayments = payments
-    .filter(
-      (p: any) =>
-        recentShopFilter === "All Shops" || p.shop === recentShopFilter,
-    )
-    .filter(
-      (p: any) =>
-        !recentDate || String(p.payment_date || "").slice(0, 10) === recentDate,
-    )
-    .slice(0, 100);
+  function handlePaymentQuickSearch(value: string) {
+    setPaymentQuickSearch(value);
+
+    const exactCustomer = findCustomerBySearchText(value);
+    if (exactCustomer) {
+      selectCustomerForPayments(exactCustomer);
+      setPaymentQuickSearch("");
+    }
+  }
 
   const rentalPaymentRows = useMemo(() => {
-    const fiveDaysAgo = new Date();
-    fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
-    const fiveDaysAgoText = fiveDaysAgo.toISOString().slice(0, 10);
-
     function customerKey(row: any) {
       const mobile = String(row.mobile || row.customer_mobile || "")
         .replace(/\D/g, "")
@@ -865,26 +1014,83 @@ export default function PaymentsPage() {
       return rentalBusiness + salesBusiness - paid - discount - alreadyArrears;
     }
 
-    const returnedRows = pendingReturnedRentals
-      .filter(
-        (row: any) =>
-          paymentShopFilter === "All Shops" || row.shop === paymentShopFilter,
-      )
-      .filter((row: any) => {
-        const d = String(
-          row.return_date || row.end_date || row.date || row.closed_date || "",
-        ).slice(0, 10);
-        if (d && d < fiveDaysAgoText) return false;
-        return true;
-      })
-      .filter((row: any) => {
-        const q = closedSearchText.trim().toLowerCase();
-        if (!q) return true;
-        return `${row.customer_name || ""} ${row.mobile || ""} ${row.tool_name || row.tool || ""} ${row.shop || ""}`
-          .toLowerCase()
-          .includes(q);
-      })
-      .map((row: any) => ({ ...row, payment_list_status: "Recently Closed" }));
+    function isReturnedRow(row: any) {
+      const status = String(row.status || row.payment_status || "")
+        .trim()
+        .toLowerCase();
+
+      return (
+        status === "returned" ||
+        status === "closed" ||
+        status === "completed" ||
+        Boolean(row.end_date || row.return_date || row.closed_date)
+      );
+    }
+
+    function rowSearchText(row: any) {
+      return `${row.customer_name || ""} ${row.name || ""} ${row.mobile || row.customer_mobile || ""} ${row.tool_name || row.tool || row.item_name || ""} ${row.shop || row.branch || ""}`.toLowerCase();
+    }
+
+    function passesPaymentListFilters(row: any) {
+      const rowShop = row.shop || row.branch || "";
+      if (paymentShopFilter !== "All Shops" && rowShop !== paymentShopFilter) {
+        return false;
+      }
+
+      const q = closedSearchText.trim().toLowerCase();
+      if (!q) return true;
+      return rowSearchText(row).includes(q);
+    }
+
+    const returnedFromRentals = rentals
+      .filter((row: any) => isReturnedRow(row))
+      .map((row: any) => {
+        const customer = findCustomerForRow(row);
+        const enriched = enrichRentalWithTool(row, tools);
+        const finalBalance = customerFinalBalance({
+          ...enriched,
+          customer_id: row.customer_id || customer?.id || "",
+          mobile: row.mobile || row.customer_mobile || customer?.mobile || "",
+        });
+
+        return {
+          ...enriched,
+          rental_id: row.id || row.rental_id || "",
+          customer_id: row.customer_id || customer?.id || "",
+          customer_name:
+            row.customer_name ||
+            row.name ||
+            customer?.customer_name ||
+            customer?.name ||
+            "",
+          mobile: row.mobile || row.customer_mobile || customer?.mobile || "",
+          shop: row.shop || row.branch || customer?.shop || customer?.branch || "",
+          tool_name: displayToolName(enriched, tools),
+          start_date: row.start_date || row.date || row.rental_date || "",
+          end_date: row.end_date || row.return_date || row.closed_date || "",
+          return_date: row.return_date || row.end_date || row.closed_date || row.date || "",
+          balance: finalBalance,
+          final_balance: finalBalance,
+          payment_status: finalBalance > 0 ? "Pending" : "Paid",
+          payment_list_status: "Recently Closed",
+        };
+      });
+
+    const returnedFromAction = pendingReturnedRentals.map((row: any) => {
+      const finalBalance = customerFinalBalance(row);
+
+      return {
+        ...row,
+        balance: finalBalance || Number(row.balance || 0),
+        final_balance: finalBalance || Number(row.balance || 0),
+        payment_list_status: "Recently Closed",
+      };
+    });
+
+    const returnedRows = [...returnedFromRentals, ...returnedFromAction]
+      .filter((row: any) => row.mobile || row.customer_name)
+      .filter((row: any) => Number(row.final_balance ?? row.balance ?? 0) > 0)
+      .filter((row: any) => passesPaymentListFilters(row));
 
     const liveRows = rentals
       .filter(
@@ -920,17 +1126,7 @@ export default function PaymentsPage() {
         };
       })
       .filter((row: any) => row.mobile || row.customer_name)
-      .filter(
-        (row: any) =>
-          paymentShopFilter === "All Shops" || row.shop === paymentShopFilter,
-      )
-      .filter((row: any) => {
-        const q = closedSearchText.trim().toLowerCase();
-        if (!q) return true;
-        return `${row.customer_name || ""} ${row.mobile || ""} ${row.tool_name || row.tool || ""} ${row.shop || ""}`
-          .toLowerCase()
-          .includes(q);
-      });
+      .filter((row: any) => passesPaymentListFilters(row));
 
     const groupedRows = new Map<string, any>();
 
@@ -993,8 +1189,21 @@ export default function PaymentsPage() {
   ]);
 
   function selectRentalForPayment(row: any) {
+    const mobile = String(row.mobile || "").trim();
+
     receivePendingRental(row);
-    setStatementOptions(null);
+
+    if (mobile) {
+      setCustomerFilter(mobile);
+      updatePaymentRow(0, "mobile", mobile);
+      setStatementOptions({
+        type: "combined",
+        period: "thisMonth",
+        fromDate: monthStart(),
+        toDate: today(),
+      });
+    }
+
     setTimeout(
       () =>
         paymentEntryRef.current?.scrollIntoView({
@@ -1131,6 +1340,12 @@ export default function PaymentsPage() {
 
         .modern-card td {
           border-color: #dbeafe !important;
+          color: #0f172a !important;
+        }
+
+        .modern-card td strong,
+        .modern-card td .strong {
+          color: #0f172a !important;
         }
 
         .modern-card .btn-blue {
@@ -1156,6 +1371,12 @@ export default function PaymentsPage() {
         }
 
         @media print {
+          * {
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+            color-adjust: exact !important;
+          }
+
           @page {
             size: A4 portrait;
             margin: 5mm;
@@ -1200,6 +1421,9 @@ export default function PaymentsPage() {
             break-inside: avoid !important;
             background: #ffffff !important;
             color: #0f172a !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+            color-adjust: exact !important;
           }
 
           .tt-print-area * {
@@ -1215,20 +1439,20 @@ export default function PaymentsPage() {
           .tt-print-area table {
             width: 100% !important;
             border-collapse: collapse !important;
-            font-size: 8.5px !important;
+            font-size: 10.5px !important;
           }
 
           .tt-print-area th,
           .tt-print-area td {
-            padding: 3px 4px !important;
-            font-size: 8.5px !important;
-            line-height: 1.12 !important;
+            padding: 4px 5px !important;
+            font-size: 10.5px !important;
+            line-height: 1.16 !important;
           }
 
           .tt-print-area div,
           .tt-print-area span,
           .tt-print-area strong {
-            font-size: 10px !important;
+            font-size: 12px !important;
           }
 
           .tt-print-area [style*="font-size: 46px"],
@@ -1236,13 +1460,13 @@ export default function PaymentsPage() {
           .tt-print-area [style*="font-size: 30px"],
           .tt-print-area [style*="font-size: 28px"],
           .tt-print-area [style*="font-size: 26px"] {
-            font-size: 16px !important;
+            font-size: 18px !important;
           }
 
           .tt-print-area [style*="font-size: 24px"],
           .tt-print-area [style*="font-size: 22px"],
           .tt-print-area [style*="font-size: 20px"] {
-            font-size: 13px !important;
+            font-size: 15px !important;
           }
 
           .tt-print-area [style*="padding: 16px"],
@@ -1318,6 +1542,25 @@ export default function PaymentsPage() {
         </div>
       )}
 
+      {editPaymentForm && (
+        <PaymentEditorPopup
+          form={editPaymentForm}
+          shops={shops}
+          paymentModes={paymentModes}
+          onChange={updateEditPaymentField}
+          onCancel={() => setEditPaymentForm(null)}
+          onSave={saveEditedPayment}
+        />
+      )}
+
+      {deletePaymentPopup && (
+        <DeletePaymentPopup
+          payment={deletePaymentPopup}
+          onCancel={() => setDeletePaymentPopup(null)}
+          onDelete={confirmDeletePayment}
+        />
+      )}
+
       <section style={rentalPaymentSheetStyle}>
         <div style={rentalPaymentTopStyle}>
           <h1 style={rentalPaymentTitleStyle}>Rental Payments</h1>
@@ -1332,6 +1575,12 @@ export default function PaymentsPage() {
             {customers.map((c) => (
               <option key={c.id} value={c.mobile} label={c.customer_name || c.name} />
             ))}
+          </datalist>
+          <datalist id="paymentQuickCustomerSearchList">
+            {customers.flatMap((c: any) => [
+              <option key={`${c.id}-mobile`} value={c.mobile} label={c.customer_name || c.name} />,
+              <option key={`${c.id}-name`} value={c.customer_name || c.name} label={c.mobile} />,
+            ])}
           </datalist>
           <select
             value={paymentShopFilter}
@@ -1369,6 +1618,13 @@ export default function PaymentsPage() {
               <span>📱 {selectedMobile || "-"}</span>
               <span>🏪 {paymentRows[0]?.shop || selectedCustomer?.shop || selectedPending?.shop || "-"}</span>
             </div>
+            <input
+              list="paymentQuickCustomerSearchList"
+              value={paymentQuickSearch}
+              onChange={(e) => handlePaymentQuickSearch(e.target.value)}
+              placeholder="Search next customer by name or mobile..."
+              style={paymentQuickCustomerSearchStyle}
+            />
           </div>
 
           <div style={paymentBlueBalanceBoxStyle}>
@@ -1389,7 +1645,7 @@ export default function PaymentsPage() {
             type="number"
             value={paymentRows[0]?.discount || ""}
             onChange={(e) => updatePaymentRow(0, "discount", e.target.value)}
-            placeholder="Discount"
+            placeholder="Round Off"
             style={paymentPillInputStyle}
           />
           <select
@@ -1408,6 +1664,28 @@ export default function PaymentsPage() {
             Move to Arrears
           </button>
         </div>
+
+        <RecentPaymentManager
+          payments={recentPayments}
+          shops={shops}
+          shopFilter={recentShopFilter}
+          setShopFilter={setRecentShopFilter}
+          fromDate={recentFromDate}
+          setFromDate={setRecentFromDate}
+          toDate={recentToDate}
+          setToDate={setRecentToDate}
+          selectedMobile={selectedMobile}
+          selectedCustomerName={
+            paymentRows[0]?.customer_name ||
+            selectedCustomer?.customer_name ||
+            selectedCustomer?.name ||
+            selectedPending?.customer_name ||
+            ""
+          }
+          onEdit={openEditPayment}
+          onDelete={setDeletePaymentPopup}
+          onDownload={downloadCsv}
+        />
       </section>
 
       <section ref={statementRef} style={statementSimpleSectionStyle}>
@@ -1626,6 +1904,291 @@ export default function PaymentsPage() {
         </div>
       </section>
     </main>
+  );
+}
+
+
+function PaymentEditorPopup({
+  form,
+  shops,
+  paymentModes,
+  onChange,
+  onCancel,
+  onSave,
+}: any) {
+  return (
+    <div style={overlayStyle}>
+      <div style={{ ...popupStyle, width: "min(720px, 100%)" }}>
+        <h2 style={paymentPopupTitleStyle}>Edit Payment</h2>
+        <div style={paymentEditNoteStyle}>
+          Change the wrong amount, round off, date, mode, shop, or mobile. If you
+          change the mobile number, the old rental link will be cleared so the
+          payment goes to the corrected customer.
+        </div>
+
+        <div style={paymentEditGridStyle}>
+          <label style={paymentEditLabelStyle}>
+            Date
+            <input
+              type="date"
+              value={form.payment_date || today()}
+              onChange={(e) => onChange("payment_date", e.target.value)}
+            />
+          </label>
+
+          <label style={paymentEditLabelStyle}>
+            Mobile
+            <input
+              value={form.mobile || ""}
+              onChange={(e) => onChange("mobile", e.target.value)}
+              placeholder="Customer mobile"
+            />
+          </label>
+
+          <label style={paymentEditLabelStyle}>
+            Customer
+            <input
+              value={form.customer_name || ""}
+              onChange={(e) => onChange("customer_name", e.target.value)}
+              placeholder="Customer name"
+            />
+          </label>
+
+          <label style={paymentEditLabelStyle}>
+            Shop
+            <select
+              value={form.shop || ""}
+              onChange={(e) => onChange("shop", e.target.value)}
+            >
+              <option value="">Shop</option>
+              {shops
+                .filter((shop: string) => shop !== "All Shops")
+                .map((shop: string) => (
+                  <option key={shop}>{shop}</option>
+                ))}
+            </select>
+          </label>
+
+          <label style={paymentEditLabelStyle}>
+            Amount
+            <input
+              type="number"
+              value={form.amount || ""}
+              onChange={(e) => onChange("amount", e.target.value)}
+              placeholder="Amount received"
+            />
+          </label>
+
+          <label style={paymentEditLabelStyle}>
+            Round Off
+            <input
+              type="number"
+              value={form.discount || ""}
+              onChange={(e) => onChange("discount", e.target.value)}
+              placeholder="Round off"
+            />
+          </label>
+
+          <label style={paymentEditLabelStyle}>
+            Mode
+            <select
+              value={form.mode || "Cash"}
+              onChange={(e) => onChange("mode", e.target.value)}
+            >
+              {paymentModes.map((mode: string) => (
+                <option key={mode}>{mode}</option>
+              ))}
+            </select>
+          </label>
+
+          <label style={{ ...paymentEditLabelStyle, gridColumn: "1 / -1" }}>
+            Remarks
+            <textarea
+              value={form.remarks || ""}
+              onChange={(e) => onChange("remarks", e.target.value)}
+              rows={3}
+              placeholder="Remarks"
+            />
+          </label>
+        </div>
+
+        <div style={popupButtonRowStyle}>
+          <button className="btn-gray" type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="btn-blue" type="button" onClick={onSave}>
+            Save Changes
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DeletePaymentPopup({ payment, onCancel, onDelete }: any) {
+  return (
+    <div style={overlayStyle}>
+      <div style={popupStyle}>
+        <h2 style={paymentPopupTitleStyle}>Delete Payment?</h2>
+        <div style={deletePaymentWarningStyle}>
+          <div>
+            <strong>{payment.customer_name || "Customer"}</strong> • {payment.mobile || "-"}
+          </div>
+          <div>Shop: {payment.shop || "-"}</div>
+          <div>Date: {formatCardDate(payment.payment_date || payment.date || payment.created_at)}</div>
+          <div style={{ fontSize: 24, color: "#b91c1c", fontWeight: 1000 }}>
+            Amount: ₹{Number(payment.amount || 0).toFixed(0)}
+          </div>
+          {Number(payment.discount || 0) > 0 && (
+            <div>Round Off: ₹{Number(payment.discount || 0).toFixed(0)}</div>
+          )}
+        </div>
+        <p style={deletePaymentTextStyle}>
+          This will remove the wrong payment from Reports and Customer Balance.
+        </p>
+        <div style={popupButtonRowStyle}>
+          <button className="btn-gray" type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button type="button" onClick={onDelete} style={deleteConfirmButtonStyle}>
+            Delete Payment
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RecentPaymentManager({
+  payments,
+  shops,
+  shopFilter,
+  setShopFilter,
+  fromDate,
+  setFromDate,
+  toDate,
+  setToDate,
+  selectedMobile,
+  selectedCustomerName,
+  onEdit,
+  onDelete,
+  onDownload,
+}: any) {
+  const title = selectedMobile
+    ? `Recent Payments - ${selectedCustomerName || selectedMobile}`
+    : "Recent Payments";
+
+  const subtitle = selectedMobile
+    ? "Showing payments for the selected customer. Use date range to check old payments."
+    : "Select a customer above to see only that customer, or use shop/date range for all payments.";
+
+  return (
+    <div style={recentPaymentsInsidePaymentStyle}>
+      <div style={recentPaymentsHeaderStyle}>
+        <div>
+          <h3 style={recentPaymentsTitleStyle}>{title}</h3>
+          <p style={recentPaymentsSubtitleStyle}>{subtitle}</p>
+        </div>
+        <button className="btn-blue" type="button" onClick={onDownload} style={recentPaymentDownloadButtonStyle}>
+          <Download size={16} /> Download
+        </button>
+      </div>
+
+      <div style={recentPaymentsControlsStyle}>
+        <select
+          value={shopFilter}
+          onChange={(e) => setShopFilter(e.target.value)}
+          style={recentPaymentControlStyle}
+          title="Select shop"
+        >
+          {shops.map((shop: string) => (
+            <option key={shop}>{shop}</option>
+          ))}
+        </select>
+        <label style={recentPaymentDateLabelStyle}>
+          From
+          <input
+            type="date"
+            value={fromDate}
+            onChange={(e) => setFromDate(e.target.value)}
+            style={recentPaymentControlStyle}
+          />
+        </label>
+        <label style={recentPaymentDateLabelStyle}>
+          To
+          <input
+            type="date"
+            value={toDate}
+            onChange={(e) => setToDate(e.target.value)}
+            style={recentPaymentControlStyle}
+          />
+        </label>
+        {(fromDate || toDate) && (
+          <button
+            className="btn-gray"
+            type="button"
+            onClick={() => {
+              setFromDate("");
+              setToDate("");
+            }}
+            style={recentPaymentClearButtonStyle}
+          >
+            Clear Dates
+          </button>
+        )}
+      </div>
+
+      <div className="table-wrap" style={recentPaymentTableWrapStyle}>
+        <table style={recentPaymentTableStyle}>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Customer</th>
+              <th>Mobile</th>
+              <th>Shop</th>
+              <th>Amount</th>
+              <th>Round Off</th>
+              <th>Mode</th>
+              <th>Remarks</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(payments || []).map((payment: any, index: number) => (
+              <tr key={`${payment.id || "payment"}-${index}`}>
+                <td>{formatCardDate(payment.payment_date || payment.date || payment.created_at)}</td>
+                <td>
+                  <strong>{payment.customer_name || "-"}</strong>
+                </td>
+                <td>{payment.mobile || "-"}</td>
+                <td>{payment.shop || "-"}</td>
+                <td className="strong">₹{Number(payment.amount || 0).toFixed(0)}</td>
+                <td>₹{Number(payment.discount || 0).toFixed(0)}</td>
+                <td>{payment.mode || payment.payment_mode || "-"}</td>
+                <td>{payment.remarks || "-"}</td>
+                <td>
+                  <div style={recentPaymentActionStyle}>
+                    <button type="button" style={editPaymentButtonStyle} onClick={() => onEdit(payment)}>
+                      Edit
+                    </button>
+                    <button type="button" style={deletePaymentButtonStyle} onClick={() => onDelete(payment)}>
+                      Delete
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {(!payments || payments.length === 0) && (
+              <tr>
+                <td colSpan={9} style={{ textAlign: "center", fontWeight: 900, padding: 18 }}>
+                  No payments found for this customer / date period
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
@@ -1924,14 +2487,9 @@ function RentalPaymentsTable({ rows, onStatement, onPay }: any) {
           })}
           {visibleRows.length === 0 && (
             <tr>
-              <td style={rentalPaymentNameTdStyle}>-</td>
-              <td style={rentalPaymentTdStyle}>-</td>
-              <td style={rentalPaymentTdStyle}>-</td>
-              <td style={rentalPaymentTdStyle}>-</td>
-              <td style={rentalPaymentTdStyle}>-</td>
-              <td style={rentalPaymentTdStyle}>-</td>
-              <td style={rentalPaymentTdStyle}>-</td>
-              <td style={rentalPaymentTdStyle}>-</td>
+              <td colSpan={8} style={{ ...rentalPaymentTdStyle, padding: 18, textAlign: "center", fontWeight: 950 }}>
+                No recently closed or live rentals found
+              </td>
             </tr>
           )}
           {emptyRows.map((_, index) => (
@@ -2167,6 +2725,7 @@ function InlineCustomerStatement({
       kind: "rent",
       date: rentalStartDate(r),
       item: displayToolName(r, tools),
+      qty: Number(r.qty || r.quantity || 1),
       status:
         r.end_date || r.return_date
           ? `Returned on ${dateShort(r.end_date || r.return_date)}`
@@ -2181,7 +2740,8 @@ function InlineCustomerStatement({
     ...(statementPayments || []).map((p: any) => ({
       kind: "payment",
       date: paymentEntryDate(p),
-      item: "",
+      item: "Payment received",
+      qty: "",
       status: "",
       days: "",
       rentalDates: "",
@@ -2204,6 +2764,39 @@ function InlineCustomerStatement({
   const closingBalance = rowsWithBalance.length
     ? rowsWithBalance[rowsWithBalance.length - 1].balance
     : openingBalance;
+
+  const statementQtyTotal = rowsWithBalance.reduce(
+    (sum: number, row: any) =>
+      row.kind === "rent" ? sum + Number(row.qty || 0) : sum,
+    0,
+  );
+
+  const statementDaysTotal = rowsWithBalance.reduce(
+    (sum: number, row: any) =>
+      row.kind === "rent" ? sum + Number(row.days || 0) : sum,
+    0,
+  );
+
+  const statementDailyRentTotal = rowsWithBalance.reduce(
+    (sum: number, row: any) =>
+      row.kind === "rent" ? sum + Number(row.rent || 0) : sum,
+    0,
+  );
+
+  const statementAmountTotal = rowsWithBalance.reduce(
+    (sum: number, row: any) => sum + Number(row.amount || 0),
+    0,
+  );
+
+  const statementPaymentTotal = rowsWithBalance.reduce(
+    (sum: number, row: any) => sum + Number(row.payment || 0),
+    0,
+  );
+
+  const statementLedgerDiscountTotal = rowsWithBalance.reduce(
+    (sum: number, row: any) => sum + Number(row.discount || 0),
+    0,
+  );
 
   function escapeHtml(value: any) {
     return String(value ?? "")
@@ -2256,26 +2849,41 @@ function InlineCustomerStatement({
   function buildShareStatementHtml(logoSrc = "/branding/logo.png") {
 
     const tableRows = [
-      `<tr>
+      `<tr class="opening-row">
         <td class="strong">Opening Balance</td>
-        <td></td><td></td><td></td><td></td><td></td><td></td><td></td><td class="num strong">${escapeHtml(moneyPlain(openingBalance))}</td>
+        <td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td class="num strong">${escapeHtml(moneyPlain(openingBalance))}</td>
       </tr>`,
       ...rowsWithBalance.map(
-        (row: any) => `<tr>
+        (row: any) => `<tr class="${row.kind === "payment" ? "payment-row" : row.status === "Live" ? "live-row" : "rental-row"}">
           <td>${escapeHtml(dateShort(row.date))}</td>
-          <td class="strong">${escapeHtml(row.item)}</td>
+          <td class="strong">${escapeHtml(row.item || (row.kind === "payment" ? "Payment received" : ""))}</td>
+          <td class="num">${row.kind === "rent" ? escapeHtml(row.qty) : ""}</td>
           <td class="strong">${escapeHtml(row.status)}</td>
           <td class="num">${escapeHtml(row.days)}</td>
           <td class="num">${escapeHtml(row.rentalDates)}</td>
-          <td class="num">${row.rent ? escapeHtml(moneyPlain(row.rent)) : ""}</td>
-          <td class="num">${row.amount ? escapeHtml(moneyPlain(row.amount)) : ""}</td>
-          <td class="num">${row.payment ? escapeHtml(moneyPlain(row.payment)) : ""}${row.discount ? `<div class="small-discount">Discount ${escapeHtml(moneyPlain(row.discount))}</div>` : ""}</td>
+          <td class="num">${row.kind === "rent" ? escapeHtml(moneyPlain(row.rent)) : ""}</td>
+          <td class="num">${row.kind === "rent" ? escapeHtml(moneyPlain(row.amount)) : ""}</td>
+          <td class="num">${row.payment ? escapeHtml(moneyPlain(row.payment)) : ""}</td>
+          <td class="num">${row.discount ? escapeHtml(moneyPlain(row.discount)) : ""}</td>
           <td class="num strong">${escapeHtml(moneyPlain(row.balance))}</td>
         </tr>`,
       ),
-      `<tr>
+      `<tr class="closing-row">
         <td class="strong">Closing Balance</td>
-        <td></td><td></td><td></td><td></td><td></td><td></td><td></td><td class="num strong">${escapeHtml(moneyPlain(closingBalance))}</td>
+        <td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td class="num strong">${escapeHtml(moneyPlain(closingBalance))}</td>
+      </tr>`,
+      `<tr class="total-row">
+        <td class="strong">TOTAL</td>
+        <td></td>
+        <td class="num strong">${escapeHtml(statementQtyTotal)}</td>
+        <td></td>
+        <td class="num strong">${escapeHtml(statementDaysTotal)}</td>
+        <td></td>
+        <td class="num strong">${escapeHtml(moneyPlain(statementDailyRentTotal))}</td>
+        <td class="num strong">${escapeHtml(moneyPlain(statementAmountTotal))}</td>
+        <td class="num strong">${escapeHtml(moneyPlain(statementPaymentTotal))}</td>
+        <td class="num strong">${escapeHtml(moneyPlain(statementLedgerDiscountTotal))}</td>
+        <td class="num strong">${escapeHtml(moneyPlain(closingBalance))}</td>
       </tr>`,
     ].join("");
 
@@ -2313,16 +2921,31 @@ function InlineCustomerStatement({
       </div>
 
       <table class="statement-table">
+        <colgroup>
+          <col class="col-date" />
+          <col class="col-items" />
+          <col class="col-qty" />
+          <col class="col-status" />
+          <col class="col-days" />
+          <col class="col-rental-dates" />
+          <col class="col-rent" />
+          <col class="col-amount" />
+          <col class="col-payments" />
+          <col class="col-roundoff" />
+          <col class="col-balance" />
+        </colgroup>
         <thead>
           <tr>
             <th>Date</th>
             <th>Items</th>
+            <th>Qty</th>
             <th>Status</th>
             <th>Total Days</th>
             <th>Rental Dates</th>
             <th>Daily Rent</th>
             <th>Amount</th>
             <th>Payments</th>
+            <th>Round Off</th>
             <th>Balance</th>
           </tr>
         </thead>
@@ -2356,7 +2979,12 @@ function InlineCustomerStatement({
           <title>${escapeHtml(statementFileName("pdf"))}</title>
           <style>
             @page { size: 330mm ${receiptHeightMm}mm; margin: 0; }
-            * { box-sizing: border-box; }
+            * {
+              box-sizing: border-box;
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+              color-adjust: exact !important;
+            }
             html,
             body {
               margin: 0;
@@ -2453,7 +3081,7 @@ function InlineCustomerStatement({
               padding: 10px 8px;
               border: 1px solid #dbe3ee;
               border-radius: 8px;
-              background: #f7f9fc;
+              background: linear-gradient(180deg, #f8fbff 0%, #fffaf0 100%);
               text-align: center;
             }
             .shop-title {
@@ -2490,10 +3118,22 @@ function InlineCustomerStatement({
               width: 100%;
               border-collapse: collapse;
               table-layout: fixed;
-              font-size: 12px;
+              font-size: 10.5px;
               page-break-inside: avoid;
               break-inside: avoid;
+              background: #ffffff;
             }
+            .statement-table .col-date { width: 135px; }
+            .statement-table .col-items { width: 320px; }
+            .statement-table .col-qty { width: 48px; }
+            .statement-table .col-status { width: 56px; }
+            .statement-table .col-days { width: 64px; }
+            .statement-table .col-rental-dates { width: 180px; }
+            .statement-table .col-rent { width: 66px; }
+            .statement-table .col-amount { width: 62px; }
+            .statement-table .col-payments { width: 92px; }
+            .statement-table .col-roundoff { width: 92px; }
+            .statement-table .col-balance { width: 72px; }
             .statement-table tr,
             .statement-table thead,
             .statement-table tbody,
@@ -2505,48 +3145,100 @@ function InlineCustomerStatement({
               background: #37b5df;
               color: #ffffff;
               border: 1px solid #555;
-              padding: 4px 5px;
+              padding: 3px 4px;
               text-align: left;
               font-weight: 1000;
-              font-size: 13px;
+              font-size: 11.25px;
+              line-height: 1.08;
+              white-space: normal;
+              overflow-wrap: normal;
+              word-break: normal;
+            }
+            .statement-table th:nth-child(n+3) {
+              text-align: center;
             }
             .statement-table td {
               border: 1px solid #555;
-              padding: 4px 5px;
+              padding: 3px 4px;
               vertical-align: middle;
-              font-weight: 800;
+              font-weight: 900;
+              font-size: 10.5px;
+              background: #ffffff;
+              overflow-wrap: normal;
+              word-break: normal;
+              line-height: 1.12;
             }
             .statement-table .num {
               text-align: center;
+              white-space: nowrap;
             }
             .statement-table .strong {
               font-weight: 1000;
             }
             .small-discount {
               color: #7e3fc8;
-              font-size: 10px;
+              font-size: 9px;
               font-weight: 1000;
               margin-top: 2px;
+            }
+            .opening-row td { background: #ffffff; }
+            .rental-row td { background: #ffffff; }
+            .payment-row td { background: #ffffff; }
+            .live-row td { background: #ffffff; }
+            .closing-row td { background: #ffffff; }
+            .total-row td {
+              background: #dbeafe;
+              color: #0f2a5f;
+              font-weight: 1000;
+              border-top: 3px solid #2563eb;
+              border-bottom: 3px solid #2563eb;
             }
             .final-balance {
               margin-top: 12px;
               min-height: 62px;
               page-break-inside: avoid;
               break-inside: avoid;
-              background: #eef4fb;
+              background: linear-gradient(90deg, #eaf3ff 0%, #f4f8ff 100%);
               display: flex;
               justify-content: flex-end;
               align-items: center;
               gap: 24px;
               padding: 14px 22px;
               color: #6b8fc8;
-              font-size: 28px;
+              font-size: 21px;
               font-weight: 1000;
             }
             .final-balance strong {
               color: #5d7fbe;
-              font-size: 42px;
+              font-size: 32px;
               line-height: 1;
+            }
+            @media print {
+              * {
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+                color-adjust: exact !important;
+              }
+              html, body {
+                background: #ffffff !important;
+              }
+              .share-statement {
+                background: #ffffff !important;
+              }
+              .shop-card {
+                background: linear-gradient(180deg, #f8fbff 0%, #fff7e8 100%) !important;
+              }
+              .statement-table th { background: #37b5df !important; color: #ffffff !important; }
+              .statement-table th:nth-child(n+3) { text-align: center !important; }
+              .statement-table { background: #ffffff !important; }
+              .statement-table td { background: #ffffff !important; }
+              .opening-row td { background: #ffffff !important; }
+              .rental-row td { background: #ffffff !important; }
+              .payment-row td { background: #ffffff !important; }
+              .live-row td { background: #ffffff !important; }
+              .closing-row td { background: #ffffff !important; }
+              .total-row td { background: #dbeafe !important; }
+              .final-balance { background: linear-gradient(90deg, #eaf3ff 0%, #f4f8ff 100%) !important; }
             }
           </style>
         </head>
@@ -2590,7 +3282,7 @@ function InlineCustomerStatement({
     wrapper.style.width = "1246px";
     wrapper.style.background = "#ffffff";
     wrapper.innerHTML = `<style>
-      * { box-sizing: border-box; }
+      * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; color-adjust: exact; }
       .share-statement {
         width: 1246px;
         background: #ffffff;
@@ -2673,7 +3365,7 @@ function InlineCustomerStatement({
         padding: 10px 8px;
         border: 1px solid #dbe3ee;
         border-radius: 8px;
-        background: #f7f9fc;
+        background: linear-gradient(180deg, #f8fbff 0%, #fffaf0 100%);
         text-align: center;
       }
       .shop-title {
@@ -2710,22 +3402,41 @@ function InlineCustomerStatement({
         width: 100%;
         border-collapse: collapse;
         table-layout: fixed;
-        font-size: 12px;
+        font-size: 13.5px;
+        background: #ffffff;
       }
+      .statement-table .col-date { width: 135px; }
+      .statement-table .col-items { width: 320px; }
+      .statement-table .col-qty { width: 48px; }
+      .statement-table .col-status { width: 56px; }
+      .statement-table .col-days { width: 64px; }
+      .statement-table .col-rental-dates { width: 180px; }
+      .statement-table .col-rent { width: 66px; }
+      .statement-table .col-amount { width: 62px; }
+      .statement-table .col-payments { width: 92px; }
+      .statement-table .col-roundoff { width: 92px; }
+      .statement-table .col-balance { width: 72px; }
       .statement-table th {
         background: #37b5df;
         color: #ffffff;
         border: 1px solid #555;
-        padding: 4px 5px;
+        padding: 3px 4px;
         text-align: left;
         font-weight: 1000;
-        font-size: 13px;
+        font-size: 14.25px;
+      }
+      .statement-table th:nth-child(n+3) {
+        text-align: center;
       }
       .statement-table td {
         border: 1px solid #555;
-        padding: 4px 5px;
+        padding: 4px 4px;
         vertical-align: middle;
-        font-weight: 800;
+        font-weight: 900;
+        font-size: 13.5px;
+        background: #ffffff;
+        overflow-wrap: anywhere;
+        word-break: normal;
       }
       .statement-table .num {
         text-align: center;
@@ -2735,26 +3446,38 @@ function InlineCustomerStatement({
       }
       .small-discount {
         color: #7e3fc8;
-        font-size: 10px;
+        font-size: 11.25px;
         font-weight: 1000;
         margin-top: 2px;
+      }
+      .opening-row td { background: #ffffff; }
+      .rental-row td { background: #ffffff; }
+      .payment-row td { background: #ffffff; }
+      .live-row td { background: #ffffff; }
+      .closing-row td { background: #ffffff; }
+      .total-row td {
+        background: #dbeafe;
+        color: #0f2a5f;
+        font-weight: 1000;
+        border-top: 3px solid #2563eb;
+        border-bottom: 3px solid #2563eb;
       }
       .final-balance {
         margin-top: 12px;
         min-height: 62px;
-        background: #eef4fb;
+        background: linear-gradient(90deg, #eaf3ff 0%, #f4f8ff 100%);
         display: flex;
         justify-content: flex-end;
         align-items: center;
         gap: 24px;
         padding: 14px 22px;
         color: #6b8fc8;
-        font-size: 28px;
+        font-size: 21px;
         font-weight: 1000;
       }
       .final-balance strong {
         color: #5d7fbe;
-        font-size: 42px;
+        font-size: 32px;
         line-height: 1;
       }
     </style>${buildShareStatementHtml(logoSrc)}`;
@@ -2876,17 +3599,31 @@ function InlineCustomerStatement({
       </div>
 
       <table style={simpleStatementTableStyle}>
+        <colgroup>
+          <col style={{ width: "12%" }} />
+          <col style={{ width: "24%" }} />
+          <col style={{ width: "4.5%" }} />
+          <col style={{ width: "5%" }} />
+          <col style={{ width: "6%" }} />
+          <col style={{ width: "16%" }} />
+          <col style={{ width: "6%" }} />
+          <col style={{ width: "6%" }} />
+          <col style={{ width: "7%" }} />
+          <col style={{ width: "7%" }} />
+          <col style={{ width: "6.5%" }} />
+        </colgroup>
         <thead>
           <tr>
             <th style={simpleThStyle}>Date</th>
             <th style={simpleThStyle}>Items</th>
-            <th style={simpleThStyle}>Status</th>
+            <th style={simpleThCenterStyle}>Qty</th>
+            <th style={simpleThCenterStyle}>Status</th>
             <th style={simpleThCenterStyle}>Total Days</th>
             <th style={simpleThCenterStyle}>Rental Dates</th>
             <th style={simpleThCenterStyle}>Daily Rent</th>
             <th style={simpleThCenterStyle}>Amount</th>
             <th style={simpleThCenterStyle}>Payments</th>
-            <th style={simpleThCenterStyle}>Discounts</th>
+            <th style={simpleThCenterStyle}>Round Off</th>
             <th style={simpleThCenterStyle}>Balance</th>
           </tr>
         </thead>
@@ -2901,33 +3638,49 @@ function InlineCustomerStatement({
             <td style={simpleTdStyle}></td>
             <td style={simpleTdStyle}></td>
             <td style={simpleTdStyle}></td>
+            <td style={simpleTdStyle}></td>
             <td style={simpleTdAmountStyle}>{moneyPlain(openingBalance)}</td>
           </tr>
           {rowsWithBalance.map((row: any, index: number) => (
             <tr key={`${row.kind}-${index}-${row.date}`}>
               <td style={simpleTdStyle}>{dateShort(row.date)}</td>
               <td style={simpleTdStrongStyle}>{row.item}</td>
+              <td style={simpleTdAmountStyle}>{row.kind === "rent" ? row.qty : ""}</td>
               <td style={simpleTdStrongStyle}>{row.status}</td>
               <td style={simpleTdAmountStyle}>{row.days}</td>
               <td style={simpleTdAmountStyle}>{row.rentalDates}</td>
-              <td style={simpleTdAmountStyle}>{row.rent ? moneyPlain(row.rent) : ""}</td>
-              <td style={simpleTdAmountStyle}>{row.amount ? moneyPlain(row.amount) : ""}</td>
+              <td style={simpleTdAmountStyle}>{row.kind === "rent" ? moneyPlain(row.rent) : ""}</td>
+              <td style={simpleTdAmountStyle}>{row.kind === "rent" ? moneyPlain(row.amount) : ""}</td>
               <td style={simpleTdAmountStyle}>{row.payment ? moneyPlain(row.payment) : ""}</td>
               <td style={simpleTdAmountStyle}>{row.discount ? moneyPlain(row.discount) : ""}</td>
               <td style={simpleTdAmountStyle}>{moneyPlain(row.balance)}</td>
             </tr>
           ))}
           <tr>
-            <td style={simpleTdStrongStyle}>Closing Balance</td>
-            <td style={simpleTdStyle}></td>
-            <td style={simpleTdStyle}></td>
-            <td style={simpleTdStyle}></td>
-            <td style={simpleTdStyle}></td>
-            <td style={simpleTdStyle}></td>
-            <td style={simpleTdStyle}></td>
-            <td style={simpleTdStyle}></td>
-            <td style={simpleTdStyle}></td>
-            <td style={simpleTdAmountStyle}>{moneyPlain(closingBalance)}</td>
+            <td style={{ ...simpleTdStrongStyle, background: "#eff6ff" }}>Closing Balance</td>
+            <td style={{ ...simpleTdStyle, background: "#eff6ff" }}></td>
+            <td style={{ ...simpleTdStyle, background: "#eff6ff" }}></td>
+            <td style={{ ...simpleTdStyle, background: "#eff6ff" }}></td>
+            <td style={{ ...simpleTdStyle, background: "#eff6ff" }}></td>
+            <td style={{ ...simpleTdStyle, background: "#eff6ff" }}></td>
+            <td style={{ ...simpleTdStyle, background: "#eff6ff" }}></td>
+            <td style={{ ...simpleTdStyle, background: "#eff6ff" }}></td>
+            <td style={{ ...simpleTdStyle, background: "#eff6ff" }}></td>
+            <td style={{ ...simpleTdStyle, background: "#eff6ff" }}></td>
+            <td style={{ ...simpleTdAmountStyle, background: "#eff6ff" }}>{moneyPlain(closingBalance)}</td>
+          </tr>
+          <tr>
+            <td style={simpleTotalLabelStyle}>TOTAL</td>
+            <td style={simpleTotalStyle}></td>
+            <td style={simpleTotalAmountStyle}>{statementQtyTotal}</td>
+            <td style={simpleTotalStyle}></td>
+            <td style={simpleTotalAmountStyle}>{statementDaysTotal}</td>
+            <td style={simpleTotalStyle}></td>
+            <td style={simpleTotalAmountStyle}>{moneyPlain(statementDailyRentTotal)}</td>
+            <td style={simpleTotalAmountStyle}>{moneyPlain(statementAmountTotal)}</td>
+            <td style={simpleTotalAmountStyle}>{moneyPlain(statementPaymentTotal)}</td>
+            <td style={simpleTotalAmountStyle}>{moneyPlain(statementLedgerDiscountTotal)}</td>
+            <td style={simpleTotalAmountStyle}>{moneyPlain(closingBalance)}</td>
           </tr>
         </tbody>
       </table>
@@ -3020,7 +3773,7 @@ function CustomerStatementBox({
           value={selectedCashReceived}
           tone="green"
         />
-        <SummaryPill label="Discount" value={selectedDiscount} tone="purple" />
+        <SummaryPill label="Round Off" value={selectedDiscount} tone="purple" />
         <SummaryPill label="Advance" value={advance} tone="orange" />
         <SummaryPill
           label="Arrears"
@@ -3064,7 +3817,7 @@ function PaymentHistory({ payments }: any) {
               </span>
               <strong>₹{Number(p.amount || 0).toFixed(0)}</strong>
               {Number(p.discount || 0) > 0 && (
-                <span>Disc ₹{Number(p.discount || 0).toFixed(0)}</span>
+                <span>Round Off ₹{Number(p.discount || 0).toFixed(0)}</span>
               )}
               <span>{p.mode || p.payment_mode || "-"}</span>
             </div>
@@ -3286,23 +4039,33 @@ function CombinedRentalTable({
   );
 }
 
+function hasRentalValue(value: any) {
+  return value !== undefined && value !== null && String(value).trim() !== "";
+}
+
+function firstRentalNumber(...values: any[]) {
+  const value = values.find(hasRentalValue);
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
 function enrichRentalWithTool(row: any, tools: any[] = []) {
   const tool = findToolForRental(row, tools);
 
   return {
     ...row,
     tool_name: row.tool_name || row.tool || tool?.tool_name || tool?.name || "",
-    daily_rate: Number(
-      row.daily_rate ||
-        row.unit_price ||
-        row.daily_rent ||
-        row.rent ||
-        row.rate ||
-        tool?.daily_rent ||
-        tool?.daily_rate ||
-        tool?.rent ||
-        tool?.rate ||
-        0,
+    daily_rate: firstRentalNumber(
+      row.daily_rate,
+      row.unit_price,
+      row.daily_rent,
+      row.rent,
+      row.rate,
+      tool?.daily_rent,
+      tool?.daily_rate,
+      tool?.rent,
+      tool?.rate,
+      0,
     ),
   };
 }
@@ -3330,19 +4093,24 @@ function displayToolName(row: any, tools: any[] = []) {
 
 function paymentRentalRate(row: any, tools: any[] = []) {
   const tool = findToolForRental(row, tools);
-  const directRate = Number(
-    row.daily_rate ||
-      row.unit_price ||
-      row.daily_rent ||
-      row.rent ||
-      row.rate ||
-      0,
-  );
+  const directRateSource = [
+    row.daily_rate,
+    row.unit_price,
+    row.daily_rent,
+    row.rent,
+    row.rate,
+  ].find(hasRentalValue);
 
-  if (directRate > 0) return directRate;
+  if (directRateSource !== undefined) {
+    return firstRentalNumber(directRateSource);
+  }
 
-  return Number(
-    tool?.daily_rent || tool?.daily_rate || tool?.rent || tool?.rate || 0,
+  return firstRentalNumber(
+    tool?.daily_rent,
+    tool?.daily_rate,
+    tool?.rent,
+    tool?.rate,
+    0,
   );
 }
 
@@ -3461,7 +4229,7 @@ function RecentPaymentList({ payments }: any) {
           </div>
           {(Number(p.discount || 0) > 0 || p.mode || p.remarks) && (
             <div style={{ marginTop: 8, color: "#475569" }}>
-              Discount ₹{Number(p.discount || 0).toFixed(0)} • {p.mode || "-"}{" "}
+              Round Off ₹{Number(p.discount || 0).toFixed(0)} • {p.mode || "-"}{" "}
               {p.remarks ? `• ${p.remarks}` : ""}
             </div>
           )}
@@ -4346,6 +5114,19 @@ const paymentBlueLongInfoBarStyle: CSSProperties = {
   fontWeight: 1000,
   boxShadow: "0 12px 22px rgba(2, 8, 23, 0.16)",
 };
+const paymentQuickCustomerSearchStyle: CSSProperties = {
+  minHeight: 42,
+  borderRadius: 999,
+  padding: "0 20px",
+  background: "#ffffff",
+  color: "#061426",
+  border: "1px solid rgba(191,219,254,0.95)",
+  fontSize: 15,
+  fontWeight: 950,
+  boxShadow: "0 12px 22px rgba(2, 8, 23, 0.14)",
+  outline: "none",
+  width: "100%",
+};
 const paymentBlueBalanceBoxStyle: CSSProperties = {
   textAlign: "center",
   color: "white",
@@ -4438,7 +5219,7 @@ const rentalPaymentEmptyCellStyle: CSSProperties = {
   background: "rgba(255,255,255,0.65)",
 };
 const simpleStatementWrapStyle: CSSProperties = {
-  background: "linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)",
+  background: "#ffffff",
   color: "#111827",
   padding: "30px 20px 12px",
   fontFamily: 'Arial, "Noto Sans Malayalam", sans-serif',
@@ -4505,7 +5286,7 @@ const simpleCustomerInfoPillStyle: CSSProperties = {
   gap: 3,
   padding: "10px 14px",
   borderRadius: 16,
-  background: "linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%)",
+  background: "linear-gradient(180deg, #f8fbff 0%, #fffaf0 100%)",
   border: "1px solid #dbeafe",
   boxShadow: "0 8px 18px rgba(15, 23, 42, 0.06)",
 };
@@ -4568,17 +5349,21 @@ const simpleStatementTableStyle: CSSProperties = {
   borderCollapse: "separate",
   borderSpacing: 0,
   tableLayout: "fixed",
-  fontSize: 12,
+  fontSize: 16,
   overflow: "hidden",
   borderRadius: 14,
 };
 const simpleThStyle: CSSProperties = {
   border: "1px solid #cbd5e1",
-  padding: "8px 8px",
+  padding: "8px 5px",
   textAlign: "left",
   color: "#ffffff",
-  fontWeight: 900,
+  fontSize: 15,
+  lineHeight: 1.08,
+  fontWeight: 1000,
   background: "#061426",
+  overflowWrap: "normal",
+  wordBreak: "normal",
 };
 const simpleThCenterStyle: CSSProperties = {
   ...simpleThStyle,
@@ -4586,11 +5371,15 @@ const simpleThCenterStyle: CSSProperties = {
 };
 const simpleTdStyle: CSSProperties = {
   border: "1px solid #dbeafe",
-  padding: "8px 8px",
+  padding: "8px 5px",
   color: "#111827",
-  fontWeight: 750,
+  fontSize: 16,
+  lineHeight: 1.12,
+  fontWeight: 900,
   verticalAlign: "middle",
-  background: "white",
+  background: "#fffaf0",
+  overflowWrap: "normal",
+  wordBreak: "normal",
 };
 const simpleTdStrongStyle: CSSProperties = {
   ...simpleTdStyle,
@@ -4600,6 +5389,23 @@ const simpleTdAmountStyle: CSSProperties = {
   ...simpleTdStyle,
   textAlign: "center",
   fontWeight: 900,
+  whiteSpace: "nowrap",
+};
+const simpleTotalStyle: CSSProperties = {
+  ...simpleTdStyle,
+  background: "#dbeafe",
+  color: "#0f2a5f",
+  fontWeight: 1000,
+  borderTop: "3px solid #2563eb",
+  borderBottom: "3px solid #2563eb",
+};
+const simpleTotalLabelStyle: CSSProperties = {
+  ...simpleTotalStyle,
+  textAlign: "left",
+};
+const simpleTotalAmountStyle: CSSProperties = {
+  ...simpleTotalStyle,
+  textAlign: "center",
 };
 const simpleStatementActionsStyle: CSSProperties = {
   display: "flex",
@@ -4633,6 +5439,175 @@ const sortableHeaderButtonStyle: CSSProperties = {
   alignItems: "center",
   justifyContent: "center",
   gap: 4,
+};
+
+
+const paymentPopupTitleStyle: CSSProperties = {
+  margin: "0 0 14px",
+  fontSize: 28,
+  color: "#0f172a",
+  fontWeight: 1000,
+};
+const paymentEditNoteStyle: CSSProperties = {
+  background: "#eff6ff",
+  border: "1px solid #bfdbfe",
+  borderRadius: 14,
+  padding: 12,
+  marginBottom: 16,
+  color: "#0f2a5f",
+  fontWeight: 850,
+  lineHeight: 1.45,
+};
+const paymentEditGridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(2, minmax(180px, 1fr))",
+  gap: 12,
+};
+const paymentEditLabelStyle: CSSProperties = {
+  display: "grid",
+  gap: 6,
+  color: "#0f172a",
+  fontSize: 13,
+  fontWeight: 950,
+};
+const popupButtonRowStyle: CSSProperties = {
+  display: "flex",
+  justifyContent: "flex-end",
+  gap: 12,
+  marginTop: 18,
+  flexWrap: "wrap",
+};
+const deletePaymentWarningStyle: CSSProperties = {
+  background: "#fff1f2",
+  border: "1px solid #fecaca",
+  borderRadius: 16,
+  padding: 16,
+  marginBottom: 14,
+  color: "#111827",
+  fontWeight: 900,
+  lineHeight: 1.8,
+};
+const deletePaymentTextStyle: CSSProperties = {
+  color: "#475569",
+  fontWeight: 850,
+  margin: "0 0 10px",
+};
+const deleteConfirmButtonStyle: CSSProperties = {
+  border: "1px solid #dc2626",
+  background: "linear-gradient(135deg, #ef4444 0%, #b91c1c 100%)",
+  color: "#ffffff",
+  borderRadius: 12,
+  padding: "10px 16px",
+  fontSize: 15,
+  fontWeight: 1000,
+  cursor: "pointer",
+  boxShadow: "0 10px 20px rgba(185, 28, 28, 0.24)",
+};
+const recentPaymentsInsidePaymentStyle: CSSProperties = {
+  marginTop: 18,
+  background: "rgba(255,255,255,0.96)",
+  border: "1px solid rgba(255,255,255,0.35)",
+  borderRadius: 18,
+  padding: 14,
+  color: "#0f172a",
+};
+
+const recentPaymentsHeaderStyle: CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "flex-start",
+  gap: 12,
+  marginBottom: 12,
+};
+
+const recentPaymentsTitleStyle: CSSProperties = {
+  margin: 0,
+  color: "#0f172a",
+  fontSize: 24,
+  fontWeight: 1000,
+};
+
+const recentPaymentsSubtitleStyle: CSSProperties = {
+  margin: "4px 0 0",
+  color: "#475569",
+  fontSize: 13,
+  fontWeight: 850,
+};
+
+const recentPaymentsControlsStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "1.2fr 1fr 1fr auto",
+  gap: 10,
+  alignItems: "end",
+  marginBottom: 12,
+};
+
+const recentPaymentDateLabelStyle: CSSProperties = {
+  display: "grid",
+  gap: 4,
+  color: "#334155",
+  fontSize: 11,
+  fontWeight: 1000,
+  textTransform: "uppercase",
+};
+
+const recentPaymentClearButtonStyle: CSSProperties = {
+  minHeight: 42,
+  whiteSpace: "nowrap",
+};
+
+const recentPaymentDownloadButtonStyle: CSSProperties = {
+  minHeight: 40,
+  padding: "0 16px",
+  whiteSpace: "nowrap",
+};
+
+const recentPaymentTableWrapStyle: CSSProperties = {
+  marginTop: 0,
+  border: "1px solid #bfdbfe",
+  borderRadius: 14,
+  overflow: "auto",
+};
+
+const recentPaymentTableStyle: CSSProperties = {
+  width: "100%",
+  minWidth: 980,
+  borderCollapse: "collapse",
+};
+
+const recentPaymentControlStyle: CSSProperties = {
+  height: 42,
+  minWidth: 150,
+  borderRadius: 12,
+  border: "1px solid #bfdbfe",
+  padding: "0 12px",
+  fontWeight: 900,
+  color: "#0f172a",
+};
+const recentPaymentActionStyle: CSSProperties = {
+  display: "flex",
+  gap: 8,
+  flexWrap: "wrap",
+};
+const editPaymentButtonStyle: CSSProperties = {
+  border: "1px solid #2563eb",
+  background: "#eff6ff",
+  color: "#0b4cc2",
+  borderRadius: 10,
+  padding: "7px 10px",
+  fontSize: 13,
+  fontWeight: 1000,
+  cursor: "pointer",
+};
+const deletePaymentButtonStyle: CSSProperties = {
+  border: "1px solid #fecaca",
+  background: "#fff1f2",
+  color: "#b91c1c",
+  borderRadius: 10,
+  padding: "7px 10px",
+  fontSize: 13,
+  fontWeight: 1000,
+  cursor: "pointer",
 };
 
 const overlayStyle: CSSProperties = {

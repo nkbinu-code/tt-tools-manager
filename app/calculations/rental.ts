@@ -2,6 +2,16 @@ export function toNumber(value: any) {
     const n = Number(value || 0);
     return Number.isFinite(n) ? n : 0;
   }
+
+  function hasRentalValue(value: any) {
+    return value !== undefined && value !== null && String(value).trim() !== "";
+  }
+
+  function firstRentalNumber(...values: any[]) {
+    const value = values.find(hasRentalValue);
+    const n = Number(value ?? 0);
+    return Number.isFinite(n) ? n : 0;
+  }
   
   export function formatDate(date: any) {
     if (!date) return "";
@@ -36,11 +46,16 @@ export function toNumber(value: any) {
   }
   
   export function calculateRentalTotal(rental: any) {
-    const qty = toNumber(rental.qty || rental.quantity || 1);
-    const rate = toNumber(
-      rental.daily_rate || rental.unit_price || rental.daily_rent || rental.rent || rental.rate || 0
+    const qty = firstRentalNumber(rental.qty, rental.quantity, 1);
+    const rate = firstRentalNumber(
+      rental.daily_rate,
+      rental.unit_price,
+      rental.daily_rent,
+      rental.rent,
+      rental.rate,
+      0
     );
-    const discount = toNumber(rental.discount || 0);
+    const discount = firstRentalNumber(rental.discount, 0);
   
     const startDate = rental.start_date || rental.date || rental.rental_date;
   

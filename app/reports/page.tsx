@@ -120,17 +120,35 @@ function rentalQty(row: any) {
   return Number(row.qty || row.quantity || 1);
 }
 
+function hasRentalValue(value: any) {
+  return value !== undefined && value !== null && String(value).trim() !== "";
+}
+
+function firstRentalNumber(...values: any[]) {
+  const value = values.find(hasRentalValue);
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
 function rentalRate(row: any, tool: any) {
-  return Number(
-    row.daily_rate ||
-      row.unit_price ||
-      row.daily_rent ||
-      row.rent ||
-      row.rate ||
-      tool?.daily_rent ||
-      tool?.daily_rate ||
-      tool?.rent ||
-      0
+  const directRateSource = [
+    row.daily_rate,
+    row.unit_price,
+    row.daily_rent,
+    row.rent,
+    row.rate,
+  ].find(hasRentalValue);
+
+  if (directRateSource !== undefined) {
+    return firstRentalNumber(directRateSource);
+  }
+
+  return firstRentalNumber(
+    tool?.daily_rent,
+    tool?.daily_rate,
+    tool?.rent,
+    tool?.rate,
+    0
   );
 }
 
@@ -267,7 +285,7 @@ export default function ReportsPage() {
         const days = countDays(from, to, avoidSundays);
         const qty = rentalQty(r);
         const rate = rentalRate(r, tool);
-        const grossRent = qty * rate * days;
+        const grossRent = Math.max(0, qty * rate * days);
 
         return {
           original: r,
@@ -336,14 +354,6 @@ export default function ReportsPage() {
   }, [payments, shopFilter, fromDate, toDate]);
 
   const statementRows: StatementRow[] = useMemo(() => {
-    const paymentGroups = new Map<string, any[]>();
-
-    filteredPayments.forEach((p: any) => {
-      const key = String(p.customer_id || rowMobile(p) || "unknown");
-      if (!paymentGroups.has(key)) paymentGroups.set(key, []);
-      paymentGroups.get(key)?.push(p);
-    });
-
     const groupMap = new Map<string, BaseRentalRow[]>();
 
     filteredRentalRows.forEach((r: BaseRentalRow) => {
@@ -354,7 +364,7 @@ export default function ReportsPage() {
       groupMap.get(key)?.push(r);
     });
 
-    const groups = Array.from(groupMap.values()).map((items) => {
+    const groups: StatementRow[] = Array.from(groupMap.values()).map((items) => {
       const first = items[0];
       const isLive = items.some((r) => r.isLive);
       const from = items.map((r) => r.from).sort()[0];
@@ -363,7 +373,12 @@ export default function ReportsPage() {
       const days = items.reduce((sum, r) => sum + Number(r.days || 0), 0);
       const grossRent = items.reduce((sum, r) => sum + Number(r.grossRent || 0), 0);
       const discount = items.reduce((sum, r) => sum + Number(r.rentalDiscount || 0), 0);
-      const rate = items.length === 1 ? first.rate : grossRent > 0 && qty > 0 && days > 0 ? grossRent / days / Math.max(1, qty / items.length) : first.rate;
+      const rate =
+        items.length === 1
+          ? first.rate
+          : grossRent > 0 && qty > 0 && days > 0
+          ? grossRent / days / Math.max(1, qty / items.length)
+          : first.rate;
 
       return {
         from,
@@ -385,32 +400,70 @@ export default function ReportsPage() {
       };
     });
 
-    const customerGrossTotals = new Map<string, number>();
-    groups.forEach((g) => {
-      const key = String(g.customerId || g.mobile || "unknown");
-      customerGrossTotals.set(key, Number(customerGrossTotals.get(key) || 0) + Number(g.grossRent || 0));
+    function sameCustomer(row: StatementRow, payment: any) {
+      const rowCustomerId = String(row.customerId || "").trim();
+      const rowMobileValue = String(row.mobile || "").trim();
+      const paymentCustomerId = String(payment.customer_id || "").trim();
+      const paymentMobile = String(rowMobile(payment) || "").trim();
+
+      return Boolean(
+        (rowCustomerId && paymentCustomerId && rowCustomerId === paymentCustomerId) ||
+          (rowMobileValue && paymentMobile && rowMobileValue === paymentMobile),
+      );
+    }
+
+    const customerKeys = Array.from(
+      new Set(groups.map((g) => g.customerId || g.mobile || g.customer || "unknown")),
+    );
+
+    const allocatedRows: StatementRow[] = [];
+
+    customerKeys.forEach((customerKey) => {
+      const customerRows = groups
+        .filter((g) => (g.customerId || g.mobile || g.customer || "unknown") === customerKey)
+        .sort((a, b) => {
+          if (a.isLive !== b.isLive) return a.isLive ? 1 : -1;
+          const dateCompare = String(a.from).localeCompare(String(b.from));
+          if (dateCompare !== 0) return dateCompare;
+          return String(a.tool).localeCompare(String(b.tool));
+        });
+
+      const customerPayments = filteredPayments
+        .filter((payment: any) => customerRows.some((row) => sameCustomer(row, payment)))
+        .sort((a: any, b: any) => String(paymentDate(a)).localeCompare(String(paymentDate(b))));
+
+      let remainingCash = customerPayments.reduce(
+        (sum: number, payment: any) => sum + Number(payment.amount || 0),
+        0,
+      );
+
+      let remainingPaymentDiscount = customerPayments.reduce(
+        (sum: number, payment: any) => sum + Number(payment.discount || 0),
+        0,
+      );
+
+      customerRows.forEach((row) => {
+        const rentalDiscount = Number(row.discount || 0);
+        const afterRentalDiscount = Math.max(0, Number(row.grossRent || 0) - rentalDiscount);
+        const appliedCash = Math.min(remainingCash, afterRentalDiscount);
+        remainingCash -= appliedCash;
+
+        const afterCash = Math.max(0, afterRentalDiscount - appliedCash);
+        const appliedPaymentDiscount = Math.min(remainingPaymentDiscount, afterCash);
+        remainingPaymentDiscount -= appliedPaymentDiscount;
+
+        const balance = Math.max(0, afterCash - appliedPaymentDiscount);
+
+        allocatedRows.push({
+          ...row,
+          payment: appliedCash,
+          discount: rentalDiscount + appliedPaymentDiscount,
+          balance,
+        });
+      });
     });
 
-    const rows = groups.map((g) => {
-      const customerKey = String(g.customerId || g.mobile || "unknown");
-      const customerPayments = paymentGroups.get(customerKey) || [];
-      const customerPaymentTotal = customerPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
-      const customerPaymentDiscount = customerPayments.reduce((sum, p) => sum + Number(p.discount || 0), 0);
-      const customerGross = Number(customerGrossTotals.get(customerKey) || 0);
-      const share = customerGross > 0 ? Number(g.grossRent || 0) / customerGross : 1;
-      const payment = customerPaymentTotal * share;
-      const discount = Number(g.discount || 0) + customerPaymentDiscount * share;
-      const balance = Math.max(0, Number(g.grossRent || 0) - payment - discount);
-
-      return {
-        ...g,
-        payment,
-        discount,
-        balance,
-      };
-    });
-
-    return rows
+    return allocatedRows
       .filter((row) => statusFilter === "All Status" || statusKey(row) === statusFilter)
       .sort((a, b) => {
         const statusDiff = statusRank(a) - statusRank(b);
@@ -459,7 +512,7 @@ export default function ReportsPage() {
       [subtitle],
       [`Period: ${formatDate(fromDate)} to ${formatDate(toDate)}`],
       [],
-      ["From", "To", "Status", "Shop", "Customer", "Mobile", "Tool", "Qty", "Days", "Rent", "Discount", "Balance"],
+      ["From", "To", "Status", "Shop", "Customer", "Mobile", "Tool", "Qty", "Days", "Rent", "Round Off", "Balance"],
       ...statementRows.map((r) => [
         formatDate(r.from),
         r.to === "LIVE" ? "LIVE" : formatDate(r.to),
@@ -474,7 +527,7 @@ export default function ReportsPage() {
         Math.round(Number(r.discount || 0)),
         Math.round(Number(r.balance || 0)),
       ]),
-      ["TOTAL", "", "", "", "", "", totals.qty, totals.days, totals.grossBusiness, totals.discount, totals.outstanding],
+      ["TOTAL", "", "", "", "", "", "", totals.qty, totals.days, totals.grossBusiness, totals.discount, totals.outstanding],
     ];
 
     const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
@@ -597,7 +650,7 @@ export default function ReportsPage() {
         <div style={summaryGridStyle}>
           <SummaryBox title="Total Business" value={rupee(totals.grossBusiness)} />
           <SummaryBox title="Payments" value={rupee(totals.paymentsReceived)} />
-          <SummaryBox title="Discount" value={rupee(totals.discount)} />
+          <SummaryBox title="Round Off" value={rupee(totals.discount)} />
           <SummaryBox title="Balance" value={rupee(totals.outstanding)} danger />
           <SummaryBox title="Rows" value={totals.records} />
           <SummaryBox title="Days" value={totals.days} />
@@ -617,7 +670,7 @@ export default function ReportsPage() {
                 <th style={{ textAlign: "right" }}>Qty</th>
                 <th style={{ textAlign: "right" }}>Days</th>
                 <th style={{ textAlign: "right" }}>Rent</th>
-                <th style={{ textAlign: "right" }}>Discount</th>
+                <th style={{ textAlign: "right" }}>Round Off</th>
                 <th style={{ textAlign: "right" }}>Balance</th>
               </tr>
             </thead>
