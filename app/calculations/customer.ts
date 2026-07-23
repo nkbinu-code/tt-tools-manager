@@ -1,7 +1,25 @@
 import { calculateRentalTotal, toNumber } from "./rental";
 
+export function paymentEntryType(payment: any) {
+  return String(payment?.entry_type || "payment").trim().toLowerCase();
+}
+
+export function calculateOpeningBalance(payments: any[]) {
+  return payments.reduce((sum, payment) => {
+    const type = paymentEntryType(payment);
+    const amount = Math.abs(toNumber(payment.amount));
+    if (type === "opening_due") return sum + amount;
+    if (type === "opening_credit") return sum - amount;
+    return sum;
+  }, 0);
+}
+
 export function calculatePaidTotal(payments: any[]) {
-  return payments.reduce((sum, p) => sum + toNumber(p.amount), 0);
+  return payments.reduce((sum, payment) => {
+    const type = paymentEntryType(payment);
+    if (type === "opening_due" || type === "opening_credit") return sum;
+    return sum + toNumber(payment.amount);
+  }, 0);
 }
 
 export function calculateDiscountTotal(payments: any[]) {
@@ -31,9 +49,10 @@ export function buildCustomerBalanceRows(
       0
     );
 
+    const openingBalance = calculateOpeningBalance(customerPayments);
     const totalPaid = calculatePaidTotal(customerPayments);
     const totalDiscount = calculateDiscountTotal(customerPayments);
-    const balance = totalBusiness - totalPaid - totalDiscount;
+    const balance = openingBalance + totalBusiness - totalPaid - totalDiscount;
 
     return {
       customer_id: customer.id,
@@ -42,6 +61,7 @@ export function buildCustomerBalanceRows(
       shop: customer.shop || customer.branch || "",
       address: customer.address || "",
       occupation: customer.occupation || "",
+      opening_balance: openingBalance,
       total_business: totalBusiness,
       total_paid: totalPaid,
       total_discount: totalDiscount,

@@ -23,7 +23,7 @@ function rowQty(row: any) {
 }
 
 function rowRent(row: any) {
-  return Number(row.unit_price || row.daily_rent || row.rent || row.rate || 0);
+  return Number(row.daily_rate || row.unit_price || row.daily_rent || row.rent || row.rate || 0);
 }
 
 function money(value: any) {
@@ -42,7 +42,7 @@ export default function StatementRentalTable({ rentals }: Props) {
           </span>
           <div>
             <h2 style={title}>Rental Details</h2>
-            <p style={subtitle}>Tools rented by the selected customer</p>
+            <p style={subtitle}>Items rented by the selected customer</p>
           </div>
         </div>
 

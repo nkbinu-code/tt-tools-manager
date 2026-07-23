@@ -202,6 +202,7 @@ const emptyCustomer = {
   shop: "",
   notes: "",
   rating: 10,
+  opening_balance: "",
 };
 
 export default function CustomersPage() {
@@ -431,7 +432,7 @@ export default function CustomersPage() {
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "1.3fr 1fr 1fr 2fr 1fr 1.5fr",
+            gridTemplateColumns: "1.3fr 1fr 1fr 1.6fr 1fr 1fr 1.4fr",
             gap: 10,
             marginBottom: 14,
           }}
@@ -472,6 +473,13 @@ export default function CustomersPage() {
             ))}
           </select>
 
+
+          <input
+            type="number"
+            placeholder="Opening Balance (+ due / - credit)"
+            value={customer.opening_balance}
+            onChange={(e) => changeCustomer("opening_balance", e.target.value)}
+          />
           <input
             placeholder="Notes"
             value={customer.notes}
@@ -569,6 +577,7 @@ export default function CustomersPage() {
               <th><SortHeader label="Reliability" column="rating" /></th>
               <th>Address</th>
               <th><SortHeader label="Shop" column="shop" /></th>
+              <th>Opening Balance</th>
               <th><SortHeader label="Received Total" column="received_total" /></th>
               <th><SortHeader label="Pending Balance" column="balance" /></th>
               <th><SortHeader label="Last Transaction" column="last_transaction" /></th>
@@ -670,6 +679,15 @@ export default function CustomersPage() {
                         </select>
                       </td>
 
+                      <td>
+                        <input
+                          type="number"
+                          value={editRow.opening_balance ?? ""}
+                          onChange={(e) => setEditRow({ ...editRow, opening_balance: e.target.value })}
+                          title="Positive = customer owes; negative = customer credit"
+                        />
+                      </td>
+
                       <td style={{ color: "#16a34a", fontWeight: 700 }}>
                         ₹{Number(editRow.received_total || 0).toFixed(0)}
                       </td>
@@ -730,6 +748,9 @@ export default function CustomersPage() {
                       </td>
                       <td>{row.address}</td>
                       <td>{row.shop}</td>
+                      <td style={{ fontWeight: 800, color: Number(row.opening_balance || 0) > 0 ? "#dc2626" : Number(row.opening_balance || 0) < 0 ? "#16a34a" : "inherit" }}>
+                        ₹{Number(row.opening_balance || 0).toFixed(0)}
+                      </td>
 
                       <td style={{ color: "#16a34a", fontWeight: 700 }}>
                         ₹{Number(row.received_total || 0).toFixed(0)}

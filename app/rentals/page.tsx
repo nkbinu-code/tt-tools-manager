@@ -7,6 +7,7 @@ import {
   saveRentals,
   returnRental,
   deleteRental,
+  updateRentalWithAudit,
   saveCustomer,
 } from "../actions";
 import { useAppMessage } from "../contexts/AppMessageProvider";
@@ -19,6 +20,9 @@ const emptyRental = {
   mobile: "",
   customer_name: "",
   tool_id: "",
+  is_outside_rent: false,
+  outside_item_name: "",
+  outside_shop_name: "",
   qty: 1,
   daily_rate: 0,
   discount: 0,
@@ -28,6 +32,16 @@ const emptyRental = {
   shop: "",
   avoid_sundays: true,
 };
+
+const emptyTransport = () => ({
+  customer_id: "",
+  vehicle_type: "Auto",
+  trip_type: "Delivery",
+  delivery_location: "",
+  amount: "",
+  transport_date: today,
+  notes: "",
+});
 
 const emptyNewCustomer = {
   customer_name: "",
@@ -87,12 +101,23 @@ function customerReliabilityBadge(value: any) {
 }
 
 
+function hasRentalItem(row: any) {
+  return Boolean(
+    row?.tool_id ||
+      (row?.is_outside_rent &&
+        String(row?.outside_item_name || "").trim()),
+  );
+}
+
 function isRentalRowFilled(row: any) {
   return Boolean(
     row?.customer_id ||
     row?.mobile ||
     row?.customer_name ||
     row?.tool_id ||
+    row?.is_outside_rent ||
+    row?.outside_item_name ||
+    row?.outside_shop_name ||
     Number(row?.qty || 0) !== 1 ||
     Number(row?.daily_rate || 0) !== 0 ||
     Number(row?.discount || 0) !== 0 ||
@@ -332,6 +357,11 @@ export default function RentalsPage() {
     Array.from({ length: 20 }, () => ({ ...emptyRental })),
   );
 
+  const [transportRows, setTransportRows] = useState<any[]>([
+    emptyTransport(),
+    emptyTransport(),
+  ]);
+
   const [selectedBranch, setSelectedBranch] = useState("");
   const [bulkDate, setBulkDate] = useState(today);
   const [businessDate, setBusinessDate] = useState(today);
@@ -362,6 +392,10 @@ export default function RentalsPage() {
   const [draftPrompt, setDraftPrompt] = useState<any>(null);
   const [draftStatus, setDraftStatus] = useState("Draft not saved yet");
   const [draftSaveTick, setDraftSaveTick] = useState(0);
+  const [editRental, setEditRental] = useState<any>(null);
+  const [editReason, setEditReason] = useState("");
+  const [editExplanation, setEditExplanation] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
 
   function showError(message: string) {
     setAppMessage({
@@ -397,6 +431,41 @@ export default function RentalsPage() {
       ]),
     ).values(),
   );
+
+  function availableQtyForTool(tool: any) {
+    const totalQty = Math.max(Number(tool?.total_qty || 1), 1);
+    const activeQty = rentals
+      .filter(
+        (rental: any) =>
+          rental.status === "Active" &&
+          Number(rental.tool_id) === Number(tool?.id),
+      )
+      .reduce((sum: number, rental: any) => sum + Number(rental.qty || 1), 0);
+
+    return Math.max(totalQty - activeQty, 0);
+  }
+
+  const rentableTools = uniqueTools.filter((tool: any) => {
+    if (!selectedBranch) return false;
+
+    const currentLocation = String(
+      tool.current_location || tool.home_branch || "",
+    ).trim();
+    const status = String(tool.status || "").trim().toLowerCase();
+    const blockedStatus = [
+      "service",
+      "in service",
+      "missing",
+      "inactive",
+      "damaged",
+    ].includes(status);
+
+    return (
+      currentLocation === selectedBranch &&
+      !blockedStatus &&
+      availableQtyForTool(tool) > 0
+    );
+  });
 
   async function loadData() {
     const res = await getRentalPageData();
@@ -452,6 +521,7 @@ export default function RentalsPage() {
       try {
         const draft = {
           rows,
+          transportRows,
           selectedBranch,
           bulkDate,
           businessDate,
@@ -471,6 +541,7 @@ export default function RentalsPage() {
     return () => window.clearTimeout(timer);
   }, [
     rows,
+    transportRows,
     selectedBranch,
     bulkDate,
     businessDate,
@@ -485,6 +556,11 @@ export default function RentalsPage() {
       draftPrompt.rows?.length
         ? draftPrompt.rows
         : Array.from({ length: 20 }, () => ({ ...emptyRental })),
+    );
+    setTransportRows(
+      draftPrompt.transportRows?.length
+        ? draftPrompt.transportRows
+        : [emptyTransport(), emptyTransport()],
     );
     setSelectedBranch(draftPrompt.selectedBranch || "");
     setBulkDate(draftPrompt.bulkDate || today);
@@ -519,6 +595,28 @@ export default function RentalsPage() {
     const updated = [...rows];
     updated[index] = { ...updated[index], [field]: value };
     setRows(updated);
+  }
+
+  function changeTransportRow(index: number, field: string, value: any) {
+    setTransportRows((previous) =>
+      previous.map((row, rowIndex) =>
+        rowIndex === index ? { ...row, [field]: value } : row,
+      ),
+    );
+  }
+
+  function addTransportRows() {
+    setTransportRows((previous) => [
+      ...previous,
+      emptyTransport(),
+      emptyTransport(),
+    ]);
+  }
+
+  function validTransportRows() {
+    return transportRows.filter(
+      (row) => row.customer_id && Number(row.amount || 0) > 0 && row.transport_date,
+    );
   }
 
   function copyPreviousCustomerDetails(index: number) {
@@ -677,12 +775,46 @@ export default function RentalsPage() {
 
   function handleToolChange(index: number, toolId: string) {
     const selectedTool = tools.find((t) => String(t.id) === String(toolId));
+
+    if (selectedTool && selectedBranch) {
+      const currentLocation = String(
+        selectedTool.current_location || selectedTool.home_branch || "",
+      ).trim();
+      const availableQty = availableQtyForTool(selectedTool);
+
+      if (currentLocation !== selectedBranch || availableQty <= 0) {
+        showWarning(
+          `${selectedTool.tool_name || "Selected item"} is not available at ${selectedBranch}. Move it to ${selectedBranch} first.`,
+        );
+        return;
+      }
+    }
+
     const updated = [...rows];
 
     updated[index] = {
       ...updated[index],
       tool_id: toolId,
+      is_outside_rent: false,
+      outside_item_name: "",
+      outside_shop_name: "",
       daily_rate: selectedTool?.daily_rent || 0,
+    };
+
+    setRows(updated);
+  }
+
+  function setOutsideRentMode(index: number, enabled: boolean) {
+    const updated = [...rows];
+    const current = updated[index];
+
+    updated[index] = {
+      ...current,
+      is_outside_rent: enabled,
+      tool_id: "",
+      outside_item_name: enabled ? current.outside_item_name || "" : "",
+      outside_shop_name: enabled ? current.outside_shop_name || "" : "",
+      daily_rate: enabled ? Number(current.daily_rate || 0) : 0,
     };
 
     setRows(updated);
@@ -710,8 +842,18 @@ export default function RentalsPage() {
   }
 
   function rentalToolDetails(row: any) {
+    if (row?.is_outside_rent && row?.outside_item_name) {
+      return row.outside_item_name;
+    }
+
     const tool = tools.find((x) => Number(x.id) === Number(row?.tool_id));
-    return tool?.tool_name || row?.tool_name || row?.tool || "-";
+    return (
+      row?.outside_item_name ||
+      tool?.tool_name ||
+      row?.tool_name ||
+      row?.tool ||
+      "-"
+    );
   }
 
   function openRentalReturnConfirm(id: number, returnDate: string) {
@@ -827,7 +969,7 @@ export default function RentalsPage() {
   }
 
   function calcEntryAmount(row: any) {
-    if (!row.tool_id) return 0;
+    if (!hasRentalItem(row)) return 0;
 
     const days = calcEntryDays(row);
 
@@ -858,18 +1000,27 @@ export default function RentalsPage() {
   }
 
   function validRows() {
-    return rows.filter((r) => r.customer_id && r.tool_id && r.start_date);
+    return rows.filter(
+      (r) => r.customer_id && hasRentalItem(r) && r.start_date,
+    );
   }
 
   function openSaveConfirmation() {
     const v = validRows();
 
-    if (v.length === 0) {
-      showWarning("No valid rentals to save");
+    const transport = validTransportRows();
+
+    if (v.length === 0 && transport.length === 0) {
+      showWarning("No valid rentals or transport entries to save");
       return;
     }
 
-    const dates = Array.from(new Set(v.map((r) => r.start_date)));
+    const dates = Array.from(
+      new Set([
+        ...v.map((r) => r.start_date),
+        ...transport.map((r) => r.transport_date),
+      ]),
+    );
     setConfirmDate(dates.length === 1 ? dates[0] : "Multiple Dates");
     setShowConfirm(true);
   }
@@ -888,17 +1039,23 @@ export default function RentalsPage() {
     if (!popupShop) return;
 
     const v = validRows();
+    const transport = validTransportRows();
 
-    if (v.length === 0) {
+    if (v.length === 0 && transport.length === 0) {
       setShopPopupOpen(false);
-      showWarning("No valid rentals to save");
+      showWarning("No valid rentals or transport entries to save");
       return;
     }
 
     setSelectedBranch(popupShop);
     setShopPopupOpen(false);
 
-    const dates = Array.from(new Set(v.map((r) => r.start_date)));
+    const dates = Array.from(
+      new Set([
+        ...v.map((r) => r.start_date),
+        ...transport.map((r) => r.transport_date),
+      ]),
+    );
     setConfirmDate(dates.length === 1 ? dates[0] : "Multiple Dates");
     setShowConfirm(true);
   }
@@ -912,7 +1069,12 @@ export default function RentalsPage() {
       shop: selectedBranch,
     }));
 
-    const res = await saveRentals(rowsWithBranch);
+    const transportWithBranch = transportRows.map((row) => ({
+      ...row,
+      shop: selectedBranch,
+    }));
+
+    const res = await saveRentals(rowsWithBranch, transportWithBranch);
 
     setLoading(false);
     setShowConfirm(false);
@@ -923,6 +1085,7 @@ export default function RentalsPage() {
     }
     clearRentalDraft(false);
     setRows(Array.from({ length: 20 }, () => ({ ...emptyRental })));
+    setTransportRows([emptyTransport(), emptyTransport()]);
     await loadData();
   }
 
@@ -1068,7 +1231,70 @@ export default function RentalsPage() {
     openRentalDeleteConfirm(id);
   }
 
+  function openEditRental(rental: any) {
+    setEditRental({
+      ...rental,
+      customer_id: String(rental.customer_id || ""),
+      tool_id: String(rental.tool_id || ""),
+      qty: String(rental.qty ?? 1),
+      daily_rate: String(rental.daily_rate ?? 0),
+      discount: String(rental.discount ?? 0),
+      transport_amount: String(rental.transport_amount ?? rental.total_amount ?? 0),
+      start_date: String(rental.start_date || "").slice(0, 10),
+      end_date: String(rental.end_date || "").slice(0, 10),
+      transport_date: String(rental.transport_date || rental.start_date || "").slice(0, 10),
+    });
+    setEditReason("");
+    setEditExplanation("");
+  }
+
+  function changeEditRental(field: string, value: any) {
+    setEditRental((current: any) => current ? { ...current, [field]: value } : current);
+  }
+
+  async function saveRentalEdit() {
+    if (!editRental?.id) return;
+    if (!editReason) {
+      showWarning("Please select the reason for editing");
+      return;
+    }
+    if (editExplanation.trim().length < 10) {
+      showWarning("Please write a proper explanation of at least 10 characters");
+      return;
+    }
+
+    setEditSaving(true);
+    const res: any = await updateRentalWithAudit({
+      rental: editRental,
+      reason: editReason,
+      explanation: editExplanation.trim(),
+      edited_by: "Manager",
+    });
+    setEditSaving(false);
+
+    if (!res.success) {
+      showError(res.message || "Failed to update rental");
+      return;
+    }
+
+    setEditRental(null);
+    await loadData();
+    showSuccess(res.message || "Rental updated successfully");
+  }
+
+
   const activeRentals = rentals.filter((r) => r.status === "Active");
+  const returnedRentals = rentals
+    .filter((r) => r.status === "Returned")
+    .filter((r) => liveBranchFilter === "All Shops" || r.shop === liveBranchFilter)
+    .filter((r) => {
+      const q = liveSearchText.trim().toLowerCase();
+      if (!q) return true;
+      return `${customerName(r.customer_id)} ${rentalToolDetails(r)} ${r.shop || ""}`
+        .toLowerCase()
+        .includes(q);
+    })
+    .slice(0, 100);
   const filteredActiveRentals = activeRentals
     .filter(
       (r) => liveBranchFilter === "All Shops" || r.shop === liveBranchFilter,
@@ -1077,20 +1303,26 @@ export default function RentalsPage() {
       const q = liveSearchText.trim().toLowerCase();
       if (!q) return true;
 
-      return `${customerName(r.customer_id)} ${r.mobile || r.customer_mobile || ""} ${toolName(r.tool_id)} ${r.shop || ""}`
+      return `${customerName(r.customer_id)} ${r.mobile || r.customer_mobile || ""} ${rentalToolDetails(r)} ${r.outside_shop_name || ""} ${r.shop || ""}`
         .toLowerCase()
         .includes(q);
     });
 
-  const entryRows = rows.filter((r) => r.customer_id && r.tool_id);
+  const entryRows = rows.filter(
+    (r) => r.customer_id && hasRentalItem(r),
+  );
   const totalRows = entryRows.length;
 
   const totalQty = rows.reduce(
-    (sum, r) => sum + (r.tool_id ? Number(r.qty || 0) : 0),
+    (sum, r) => sum + (hasRentalItem(r) ? Number(r.qty || 0) : 0),
     0,
   );
 
   const totalEntryAmount = rows.reduce((sum, r) => sum + calcEntryAmount(r), 0);
+  const totalTransportAmount = validTransportRows().reduce(
+    (sum, row) => sum + Number(row.amount || 0),
+    0,
+  );
 
   const liveRentalToday = activeRentals
     .filter((r) => {
@@ -1151,20 +1383,70 @@ export default function RentalsPage() {
   );
 
   const confirmRows = validRows();
+  const confirmTransportRows = validTransportRows();
   const confirmRowsCount = confirmRows.length;
   const confirmQty = confirmRows.reduce(
     (sum, row) => sum + Number(row.qty || 0),
     0,
   );
-  const confirmAmount = confirmRows.reduce(
-    (sum, row) => sum + calcEntryAmount(row),
-    0,
-  );
+  const confirmAmount =
+    confirmRows.reduce((sum, row) => sum + calcEntryAmount(row), 0) +
+    confirmTransportRows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
 
   return (
     <main className="rentals-premium-page">
       <style>{premiumRentalStyles}</style>
       <h1 className="rentals-premium-title">Rentals</h1>
+
+      {editRental && (
+        <div style={confirmOverlayStyle}>
+          <div style={{ ...confirmCardStyle, width: "min(920px, 96vw)", maxHeight: "92vh", overflowY: "auto" }}>
+            <div style={{ background: editRental.status === "Returned" ? "linear-gradient(135deg,#b91c1c,#7f1d1d)" : "linear-gradient(135deg,#0057ff,#0f2a5f)", color: "white", padding: "20px 24px" }}>
+              <div style={{ fontSize: 28, fontWeight: 1000 }}>Edit {editRental.status === "Returned" ? "Returned " : ""}Rental</div>
+              <div style={{ marginTop: 6, fontWeight: 800, opacity: .92 }}>
+                {editRental.status === "Returned"
+                  ? "Warning: this change will recalculate the customer statement and balance."
+                  : "Changes are recorded in the rental audit history."}
+              </div>
+            </div>
+            <div style={confirmBodyStyle}>
+              {editRental.is_transport_charge ? (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(150px,1fr))", gap: 12 }}>
+                  <label>Customer<select style={compactSelectStyle} value={editRental.customer_id} onChange={(e)=>changeEditRental("customer_id",e.target.value)}>{customers.map((c:any)=><option key={c.id} value={c.id}>{c.customer_name} - {c.mobile}</option>)}</select></label>
+                  <label>Vehicle Type<input style={compactInputStyle} value={editRental.transport_vehicle_type || "Auto"} onChange={(e)=>changeEditRental("transport_vehicle_type",e.target.value)} /></label>
+                  <label>Trip<select style={compactSelectStyle} value={editRental.transport_trip_type || "Delivery"} onChange={(e)=>changeEditRental("transport_trip_type",e.target.value)}><option>Delivery</option><option>Pickup</option><option>Both</option><option>Other</option></select></label>
+                  <label>Delivery Location<input style={compactInputStyle} value={editRental.transport_location || ""} onChange={(e)=>changeEditRental("transport_location",e.target.value)} /></label>
+                  <label>Amount<input style={compactInputStyle} type="number" value={editRental.transport_amount} onChange={(e)=>changeEditRental("transport_amount",e.target.value)} /></label>
+                  <label>Date<input style={compactInputStyle} type="date" value={editRental.transport_date} onChange={(e)=>changeEditRental("transport_date",e.target.value)} /></label>
+                  <label style={{ gridColumn: "1 / -1" }}>Notes<input style={compactInputStyle} value={editRental.transport_notes || ""} onChange={(e)=>changeEditRental("transport_notes",e.target.value)} /></label>
+                </div>
+              ) : (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(140px,1fr))", gap: 12 }}>
+                  <label style={{ gridColumn: "span 2" }}>Customer<select style={compactSelectStyle} value={editRental.customer_id} onChange={(e)=>changeEditRental("customer_id",e.target.value)}>{customers.map((c:any)=><option key={c.id} value={c.id}>{c.customer_name} - {c.mobile}</option>)}</select></label>
+                  <label>Shop<select style={compactSelectStyle} value={editRental.shop || ""} onChange={(e)=>changeEditRental("shop",e.target.value)}>{branches.map(shop=><option key={shop}>{shop}</option>)}</select></label>
+                  <label>Status<select style={compactSelectStyle} value={editRental.status || "Active"} onChange={(e)=>changeEditRental("status",e.target.value)}><option>Active</option><option>Returned</option></select></label>
+                  {!editRental.is_outside_rent ? <label style={{ gridColumn: "span 2" }}>Tool<select style={compactSelectStyle} value={editRental.tool_id} onChange={(e)=>changeEditRental("tool_id",e.target.value)}>{tools.map((t:any)=><option key={t.id} value={t.id}>{t.tool_name}</option>)}</select></label> : <><label>Outside Item<input style={compactInputStyle} value={editRental.outside_item_name || ""} onChange={(e)=>changeEditRental("outside_item_name",e.target.value)} /></label><label>Outside Shop<input style={compactInputStyle} value={editRental.outside_shop_name || ""} onChange={(e)=>changeEditRental("outside_shop_name",e.target.value)} /></label></>}
+                  <label>Qty<input style={compactInputStyle} type="number" min="1" value={editRental.qty} onChange={(e)=>changeEditRental("qty",e.target.value)} /></label>
+                  <label>Daily Rate<input style={compactInputStyle} type="number" min="0" value={editRental.daily_rate} onChange={(e)=>changeEditRental("daily_rate",e.target.value)} /></label>
+                  <label>Round Off<input style={compactInputStyle} type="number" min="0" value={editRental.discount} onChange={(e)=>changeEditRental("discount",e.target.value)} /></label>
+                  <label style={{ display:"flex", alignItems:"center", gap:8, paddingTop:22 }}><input type="checkbox" checked={editRental.avoid_sundays !== false} onChange={(e)=>changeEditRental("avoid_sundays",e.target.checked)} /> Avoid Sunday</label>
+                  <label>Start Date<input style={compactInputStyle} type="date" value={editRental.start_date} onChange={(e)=>changeEditRental("start_date",e.target.value)} /></label>
+                  <label>Return Date<input style={compactInputStyle} type="date" value={editRental.end_date} onChange={(e)=>changeEditRental("end_date",e.target.value)} /></label>
+                </div>
+              )}
+              <div style={{ marginTop: 18, paddingTop: 16, borderTop: "1px solid #e2e8f0", display:"grid", gridTemplateColumns:"240px 1fr", gap:12 }}>
+                <label>Reason<select style={compactSelectStyle} value={editReason} onChange={(e)=>setEditReason(e.target.value)}><option value="">Select reason</option><option>Wrong return date</option><option>Wrong start date</option><option>Wrong quantity</option><option>Wrong rate or round off</option><option>Wrong customer or tool</option><option>Transport correction</option><option>Other correction</option></select></label>
+                <label>Proper Explanation<textarea value={editExplanation} onChange={(e)=>setEditExplanation(e.target.value)} placeholder="Explain what was wrong, the correct information, and how it was verified." style={{ ...compactInputStyle, minHeight: 82, resize:"vertical" }} /></label>
+              </div>
+              <div style={confirmButtonRowStyle}>
+                <button type="button" style={confirmCancelButtonStyle} onClick={()=>setEditRental(null)} disabled={editSaving}>Cancel</button>
+                <button type="button" style={{...confirmActionButtonStyle, background: editRental.status === "Returned" ? "#b91c1c" : "#0057ff"}} onClick={saveRentalEdit} disabled={editSaving}>{editSaving ? "Saving..." : "Save Edit"}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
 
       {draftPrompt && (
         <div style={confirmOverlayStyle}>
@@ -1379,6 +1661,11 @@ export default function RentalsPage() {
                 <div style={confirmInfoStyle}>
                   <div style={confirmLabelStyle}>Rows</div>
                   <div style={confirmValueStyle}>{confirmRowsCount}</div>
+                </div>
+
+                <div style={confirmInfoStyle}>
+                  <div style={confirmLabelStyle}>Transport</div>
+                  <div style={confirmValueStyle}>{confirmTransportRows.length}</div>
                 </div>
 
                 <div style={confirmInfoStyle}>
@@ -2209,7 +2496,7 @@ export default function RentalsPage() {
               <th style={compactHeaderStyle}>⎘</th>
               <th style={compactHeaderStyle}>Mobile</th>
               <th style={compactHeaderStyle}>Customer</th>
-              <th style={compactHeaderStyle}>Tool</th>
+              <th style={compactHeaderStyle}>Tool / Outside Item</th>
               <th style={compactHeaderStyle}>Qty</th>
               <th style={compactHeaderStyle}>Rate</th>
               <th style={compactHeaderStyle}>Total</th>
@@ -2326,18 +2613,97 @@ export default function RentalsPage() {
                 </td>
 
                 <td style={compactCellStyle}>
-                  <select
-                    style={compactSelectStyle}
-                    value={row.tool_id}
-                    onChange={(e) => handleToolChange(index, e.target.value)}
-                  >
-                    <option value="">Select Tool</option>
-                    {uniqueTools.map((t: any) => (
-                      <option key={t.id} value={t.id}>
-                        {t.tool_name} - ₹{t.daily_rent}/day
-                      </option>
-                    ))}
-                  </select>
+                  {row.is_outside_rent ? (
+                    <div style={{ display: "grid", gap: 5 }}>
+                      <input
+                        style={compactInputStyle}
+                        value={row.outside_item_name || ""}
+                        onChange={(e) =>
+                          changeRow(index, "outside_item_name", e.target.value)
+                        }
+                        placeholder="Outside item name"
+                      />
+
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "minmax(0, 1fr) auto",
+                          gap: 5,
+                        }}
+                      >
+                        <input
+                          style={compactInputStyle}
+                          value={row.outside_shop_name || ""}
+                          onChange={(e) =>
+                            changeRow(index, "outside_shop_name", e.target.value)
+                          }
+                          placeholder="Outside shop (internal)"
+                        />
+
+                        <button
+                          type="button"
+                          title="Change back to our tool"
+                          onClick={() => setOutsideRentMode(index, false)}
+                          style={{
+                            border: "1px solid #cbd5e1",
+                            background: "#ffffff",
+                            color: "#334155",
+                            borderRadius: 7,
+                            padding: "0 8px",
+                            fontWeight: 900,
+                            cursor: "pointer",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          Our Tool
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "minmax(0, 1fr) auto",
+                        gap: 5,
+                      }}
+                    >
+                      <select
+                        style={compactSelectStyle}
+                        value={row.tool_id}
+                        onChange={(e) => handleToolChange(index, e.target.value)}
+                        disabled={!selectedBranch}
+                      >
+                        <option value="">
+                          {selectedBranch
+                            ? "Select Tool"
+                            : "Select rental shop first"}
+                        </option>
+                        {rentableTools.map((t: any) => (
+                          <option key={t.id} value={t.id}>
+                            {t.tool_name} - Avl {availableQtyForTool(t)} - ₹{t.daily_rent}/day
+                          </option>
+                        ))}
+                      </select>
+
+                      <button
+                        type="button"
+                        title="Enter an item rented from an outside shop"
+                        onClick={() => setOutsideRentMode(index, true)}
+                        style={{
+                          border: "1px solid #fdba74",
+                          background: "#fff7ed",
+                          color: "#9a3412",
+                          borderRadius: 7,
+                          padding: "0 8px",
+                          fontWeight: 950,
+                          cursor: "pointer",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        Outside Rent
+                      </button>
+                    </div>
+                  )}
                 </td>
 
                 <td style={compactCenterCellStyle}>
@@ -2410,6 +2776,95 @@ export default function RentalsPage() {
           </tbody>
         </table>
 
+        <section
+          style={{
+            marginTop: 18,
+            border: "1px solid #bfdbfe",
+            borderRadius: 16,
+            background: "#f8fbff",
+            padding: 14,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 12,
+              marginBottom: 10,
+              flexWrap: "wrap",
+            }}
+          >
+            <div>
+              <h3 style={{ margin: 0, fontSize: 19, fontWeight: 1000 }}>
+                Transport Entry
+              </h3>
+              <div style={{ color: "#64748b", fontWeight: 800, fontSize: 13 }}>
+                Add Auto or other transport charges separately from tool rows.
+              </div>
+            </div>
+            <button type="button" className="btn-gray" onClick={addTransportRows}>
+              + Add More
+            </button>
+          </div>
+
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ ...compactTableStyle, minWidth: 1080 }}>
+              <thead>
+                <tr>
+                  {['#','Customer','Vehicle','Trip','Delivery Location','Amount','Date','Notes'].map((title) => (
+                    <th key={title} style={compactHeaderStyle}>{title}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {transportRows.map((row, index) => (
+                  <tr key={`transport-${index}`}>
+                    <td style={compactCenterCellStyle}>{index + 1}</td>
+                    <td style={compactCellStyle}>
+                      <select
+                        style={compactSelectStyle}
+                        value={row.customer_id}
+                        onChange={(e) => changeTransportRow(index, 'customer_id', e.target.value)}
+                      >
+                        <option value="">Select Customer</option>
+                        {customers.map((customer: any) => (
+                          <option key={customer.id} value={customer.id}>
+                            {customer.mobile} - {customer.customer_name}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td style={compactCellStyle}>
+                      <input style={compactInputStyle} value={row.vehicle_type} onChange={(e) => changeTransportRow(index, 'vehicle_type', e.target.value)} placeholder="Auto" />
+                    </td>
+                    <td style={compactCellStyle}>
+                      <select style={compactSelectStyle} value={row.trip_type} onChange={(e) => changeTransportRow(index, 'trip_type', e.target.value)}>
+                        <option>Delivery</option><option>Pickup</option><option>Both</option><option>Other</option>
+                      </select>
+                    </td>
+                    <td style={compactCellStyle}>
+                      <input style={compactInputStyle} value={row.delivery_location} onChange={(e) => changeTransportRow(index, 'delivery_location', e.target.value)} placeholder="Location" />
+                    </td>
+                    <td style={compactCellStyle}>
+                      <input style={compactInputStyle} type="number" min="0" value={row.amount} onChange={(e) => changeTransportRow(index, 'amount', e.target.value)} placeholder="0" />
+                    </td>
+                    <td style={compactCellStyle}>
+                      <input style={compactInputStyle} type="date" value={row.transport_date} onChange={(e) => changeTransportRow(index, 'transport_date', e.target.value)} />
+                    </td>
+                    <td style={compactCellStyle}>
+                      <input style={compactInputStyle} value={row.notes} onChange={(e) => changeTransportRow(index, 'notes', e.target.value)} placeholder="Notes" />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ marginTop: 10, textAlign: "right", fontWeight: 950, color: "#0057ff" }}>
+            Transport Total: ₹{totalTransportAmount.toFixed(0)}
+          </div>
+        </section>
+
         <div
           style={{
             marginTop: 14,
@@ -2422,7 +2877,7 @@ export default function RentalsPage() {
         >
           <div style={{ fontWeight: 950, color: "#071735" }}>
             Rows: {totalRows} &nbsp; | &nbsp; Qty: {totalQty} &nbsp; | &nbsp;
-            Entry Total: ₹{totalEntryAmount.toFixed(0)}
+            Rental Total: ₹{totalEntryAmount.toFixed(0)} &nbsp; | &nbsp; Transport: ₹{totalTransportAmount.toFixed(0)}
           </div>
 
           <div>
@@ -2547,7 +3002,24 @@ export default function RentalsPage() {
             {filteredActiveRentals.map((r) => (
               <tr key={r.id}>
                 <td style={compactCellStyle}>{customerName(r.customer_id)}</td>
-                <td style={compactCellStyle}>{toolName(r.tool_id)}</td>
+                <td style={compactCellStyle}>
+                  <div>{rentalToolDetails(r)}</div>
+                  {r.is_outside_rent && (
+                    <div
+                      style={{
+                        marginTop: 3,
+                        color: "#9a3412",
+                        fontSize: 12,
+                        fontWeight: 950,
+                      }}
+                    >
+                      Outside Rent
+                      {r.outside_shop_name
+                        ? ` · ${r.outside_shop_name}`
+                        : ""}
+                    </div>
+                  )}
+                </td>
                 <td style={compactCenterCellStyle}>{r.qty}</td>
                 <td style={compactCenterCellStyle}>₹{r.daily_rate}</td>
                 <td style={compactCenterCellStyle}>{r.start_date}</td>
@@ -2601,12 +3073,10 @@ export default function RentalsPage() {
                 </td>
 
                 <td style={compactCenterCellStyle}>
-                  <button
-                    className="btn-red"
-                    onClick={() => handleDelete(r.id)}
-                  >
-                    Delete
-                  </button>
+                  <div style={{ display: "flex", gap: 6, justifyContent: "center", flexWrap: "wrap" }}>
+                    <button className="btn-blue" onClick={() => openEditRental(r)}>Edit</button>
+                    <button className="btn-red" onClick={() => handleDelete(r.id)}>Delete</button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -2620,6 +3090,22 @@ export default function RentalsPage() {
             )}
           </tbody>
         </table>
+      </div>
+
+      <div className="panel">
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, marginBottom:12 }}>
+          <div><h2 style={{ margin:0 }}>Returned Rentals</h2><p style={{ margin:"4px 0 0", color:"#64748b", fontWeight:800 }}>Latest 100 returned entries. Every edit requires an explanation.</p></div>
+          <strong>{returnedRentals.length} shown</strong>
+        </div>
+        <div style={{ overflowX:"auto" }}>
+          <table style={compactTableStyle}>
+            <thead><tr><th style={compactHeaderStyle}>Customer</th><th style={compactHeaderStyle}>Item</th><th style={compactHeaderStyle}>Qty</th><th style={compactHeaderStyle}>Rate</th><th style={compactHeaderStyle}>Start</th><th style={compactHeaderStyle}>Return</th><th style={compactHeaderStyle}>Amount</th><th style={compactHeaderStyle}>Shop</th><th style={compactHeaderStyle}>Action</th></tr></thead>
+            <tbody>
+              {returnedRentals.map((r:any)=><tr key={`returned-${r.id}`}><td style={compactCellStyle}>{customerName(r.customer_id)}</td><td style={compactCellStyle}>{rentalToolDetails(r)}</td><td style={compactCenterCellStyle}>{r.qty || 1}</td><td style={compactCenterCellStyle}>₹{Number(r.daily_rate || 0).toFixed(0)}</td><td style={compactCenterCellStyle}>{r.start_date || "-"}</td><td style={compactCenterCellStyle}>{r.end_date || "-"}</td><td style={compactCenterCellStyle}>₹{Number(r.total_amount || calcTotal(r)).toFixed(0)}</td><td style={compactCenterCellStyle}>{r.shop || "-"}</td><td style={compactCenterCellStyle}><button className="btn-blue" onClick={()=>openEditRental(r)}>Edit</button></td></tr>)}
+              {returnedRentals.length === 0 && <tr><td colSpan={9} style={compactCenterCellStyle}>No returned rentals found</td></tr>}
+            </tbody>
+          </table>
+        </div>
       </div>
     </main>
   );

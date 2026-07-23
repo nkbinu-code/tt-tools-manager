@@ -487,11 +487,111 @@ export async function getRentalPageData() {
   };
 }
 
+function isOutsideRental(row: any) {
+  return row?.is_outside_rent === true || row?.is_outside_rent === "true";
+}
+
+function hasRentalItem(row: any) {
+  return Boolean(
+    row?.tool_id ||
+      (isOutsideRental(row) &&
+        String(row?.outside_item_name || "").trim()),
+  );
+}
+
+function normalizeShop(value: any) {
+  return String(value || "").trim();
+}
+
+function isToolUnavailableStatus(value: any) {
+  const status = String(value || "").trim().toLowerCase();
+  return ["service", "in service", "missing", "inactive", "damaged"].includes(status);
+}
+
+async function validateRentalStock(rows: any[], excludeRentalId?: number) {
+  const internalRows = rows.filter(
+    (row) => row.customer_id && hasRentalItem(row) && row.start_date && !isOutsideRental(row),
+  );
+
+  if (internalRows.length === 0) {
+    return { success: true };
+  }
+
+  const toolIds = Array.from(
+    new Set(internalRows.map((row) => Number(row.tool_id)).filter(Boolean)),
+  );
+
+  const [{ data: tools, error: toolsError }, { data: activeRentals, error: rentalsError }] =
+    await Promise.all([
+      supabase.from("tools").select("*").in("id", toolIds),
+      supabase.from("rentals").select("id, tool_id, qty, shop, status").eq("status", "Active").in("tool_id", toolIds),
+    ]);
+
+  if (toolsError) return { success: false, message: toolsError.message };
+  if (rentalsError) return { success: false, message: rentalsError.message };
+
+  const requestedByTool = new Map<number, number>();
+
+  for (const row of internalRows) {
+    const toolId = Number(row.tool_id);
+    const tool = (tools || []).find((item: any) => Number(item.id) === toolId);
+    const rentalShop = normalizeShop(row.shop);
+
+    if (!tool) {
+      return { success: false, message: "Selected tool was not found. Please refresh and try again." };
+    }
+
+    const toolName = tool.tool_name || "Selected item";
+    const currentLocation = normalizeShop(tool.current_location || tool.home_branch);
+
+    if (!rentalShop) {
+      return { success: false, message: `Select the rental shop before renting ${toolName}.` };
+    }
+
+    if (currentLocation !== rentalShop) {
+      return {
+        success: false,
+        message: `${toolName} is not available at ${rentalShop}. Current location: ${currentLocation || "Not set"}. Move the item to ${rentalShop} first, then enter the rental.`,
+      };
+    }
+
+    if (isToolUnavailableStatus(tool.status)) {
+      return {
+        success: false,
+        message: `${toolName} cannot be rented because its status is ${tool.status || "Unavailable"}.`,
+      };
+    }
+
+    const totalQty = Math.max(Number(tool.total_qty || 1), 1);
+    const alreadyRentedQty = (activeRentals || [])
+      .filter((rental: any) => Number(rental.id) !== Number(excludeRentalId || 0))
+      .filter((rental: any) => Number(rental.tool_id) === toolId)
+      .reduce((sum: number, rental: any) => sum + Number(rental.qty || 1), 0);
+    const previousRequested = requestedByTool.get(toolId) || 0;
+    const requestedQty = Math.max(Number(row.qty || 1), 1);
+    const availableQty = Math.max(totalQty - alreadyRentedQty - previousRequested, 0);
+
+    if (requestedQty > availableQty) {
+      return {
+        success: false,
+        message: `${toolName} does not have enough stock at ${rentalShop}. Available: ${availableQty}, requested: ${requestedQty}. Move stock to ${rentalShop} first or reduce the quantity.`,
+      };
+    }
+
+    requestedByTool.set(toolId, previousRequested + requestedQty);
+  }
+
+  return { success: true };
+}
+
 function cleanRentalRow(row: any) {
   const qty = Number(row.qty || 1);
   const dailyRate = Number(row.daily_rate || 0);
   const discount = Number(row.discount || 0);
   const avoidSundays = row.avoid_sundays !== false;
+  const isOutsideRent = isOutsideRental(row);
+  const outsideItemName = String(row.outside_item_name || "").trim();
+  const outsideShopName = String(row.outside_shop_name || "").trim();
 
   const totalAmount =
     row.status === "Returned"
@@ -500,7 +600,10 @@ function cleanRentalRow(row: any) {
 
   return {
     customer_id: Number(row.customer_id),
-    tool_id: Number(row.tool_id),
+    tool_id: isOutsideRent ? null : Number(row.tool_id),
+    is_outside_rent: isOutsideRent,
+    outside_item_name: isOutsideRent ? outsideItemName : null,
+    outside_shop_name: isOutsideRent ? outsideShopName || null : null,
     qty,
     daily_rate: dailyRate,
     discount,
@@ -515,12 +618,15 @@ function cleanRentalRow(row: any) {
 }
 
 export async function saveRental(row: any) {
-  if (!row.customer_id || !row.tool_id || !row.start_date) {
+  if (!row.customer_id || !hasRentalItem(row) || !row.start_date) {
     return {
       success: false,
-      message: "Customer, tool and start date are required",
+      message: "Customer, item and start date are required",
     };
   }
+
+  const stockCheck = await validateRentalStock([row]);
+  if (!stockCheck.success) return stockCheck;
 
   const { error } = await supabase.from("rentals").insert(cleanRentalRow(row));
 
@@ -533,16 +639,53 @@ export async function saveRental(row: any) {
   return { success: true, message: "Rental saved successfully" };
 }
 
-export async function saveRentals(rows: any[]) {
+function cleanTransportRow(row: any) {
+  return {
+    customer_id: Number(row.customer_id),
+    tool_id: null,
+    is_transport_charge: true,
+    transport_vehicle_type: String(row.vehicle_type || "Auto").trim() || "Auto",
+    transport_trip_type: String(row.trip_type || "Delivery").trim() || "Delivery",
+    transport_location: String(row.delivery_location || "").trim() || null,
+    transport_amount: Number(row.amount || 0),
+    transport_date: row.transport_date,
+    transport_notes: String(row.notes || "").trim() || null,
+    qty: 1,
+    daily_rate: Number(row.amount || 0),
+    discount: 0,
+    start_date: row.transport_date,
+    end_date: row.transport_date,
+    status: "Returned",
+    total_amount: Number(row.amount || 0),
+    payment_status: "Pending",
+    shop: row.shop || "",
+    avoid_sundays: false,
+  };
+}
+
+export async function saveRentals(rows: any[], transportRows: any[] = []) {
   const validRows = rows
-    .filter((row) => row.customer_id && row.tool_id && row.start_date)
+    .filter(
+      (row) => row.customer_id && hasRentalItem(row) && row.start_date
+    )
     .map((row) => cleanRentalRow(row));
 
-  if (validRows.length === 0) {
-    return { success: false, message: "No valid rentals to save" };
+  const validTransportRows = transportRows
+    .filter(
+      (row) => row.customer_id && Number(row.amount || 0) > 0 && row.transport_date,
+    )
+    .map((row) => cleanTransportRow(row));
+
+  const rowsToInsert = [...validRows, ...validTransportRows];
+
+  if (rowsToInsert.length === 0) {
+    return { success: false, message: "No valid rentals or transport entries to save" };
   }
 
-  const { error } = await supabase.from("rentals").insert(validRows);
+  const stockCheck = await validateRentalStock(rows);
+  if (!stockCheck.success) return stockCheck;
+
+  const { error } = await supabase.from("rentals").insert(rowsToInsert);
 
   if (error) return { success: false, message: error.message };
 
@@ -552,7 +695,7 @@ export async function saveRentals(rows: any[]) {
   revalidatePath("/");
   return {
     success: true,
-    message: `${validRows.length} rentals saved successfully`,
+    message: `${validRows.length} rental(s) and ${validTransportRows.length} transport charge(s) saved successfully`,
   };
 }
 
@@ -592,6 +735,155 @@ export async function returnRental(id: number, endDate: string) {
   revalidatePath("/collections");
   revalidatePath("/");
   return { success: true, message: "Rental returned successfully" };
+}
+
+
+export async function updateRentalWithAudit(payload: any) {
+  const rental = payload?.rental || {};
+  const rentalId = Number(rental.id || 0);
+  const reason = String(payload?.reason || "").trim();
+  const explanation = String(payload?.explanation || "").trim();
+  const editedBy = String(payload?.edited_by || "Manager").trim() || "Manager";
+
+  if (!rentalId) return { success: false, message: "Rental id not found" };
+  if (!reason) return { success: false, message: "Reason for edit is required" };
+  if (explanation.length < 10) {
+    return { success: false, message: "Please enter a proper explanation of at least 10 characters" };
+  }
+
+  const { data: existing, error: readError } = await supabase
+    .from("rentals")
+    .select("*")
+    .eq("id", rentalId)
+    .single();
+
+  if (readError || !existing) {
+    return { success: false, message: readError?.message || "Rental not found" };
+  }
+
+  let updated: any;
+
+  if (existing.is_transport_charge || rental.is_transport_charge) {
+    const amount = Number(rental.transport_amount ?? rental.total_amount ?? 0);
+    const transportDate = rental.transport_date || rental.start_date;
+
+    if (!rental.customer_id || !transportDate || amount <= 0) {
+      return { success: false, message: "Customer, transport date and amount are required" };
+    }
+
+    updated = {
+      customer_id: Number(rental.customer_id),
+      tool_id: null,
+      is_transport_charge: true,
+      transport_vehicle_type: String(rental.transport_vehicle_type || "Auto").trim() || "Auto",
+      transport_trip_type: String(rental.transport_trip_type || "Delivery").trim() || "Delivery",
+      transport_location: String(rental.transport_location || "").trim() || null,
+      transport_amount: amount,
+      transport_date: transportDate,
+      transport_notes: String(rental.transport_notes || "").trim() || null,
+      qty: 1,
+      daily_rate: amount,
+      discount: 0,
+      start_date: transportDate,
+      end_date: transportDate,
+      status: "Returned",
+      total_amount: amount,
+      payment_status: existing.payment_status || "Pending",
+      shop: rental.shop || existing.shop || "",
+      avoid_sundays: false,
+    };
+  } else {
+    const status = rental.status === "Returned" ? "Returned" : "Active";
+    const isOutsideRent = isOutsideRental(rental);
+    const qty = Math.max(Number(rental.qty || 1), 1);
+    const dailyRate = Math.max(Number(rental.daily_rate || 0), 0);
+    const discount = Math.max(Number(rental.discount || 0), 0);
+    const startDate = rental.start_date;
+    const endDate = status === "Returned" ? rental.end_date : null;
+    const avoidSundays = rental.avoid_sundays !== false;
+
+    if (!rental.customer_id || !startDate) {
+      return { success: false, message: "Customer and start date are required" };
+    }
+    if (!isOutsideRent && !rental.tool_id) {
+      return { success: false, message: "Tool is required" };
+    }
+    if (isOutsideRent && !String(rental.outside_item_name || "").trim()) {
+      return { success: false, message: "Outside item name is required" };
+    }
+    if (status === "Returned" && !endDate) {
+      return { success: false, message: "Return date is required for a returned rental" };
+    }
+
+    const stockCandidate = {
+      ...rental,
+      qty,
+      shop: rental.shop || "",
+      status,
+      start_date: startDate,
+      is_outside_rent: isOutsideRent,
+    };
+
+    if (status === "Active" && !isOutsideRent) {
+      const stockCheck = await validateRentalStock([stockCandidate], rentalId);
+      if (!stockCheck.success) return stockCheck;
+    }
+
+    const totalAmount = status === "Returned"
+      ? Math.max(qty * dailyRate * calcDays(startDate, endDate, avoidSundays) - discount, 0)
+      : 0;
+
+    updated = {
+      customer_id: Number(rental.customer_id),
+      tool_id: isOutsideRent ? null : Number(rental.tool_id),
+      is_outside_rent: isOutsideRent,
+      outside_item_name: isOutsideRent ? String(rental.outside_item_name || "").trim() : null,
+      outside_shop_name: isOutsideRent ? String(rental.outside_shop_name || "").trim() || null : null,
+      qty,
+      daily_rate: dailyRate,
+      discount,
+      start_date: startDate,
+      end_date: endDate || null,
+      status,
+      total_amount: totalAmount,
+      payment_status: status === "Returned" ? (existing.payment_status || "Pending") : (existing.payment_status || "Not Paid"),
+      shop: rental.shop || "",
+      avoid_sundays: avoidSundays,
+    };
+  }
+
+  const { error: auditError } = await supabase.from("rental_edit_history").insert({
+    rental_id: rentalId,
+    previous_values: existing,
+    updated_values: updated,
+    edit_reason: reason,
+    explanation,
+    edited_by: editedBy,
+  });
+
+  if (auditError) {
+    return { success: false, message: `Could not save edit history: ${auditError.message}` };
+  }
+
+  const { error: updateError } = await supabase
+    .from("rentals")
+    .update(updated)
+    .eq("id", rentalId);
+
+  if (updateError) return { success: false, message: updateError.message };
+
+  revalidatePath("/rentals");
+  revalidatePath("/customers");
+  revalidatePath("/payments");
+  revalidatePath("/collections");
+  revalidatePath("/");
+
+  return {
+    success: true,
+    message: existing.status === "Returned"
+      ? "Returned rental updated and explanation saved"
+      : "Rental updated and edit history saved",
+  };
 }
 
 export async function deleteRental(id: number) {

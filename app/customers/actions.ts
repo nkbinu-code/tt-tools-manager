@@ -237,10 +237,19 @@ function buildCustomerActualBalance(customer: any, rentals: any[], payments: any
     0,
   );
 
-  const receivedTotal = customerPayments.reduce(
-    (sum, row) => sum + calcPaymentAmount(row),
-    0,
-  );
+  const openingBalance = customerPayments.reduce((sum, row) => {
+    const type = String(row.entry_type || "payment").toLowerCase();
+    const amount = Math.abs(calcPaymentAmount(row));
+    if (type === "opening_due") return sum + amount;
+    if (type === "opening_credit") return sum - amount;
+    return sum;
+  }, 0);
+
+  const receivedTotal = customerPayments.reduce((sum, row) => {
+    const type = String(row.entry_type || "payment").toLowerCase();
+    if (type === "opening_due" || type === "opening_credit") return sum;
+    return sum + calcPaymentAmount(row);
+  }, 0);
 
   const discountTotal = customerPayments.reduce(
     (sum, row) => sum + calcPaymentDiscount(row),
@@ -252,9 +261,10 @@ function buildCustomerActualBalance(customer: any, rentals: any[], payments: any
   return {
     ...customer,
     customer_id: customer.id,
+    opening_balance: openingBalance,
     received_total: receivedTotal,
     discount_total: discountTotal,
-    balance: rentalTotal - receivedTotal - discountTotal,
+    balance: openingBalance + rentalTotal - receivedTotal - discountTotal,
     ...lastTransaction,
   };
 }
@@ -317,6 +327,47 @@ export async function getCustomers(search: string = "") {
   };
 }
 
+async function upsertOpeningBalance(customer: any, rawValue: any) {
+  const value = Number(rawValue || 0);
+  const customerId = customer?.id;
+  if (!customerId) return { error: null };
+
+  const { data: existing, error: findError } = await supabase
+    .from("payments")
+    .select("id")
+    .eq("customer_id", customerId)
+    .in("entry_type", ["opening_due", "opening_credit"])
+    .maybeSingle();
+
+  if (findError) return { error: findError };
+
+  if (value === 0) {
+    if (!existing?.id) return { error: null };
+    return await supabase.from("payments").delete().eq("id", existing.id);
+  }
+
+  const entry = {
+    payment_date: todayISO(),
+    effective_date: todayISO(),
+    customer_id: customerId,
+    customer_name: customer.customer_name || "",
+    mobile: customer.mobile || "",
+    shop: customer.shop || "",
+    amount: Math.abs(value),
+    discount: 0,
+    mode: "Opening Balance",
+    payment_mode: "Opening Balance",
+    remarks: "Opening Balance",
+    entry_type: value > 0 ? "opening_due" : "opening_credit",
+    opening_balance_type: value > 0 ? "due" : "credit",
+  };
+
+  if (existing?.id) {
+    return await supabase.from("payments").update(entry).eq("id", existing.id);
+  }
+  return await supabase.from("payments").insert(entry);
+}
+
 export async function saveCustomer(row: any) {
   if (!row.customer_name || !row.mobile) {
     return {
@@ -330,7 +381,7 @@ export async function saveCustomer(row: any) {
 
   const { data: existing, error: findError } = await supabase
     .from("customers")
-    .select("id")
+    .select("*")
     .eq("mobile", mobile)
     .maybeSingle();
 
@@ -375,6 +426,16 @@ export async function saveCustomer(row: any) {
     };
   }
 
+  const { data: savedCustomer, error: savedCustomerError } = await supabase
+    .from("customers")
+    .select("*")
+    .eq("mobile", mobile)
+    .single();
+
+  if (savedCustomerError) return { success: false, message: savedCustomerError.message };
+  const openingResult: any = await upsertOpeningBalance(savedCustomer, row.opening_balance);
+  if (openingResult.error) return { success: false, message: openingResult.error.message };
+
   revalidatePath("/customers");
   revalidatePath("/rentals");
   revalidatePath("/payments");
@@ -410,6 +471,9 @@ export async function updateCustomer(id: number, row: any) {
       message: error.message,
     };
   }
+
+  const openingResult: any = await upsertOpeningBalance({ id, ...row }, row.opening_balance);
+  if (openingResult.error) return { success: false, message: openingResult.error.message };
 
   revalidatePath("/customers");
   revalidatePath("/rentals");

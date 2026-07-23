@@ -306,6 +306,8 @@ export async function updatePaymentEntry(input: {
   discount?: number;
   mode?: string;
   remarks?: string;
+  entry_type?: string;
+  effective_date?: string;
 }) {
   const id = normalize(input.id);
 
@@ -336,6 +338,8 @@ export async function updatePaymentEntry(input: {
       mode,
       payment_mode: mode,
       remarks: normalize(input.remarks),
+      entry_type: normalize(input.entry_type || "payment"),
+      effective_date: normalize(input.effective_date || input.payment_date) || todayISO(),
     })
     .eq("id", id);
 

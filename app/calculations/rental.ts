@@ -46,6 +46,10 @@ export function toNumber(value: any) {
   }
   
   export function calculateRentalTotal(rental: any) {
+    if (rental?.is_transport_charge === true || rental?.is_transport_charge === "true") {
+      return toNumber(rental.transport_amount ?? rental.total_amount ?? rental.daily_rate);
+    }
+
     const qty = firstRentalNumber(rental.qty, rental.quantity, 1);
     const rate = firstRentalNumber(
       rental.daily_rate,

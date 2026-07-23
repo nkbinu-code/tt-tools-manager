@@ -6,7 +6,11 @@ export function calculateTotalBusiness(rentals: any[]) {
 }
 
 export function calculateTotalCollections(payments: any[]) {
-  return payments.reduce((sum, payment) => sum + toNumber(payment.amount), 0);
+  return payments.reduce((sum, payment) => {
+    const type = String(payment?.entry_type || "payment").trim().toLowerCase();
+    if (type === "opening_due" || type === "opening_credit") return sum;
+    return sum + toNumber(payment.amount);
+  }, 0);
 }
 
 export function calculateTotalDiscount(payments: any[]) {

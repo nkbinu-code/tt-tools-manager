@@ -53,7 +53,19 @@ export function rowShop(row: any) {
 }
 
 export function rowToolName(row: any) {
+  if (row?.is_transport_charge) {
+    const vehicle = row.transport_vehicle_type || "Auto";
+    const trip = row.transport_trip_type || "Transport";
+    const location = row.transport_location ? ` - ${row.transport_location}` : "";
+    return `Transport Cost (${vehicle} - ${trip}${location})`;
+  }
+
+  if (row?.is_outside_rent && row?.outside_item_name) {
+    return row.outside_item_name;
+  }
+
   return (
+    row?.outside_item_name ||
     row?.tool_name ||
     row?.tool ||
     row?.toolName ||

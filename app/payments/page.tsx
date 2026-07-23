@@ -113,6 +113,9 @@ export default function PaymentsPage() {
   const [paymentRows, setPaymentRows] = useState<any[]>(
     Array.from({ length: 5 }, emptyPaymentRow),
   );
+  const [advanceRow, setAdvanceRow] = useState<any>({
+    payment_date: today(), mobile: "", customer_id: "", customer_name: "", shop: "", amount: "", mode: "Cash", remarks: ""
+  });
   const [cashRows, setCashRows] = useState<any[]>(
     Array.from({ length: 5 }, emptyCashRow),
   );
@@ -373,6 +376,8 @@ export default function PaymentsPage() {
       discount: String(payment.discount ?? ""),
       mode: payment.mode || payment.payment_mode || "Cash",
       remarks: payment.remarks || "",
+      entry_type: payment.entry_type || "payment",
+      effective_date: payment.effective_date || payment.payment_date || today(),
     });
   }
 
@@ -432,6 +437,8 @@ export default function PaymentsPage() {
       discount,
       mode: editPaymentForm.mode || "Cash",
       remarks: editPaymentForm.remarks || "",
+      entry_type: editPaymentForm.entry_type || "payment",
+      effective_date: editPaymentForm.effective_date || editPaymentForm.payment_date || today(),
     });
 
     if (!res.success) {
@@ -460,6 +467,33 @@ export default function PaymentsPage() {
     setDeletePaymentPopup(null);
     await loadData();
     showSuccess("Payment deleted successfully");
+  }
+
+  async function saveAdvancePayment() {
+    const customer = findCustomerByMobile(advanceRow.mobile || selectedMobile);
+    const amount = Number(advanceRow.amount || 0);
+    if (!customer) return showWarning("Please select a customer");
+    if (amount <= 0) return showWarning("Please enter advance amount");
+
+    const { error } = await supabase.from("payments").insert({
+      payment_date: advanceRow.payment_date || today(),
+      effective_date: advanceRow.payment_date || today(),
+      rental_id: null,
+      customer_id: customer.id,
+      customer_name: customer.customer_name || customer.name || "",
+      mobile: customer.mobile || "",
+      shop: customer.shop || customer.branch || "",
+      amount,
+      discount: 0,
+      mode: advanceRow.mode || "Cash",
+      payment_mode: advanceRow.mode || "Cash",
+      remarks: advanceRow.remarks || "Advance Payment",
+      entry_type: "advance",
+    });
+    if (error) return showError(error.message);
+    setAdvanceRow({ payment_date: today(), mobile: "", customer_id: "", customer_name: "", shop: "", amount: "", mode: "Cash", remarks: "" });
+    await loadData();
+    showSuccess("Advance payment saved successfully");
   }
 
   async function saveShopCash() {
@@ -669,10 +703,19 @@ export default function PaymentsPage() {
   const selectedTotalBusiness =
     selectedTotalRentalBusiness + selectedTotalSalesBusiness;
 
-  const selectedCashReceived = selectedCustomerPayments.reduce(
-    (sum: number, p: any) => sum + Number(p.amount || 0),
-    0,
-  );
+  const selectedOpeningBalance = selectedCustomerPayments.reduce((sum: number, p: any) => {
+    const type = String(p.entry_type || "payment").toLowerCase();
+    const amount = Math.abs(Number(p.amount || 0));
+    if (type === "opening_due") return sum + amount;
+    if (type === "opening_credit") return sum - amount;
+    return sum;
+  }, 0);
+
+  const selectedCashReceived = selectedCustomerPayments.reduce((sum: number, p: any) => {
+    const type = String(p.entry_type || "payment").toLowerCase();
+    if (type === "opening_due" || type === "opening_credit") return sum;
+    return sum + Number(p.amount || 0);
+  }, 0);
 
   const selectedDiscount = selectedCustomerPayments.reduce(
     (sum: number, p: any) => sum + Number(p.discount || 0),
@@ -687,6 +730,7 @@ export default function PaymentsPage() {
     : 0;
 
   const selectedBalance =
+    selectedOpeningBalance +
     selectedTotalBusiness -
     selectedCashReceived -
     selectedDiscount -
@@ -701,7 +745,7 @@ export default function PaymentsPage() {
   );
 
   const monthPayments = payments.filter(
-    (p) => sameMonth(p.payment_date) && matchShop(p),
+    (p) => sameMonth(p.effective_date || p.payment_date) && matchShop(p),
   );
 
   const monthBusiness =
@@ -1663,6 +1707,18 @@ export default function PaymentsPage() {
           <button className="btn-gray" type="button" onClick={openArrearsPopup} disabled={selectedBalance <= 0} style={paymentArrearsButtonStyle}>
             Move to Arrears
           </button>
+        </div>
+
+        <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.35)" }}>
+          <div style={{ fontWeight: 950, fontSize: 20, marginBottom: 10 }}>Receive Advance</div>
+          <div style={paymentBlueInputsStyle}>
+            <input type="date" value={advanceRow.payment_date} onChange={(e) => setAdvanceRow({ ...advanceRow, payment_date: e.target.value })} style={paymentPillInputStyle} />
+            <input list="paymentQuickCustomerSearchList" value={advanceRow.mobile} onChange={(e) => setAdvanceRow({ ...advanceRow, mobile: e.target.value })} placeholder="Customer mobile" style={paymentPillInputStyle} />
+            <input type="number" value={advanceRow.amount} onChange={(e) => setAdvanceRow({ ...advanceRow, amount: e.target.value })} placeholder="Advance Amount" style={paymentPillInputStyle} />
+            <select value={advanceRow.mode} onChange={(e) => setAdvanceRow({ ...advanceRow, mode: e.target.value })} style={paymentPillInputStyle}>{paymentModes.map((m) => <option key={m}>{m}</option>)}</select>
+            <input value={advanceRow.remarks} onChange={(e) => setAdvanceRow({ ...advanceRow, remarks: e.target.value })} placeholder="Notes" style={paymentPillInputStyle} />
+            <button className="btn-blue" type="button" onClick={saveAdvancePayment} style={paymentSaveButtonStyle}>Save Advance</button>
+          </div>
         </div>
 
         <RecentPaymentManager
@@ -2709,8 +2765,19 @@ function InlineCustomerStatement({
     .filter((r: any) => fromDate && isoDate(rentalStartDate(r)) && isoDate(rentalStartDate(r)) < fromDate)
     .reduce((sum: number, r: any) => sum + paymentRentalAmount(r, tools), 0);
 
+  const explicitOpeningBalance = allPayments.reduce((sum: number, p: any) => {
+    const type = String(p.entry_type || "payment").toLowerCase();
+    const amount = Math.abs(Number(p.amount || 0));
+    if (type === "opening_due") return sum + amount;
+    if (type === "opening_credit") return sum - amount;
+    return sum;
+  }, 0);
+
   const openingPaidTotal = allPayments
-    .filter((p: any) => fromDate && isoDate(paymentEntryDate(p)) && isoDate(paymentEntryDate(p)) < fromDate)
+    .filter((p: any) => {
+      const type = String(p.entry_type || "payment").toLowerCase();
+      return type !== "opening_due" && type !== "opening_credit" && fromDate && isoDate(paymentEntryDate(p)) && isoDate(paymentEntryDate(p)) < fromDate;
+    })
     .reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
 
   const openingDiscountTotal = allPayments
@@ -2718,7 +2785,7 @@ function InlineCustomerStatement({
     .reduce((sum: number, p: any) => sum + Number(p.discount || 0), 0);
 
   const openingBalance =
-    openingRentTotal - openingPaidTotal - openingDiscountTotal;
+    explicitOpeningBalance + openingRentTotal - openingPaidTotal - openingDiscountTotal;
 
   const ledgerRows = [
     ...(statementRentals || []).map((r: any) => ({
@@ -2737,10 +2804,12 @@ function InlineCustomerStatement({
       payment: 0,
       discount: 0,
     })),
-    ...(statementPayments || []).map((p: any) => ({
-      kind: "payment",
-      date: paymentEntryDate(p),
-      item: "Payment received",
+    ...(statementPayments || [])
+      .filter((p: any) => !["opening_due", "opening_credit"].includes(String(p.entry_type || "payment").toLowerCase()))
+      .map((p: any) => ({
+      kind: String(p.entry_type || "payment").toLowerCase() === "advance" ? "advance" : "payment",
+      date: p.effective_date || paymentEntryDate(p),
+      item: String(p.entry_type || "payment").toLowerCase() === "advance" ? "Advance Payment" : "Payment received",
       qty: "",
       status: "",
       days: "",
