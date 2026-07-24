@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import AutoRecoverySync from "./components/AutoRecoverySync";
 import {
   Home,
   Wrench,
@@ -12,6 +13,7 @@ import {
   BarChart3,
   ReceiptText,
   Bell,
+  DatabaseBackup,
   Settings,
   LogOut,
 } from "lucide-react";
@@ -30,6 +32,7 @@ const mainMenu = [
 const otherMenu = [
   { name: "Expenses", href: "/expenses", icon: ReceiptText, color: "#ff7a00" },
   { name: "Reminders", href: "/reminders", icon: Bell, color: "#8b2cff" },
+  { name: "Backup & Restore", href: "/backup-recovery", icon: DatabaseBackup, color: "#245bc5" },
   { name: "Settings", href: "/settings", icon: Settings, color: "#23c000" },
 ];
 
@@ -50,6 +53,7 @@ export default function Sidebar() {
 
   return (
     <aside className="modern-sidebar">
+      <AutoRecoverySync />
       <div className="brand-vertical">
         <div className="brand-icon">
           <Wrench size={24} />

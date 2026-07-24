@@ -1,0 +1,28 @@
+T&T TOOLS RECOVERY SYSTEM - ENVIRONMENT SETTINGS
+
+Already required:
+NEXT_PUBLIC_SUPABASE_URL=...
+NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+SUPABASE_SERVICE_ROLE_KEY=...
+BACKUP_ADMIN_PASSWORD=...
+
+The installer automatically adds these locally if missing:
+BACKUP_SESSION_SECRET=<generated locally>
+GOOGLE_TOKEN_ENCRYPTION_KEY=<generated locally>
+
+For Google Drive, create an OAuth 2.0 Web Application in Google Cloud and add:
+GOOGLE_DRIVE_CLIENT_ID=...
+GOOGLE_DRIVE_CLIENT_SECRET=...
+
+Authorized redirect URIs in Google Cloud:
+Local:
+http://localhost:3000/api/google-drive/callback
+
+Live:
+https://tt-tools-manager.vercel.app/api/google-drive/callback
+
+Also add every private environment variable to the Vercel project before deployment.
+Never use NEXT_PUBLIC_ for private keys or passwords.
+
+Google Drive scope used by the app:
+https://www.googleapis.com/auth/drive.file

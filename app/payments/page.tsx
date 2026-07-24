@@ -113,9 +113,6 @@ export default function PaymentsPage() {
   const [paymentRows, setPaymentRows] = useState<any[]>(
     Array.from({ length: 5 }, emptyPaymentRow),
   );
-  const [advanceRow, setAdvanceRow] = useState<any>({
-    payment_date: today(), mobile: "", customer_id: "", customer_name: "", shop: "", amount: "", mode: "Cash", remarks: ""
-  });
   const [cashRows, setCashRows] = useState<any[]>(
     Array.from({ length: 5 }, emptyCashRow),
   );
@@ -467,33 +464,6 @@ export default function PaymentsPage() {
     setDeletePaymentPopup(null);
     await loadData();
     showSuccess("Payment deleted successfully");
-  }
-
-  async function saveAdvancePayment() {
-    const customer = findCustomerByMobile(advanceRow.mobile || selectedMobile);
-    const amount = Number(advanceRow.amount || 0);
-    if (!customer) return showWarning("Please select a customer");
-    if (amount <= 0) return showWarning("Please enter advance amount");
-
-    const { error } = await supabase.from("payments").insert({
-      payment_date: advanceRow.payment_date || today(),
-      effective_date: advanceRow.payment_date || today(),
-      rental_id: null,
-      customer_id: customer.id,
-      customer_name: customer.customer_name || customer.name || "",
-      mobile: customer.mobile || "",
-      shop: customer.shop || customer.branch || "",
-      amount,
-      discount: 0,
-      mode: advanceRow.mode || "Cash",
-      payment_mode: advanceRow.mode || "Cash",
-      remarks: advanceRow.remarks || "Advance Payment",
-      entry_type: "advance",
-    });
-    if (error) return showError(error.message);
-    setAdvanceRow({ payment_date: today(), mobile: "", customer_id: "", customer_name: "", shop: "", amount: "", mode: "Cash", remarks: "" });
-    await loadData();
-    showSuccess("Advance payment saved successfully");
   }
 
   async function saveShopCash() {
@@ -1211,6 +1181,7 @@ export default function PaymentsPage() {
 
     return Array.from(groupedRows.values())
       .filter((row: any) => row.mobile || row.customer_name)
+      .filter((row: any) => Number(row.final_balance ?? row.balance ?? 0) > 0)
       .sort((a: any, b: any) => {
         const aLive = a.payment_list_status === "Live Rental";
         const bLive = b.payment_list_status === "Live Rental";
@@ -1679,6 +1650,14 @@ export default function PaymentsPage() {
 
         <div style={paymentBlueInputsStyle}>
           <input
+            type="date"
+            value={paymentRows[0]?.payment_date || today()}
+            onChange={(e) => updatePaymentRow(0, "payment_date", e.target.value)}
+            aria-label="Payment Date"
+            title="Payment Date"
+            style={paymentPillInputStyle}
+          />
+          <input
             type="number"
             value={paymentRows[0]?.amount || ""}
             onChange={(e) => updatePaymentRow(0, "amount", e.target.value)}
@@ -1709,17 +1688,6 @@ export default function PaymentsPage() {
           </button>
         </div>
 
-        <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.35)" }}>
-          <div style={{ fontWeight: 950, fontSize: 20, marginBottom: 10 }}>Receive Advance</div>
-          <div style={paymentBlueInputsStyle}>
-            <input type="date" value={advanceRow.payment_date} onChange={(e) => setAdvanceRow({ ...advanceRow, payment_date: e.target.value })} style={paymentPillInputStyle} />
-            <input list="paymentQuickCustomerSearchList" value={advanceRow.mobile} onChange={(e) => setAdvanceRow({ ...advanceRow, mobile: e.target.value })} placeholder="Customer mobile" style={paymentPillInputStyle} />
-            <input type="number" value={advanceRow.amount} onChange={(e) => setAdvanceRow({ ...advanceRow, amount: e.target.value })} placeholder="Advance Amount" style={paymentPillInputStyle} />
-            <select value={advanceRow.mode} onChange={(e) => setAdvanceRow({ ...advanceRow, mode: e.target.value })} style={paymentPillInputStyle}>{paymentModes.map((m) => <option key={m}>{m}</option>)}</select>
-            <input value={advanceRow.remarks} onChange={(e) => setAdvanceRow({ ...advanceRow, remarks: e.target.value })} placeholder="Notes" style={paymentPillInputStyle} />
-            <button className="btn-blue" type="button" onClick={saveAdvancePayment} style={paymentSaveButtonStyle}>Save Advance</button>
-          </div>
-        </div>
 
         <RecentPaymentManager
           payments={recentPayments}

@@ -46,7 +46,14 @@ function buildCustomerBalances(
 
 /* DASHBOARD */
 
-export async function getDashboardStats() {
+export async function getDashboardStats(filters?: {
+  businessDate?: string;
+  collectionDate?: string;
+  balanceMonth?: string;
+  serviceMonth?: string;
+  shopSummaryDate?: string;
+  shopSummaryMonth?: string;
+}) {
   const branches = ["Karuvannur", "Ollur", "Kachery", "Mulayam Rd", "Pattikkad"];
 
   const toolsRes = await supabase.from("tools").select("*");
@@ -54,56 +61,414 @@ export async function getDashboardStats() {
   const paymentsRes = await supabase.from("payments").select("*");
   const servicesRes = await supabase.from("services").select("*");
   const customersRes = await supabase.from("customers").select("*");
+  const archivedBusinessRes = await supabase
+    .from("archived_business_monthly")
+    .select("*");
+  const archivedToolRes = await supabase
+    .from("archived_tool_monthly")
+    .select("*");
+  const archivedShopRes = await supabase
+    .from("archived_shop_monthly")
+    .select("*");
 
   const tools = toolsRes.error ? [] : toolsRes.data || [];
   const rentals = rentalsRes.error ? [] : rentalsRes.data || [];
   const payments = paymentsRes.error ? [] : paymentsRes.data || [];
   const services = servicesRes.error ? [] : servicesRes.data || [];
   const customers = customersRes.error ? [] : customersRes.data || [];
+  const archivedBusiness = archivedBusinessRes.error
+    ? []
+    : archivedBusinessRes.data || [];
+  const archivedTool = archivedToolRes.error
+    ? []
+    : archivedToolRes.data || [];
+  const archivedShop = archivedShopRes.error
+    ? []
+    : archivedShopRes.data || [];
 
   const today = todayISO();
   const todayDate = new Date(today);
   const monthStart = today.slice(0, 7);
 
+  const businessDate = filters?.businessDate || today;
+  const collectionDate = filters?.collectionDate || today;
+  const balanceMonth = filters?.balanceMonth || monthStart;
+  const serviceMonth = filters?.serviceMonth || monthStart;
+  const shopSummaryDate = filters?.shopSummaryDate || today;
+  const shopSummaryMonth = filters?.shopSummaryMonth || monthStart;
+
+  function isoDate(value: any) {
+    return String(value || "").slice(0, 10);
+  }
+
+  function isSunday(dateValue: string) {
+    const date = new Date(`${dateValue}T00:00:00`);
+    return !Number.isNaN(date.getTime()) && date.getDay() === 0;
+  }
+
+  function dateWithinRental(rental: any, dateValue: string) {
+    const start = isoDate(rental.start_date || rental.date || rental.rental_date);
+    const end = isoDate(
+      rental.end_date || rental.return_date || rental.closed_date || today
+    );
+
+    if (!start || !dateValue) return false;
+    return dateValue >= start && dateValue <= end;
+  }
+
+  function rentalDailyBusinessForDate(rental: any, dateValue: string) {
+    if (!dateWithinRental(rental, dateValue)) return 0;
+
+    if (
+      rental.avoid_sundays !== false &&
+      isSunday(dateValue) &&
+      !rental.is_transport_charge
+    ) {
+      return 0;
+    }
+
+    if (rental.is_transport_charge) {
+      const transportDate = isoDate(
+        rental.transport_date || rental.start_date || rental.date
+      );
+      return transportDate === dateValue
+        ? Number(rental.transport_amount || rental.total_amount || rental.daily_rate || 0)
+        : 0;
+    }
+
+    return Math.max(Number(rental.qty || 1), 1) * Number(rental.daily_rate || 0);
+  }
+
+
+  function rentalActiveOnDate(rental: any, dateValue: string) {
+    if (rental.is_transport_charge) return false;
+
+    const start = isoDate(
+      rental.start_date || rental.date || rental.rental_date
+    );
+    const end = isoDate(
+      rental.end_date || rental.return_date || rental.closed_date
+    );
+
+    if (!start || start > dateValue) return false;
+    if (end && end < dateValue) return false;
+
+    return true;
+  }
+
+  function rentalBusinessThroughDate(rental: any, dateValue: string) {
+    const start = isoDate(
+      rental.start_date || rental.date || rental.rental_date
+    );
+    const actualEnd = isoDate(
+      rental.end_date || rental.return_date || rental.closed_date
+    );
+
+    if (!start || start > dateValue) return 0;
+
+    const effectiveEnd =
+      actualEnd && actualEnd < dateValue ? actualEnd : dateValue;
+
+    let total = 0;
+    const cursor = new Date(`${start}T00:00:00`);
+    const finish = new Date(`${effectiveEnd}T00:00:00`);
+
+    while (cursor <= finish) {
+      const day = cursor.toISOString().slice(0, 10);
+      total += rentalDailyBusinessForDate(rental, day);
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    return total;
+  }
+
+  function monthRange(monthValue: string) {
+    const [year, month] = String(monthValue || "").split("-").map(Number);
+    if (!year || !month) {
+      return { from: `${monthStart}-01`, to: today };
+    }
+
+    const lastDay = new Date(year, month, 0).getDate();
+    return {
+      from: `${monthValue}-01`,
+      to: `${monthValue}-${String(lastDay).padStart(2, "0")}`,
+    };
+  }
+
+  function rentalBusinessForMonth(rental: any, monthValue: string) {
+    const range = monthRange(monthValue);
+    const start = isoDate(rental.start_date || rental.date || rental.rental_date);
+    const end = isoDate(
+      rental.end_date || rental.return_date || rental.closed_date || today
+    );
+
+    if (!start) return 0;
+
+    const effectiveStart = start > range.from ? start : range.from;
+    const effectiveEnd = end < range.to ? end : range.to;
+
+    if (effectiveStart > effectiveEnd) return 0;
+
+    let total = 0;
+    const cursor = new Date(`${effectiveStart}T00:00:00`);
+    const finish = new Date(`${effectiveEnd}T00:00:00`);
+
+    while (cursor <= finish) {
+      const dateValue = cursor.toISOString().slice(0, 10);
+      total += rentalDailyBusinessForDate(rental, dateValue);
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    return total;
+  }
+
   const systemTotals = calcSystemTotals(customers, rentals, payments);
-  const pendingBalance = Math.max(systemTotals.balance, 0);
 
-  const shopStats = branches.map((shop) => {
-    const shopRentals = rentals.filter((r) => r.shop === shop);
-    const shopPayments = payments.filter((p) => p.shop === shop);
-
-    const todayBusiness = shopRentals
-      .filter((r) => r.start_date === today || r.end_date === today)
-      .reduce((sum, r) => sum + calcRentalAmount(r), 0);
-
-    const businessTillNow = shopRentals.reduce(
-      (sum, r) => sum + calcRentalAmount(r),
+  const selectedMonthArchivedBusiness = archivedBusiness
+    .filter((row: any) =>
+      isoDate(row.month_start).startsWith(balanceMonth)
+    )
+    .reduce(
+      (sum: number, row: any) =>
+        sum + Number(row.rental_business || 0),
       0
     );
 
-    const monthRentals = shopRentals.filter(
-      (r) =>
-        String(r.start_date || "").startsWith(monthStart) ||
-        String(r.end_date || "").startsWith(monthStart)
+  const selectedMonthRentalBusiness =
+    rentals.reduce(
+      (sum: number, rental: any) =>
+        sum + rentalBusinessForMonth(rental, balanceMonth),
+      0
+    ) + selectedMonthArchivedBusiness;
+
+  const selectedMonthOpeningBalance = payments
+    .filter((payment: any) =>
+      isoDate(payment.effective_date || payment.payment_date || payment.created_at).startsWith(
+        balanceMonth
+      )
+    )
+    .reduce((sum: number, payment: any) => {
+      const type = String(payment.entry_type || "payment").toLowerCase();
+      const amount = Math.abs(Number(payment.amount || 0));
+      if (type === "opening_due") return sum + amount;
+      if (type === "opening_credit") return sum - amount;
+      return sum;
+    }, 0);
+
+  const selectedMonthReceived = payments
+    .filter((payment: any) =>
+      isoDate(payment.effective_date || payment.payment_date || payment.created_at).startsWith(
+        balanceMonth
+      )
+    )
+    .reduce((sum: number, payment: any) => {
+      const type = String(payment.entry_type || "payment").toLowerCase();
+      if (type === "opening_due" || type === "opening_credit") return sum;
+      return sum + Number(payment.amount || 0) + Number(payment.discount || 0);
+    }, 0);
+
+  const pendingBalance = Math.max(
+    selectedMonthOpeningBalance +
+      selectedMonthRentalBusiness -
+      selectedMonthReceived,
+    0
+  );
+
+  const shopStats = branches.map((shop) => {
+    const shopRentals = rentals.filter(
+      (rental: any) => String(rental.shop || rental.branch || "").trim() === shop
+    );
+    const shopPayments = payments.filter(
+      (payment: any) =>
+        String(payment.shop || payment.branch || "").trim() === shop
     );
 
-    const monthPayments = shopPayments.filter((p) =>
-      String(p.payment_date || "").startsWith(monthStart)
+    const shopArchivedBusiness = archivedBusiness.filter(
+      (row: any) =>
+        String(row.shop || "").trim() === shop
     );
 
-    const monthCustomers = customers.filter((c) => c.shop === shop);
-
-    const monthTotals = calcSystemTotals(
-      monthCustomers,
-      monthRentals,
-      monthPayments
+    const selectedDateBusiness = shopRentals.reduce(
+      (sum: number, rental: any) =>
+        sum + rentalDailyBusinessForDate(rental, shopSummaryDate),
+      0
     );
+
+    const selectedMonthBusiness =
+      shopRentals.reduce(
+        (sum: number, rental: any) =>
+          sum + rentalBusinessForMonth(rental, shopSummaryMonth),
+        0
+      ) +
+      shopArchivedBusiness
+        .filter((row: any) =>
+          isoDate(row.month_start).startsWith(shopSummaryMonth)
+        )
+        .reduce(
+          (sum: number, row: any) =>
+            sum + Number(row.rental_business || 0),
+          0
+        );
+
+    const selectedMonthCollections =
+      shopPayments
+        .filter((payment: any) => {
+          const type = String(payment.entry_type || "payment").toLowerCase();
+          const date = isoDate(
+            payment.payment_date ||
+              payment.effective_date ||
+              payment.date ||
+              payment.created_at
+          );
+
+          return (
+            type !== "opening_due" &&
+            type !== "opening_credit" &&
+            date.startsWith(shopSummaryMonth)
+          );
+        })
+        .reduce(
+          (sum: number, payment: any) =>
+            sum + Number(payment.amount || 0),
+          0
+        ) +
+      shopArchivedBusiness
+        .filter((row: any) =>
+          isoDate(row.month_start).startsWith(shopSummaryMonth)
+        )
+        .reduce(
+          (sum: number, row: any) =>
+            sum + Number(row.payments_received || 0),
+          0
+        );
+
+    const selectedMonthPaymentRoundOff = shopPayments
+      .filter((payment: any) => {
+        const type = String(payment.entry_type || "payment").toLowerCase();
+        const date = isoDate(
+          payment.payment_date ||
+            payment.effective_date ||
+            payment.date ||
+            payment.created_at
+        );
+
+        return (
+          type !== "opening_due" &&
+          type !== "opening_credit" &&
+          date.startsWith(shopSummaryMonth)
+        );
+      })
+      .reduce(
+        (sum: number, payment: any) =>
+          sum + Number(payment.discount || 0),
+        0
+      );
+
+    const selectedMonthRentalRoundOff = shopRentals
+      .filter((rental: any) => {
+        const date = isoDate(
+          rental.end_date ||
+            rental.return_date ||
+            rental.start_date ||
+            rental.created_at
+        );
+        return date.startsWith(shopSummaryMonth);
+      })
+      .reduce(
+        (sum: number, rental: any) =>
+          sum + Number(rental.discount || 0),
+        0
+      );
+
+    const selectedMonthArchivedRoundOff =
+      shopArchivedBusiness
+        .filter((row: any) =>
+          isoDate(row.month_start).startsWith(shopSummaryMonth)
+        )
+        .reduce(
+          (sum: number, row: any) =>
+            sum + Number(row.round_off || 0),
+          0
+        );
+
+    const selectedMonthRoundOff =
+      selectedMonthPaymentRoundOff +
+      selectedMonthRentalRoundOff +
+      selectedMonthArchivedRoundOff;
+
+    const businessAsOnDate = shopRentals.reduce(
+      (sum: number, rental: any) =>
+        sum + rentalBusinessThroughDate(rental, shopSummaryDate),
+      0
+    );
+
+    let openingBalanceAsOnDate = 0;
+    let collectionsAsOnDate = 0;
+    let paymentRoundOffAsOnDate = 0;
+
+    shopPayments.forEach((payment: any) => {
+      const date = isoDate(
+        payment.effective_date ||
+          payment.payment_date ||
+          payment.date ||
+          payment.created_at
+      );
+
+      if (!date || date > shopSummaryDate) return;
+
+      const type = String(payment.entry_type || "payment").toLowerCase();
+      const amount = Math.abs(Number(payment.amount || 0));
+
+      if (type === "opening_due") {
+        openingBalanceAsOnDate += amount;
+      } else if (type === "opening_credit") {
+        openingBalanceAsOnDate -= amount;
+      } else {
+        collectionsAsOnDate += Number(payment.amount || 0);
+        paymentRoundOffAsOnDate += Number(payment.discount || 0);
+      }
+    });
+
+    const rentalRoundOffAsOnDate = shopRentals
+      .filter((rental: any) => {
+        const date = isoDate(
+          rental.end_date ||
+            rental.return_date ||
+            rental.start_date ||
+            rental.created_at
+        );
+        return Boolean(date && date <= shopSummaryDate);
+      })
+      .reduce(
+        (sum: number, rental: any) =>
+          sum + Number(rental.discount || 0),
+        0
+      );
+
+    const pendingBalanceAsOnDate = Math.max(
+      openingBalanceAsOnDate +
+        businessAsOnDate -
+        collectionsAsOnDate -
+        paymentRoundOffAsOnDate -
+        rentalRoundOffAsOnDate,
+      0
+    );
+
+    const activeRentalsOnDate = shopRentals.filter((rental: any) =>
+      rentalActiveOnDate(rental, shopSummaryDate)
+    ).length;
 
     return {
       shop,
-      todayBusiness,
-      businessTillNow,
-      monthBalance: Math.max(monthTotals.balance, 0),
+      todayBusiness: selectedDateBusiness,
+      selectedDateBusiness,
+      businessTillNow: businessAsOnDate,
+      monthBusiness: selectedMonthBusiness,
+      collections: selectedMonthCollections,
+      roundOff: selectedMonthRoundOff,
+      pendingBalance: pendingBalanceAsOnDate,
+      monthBalance: pendingBalanceAsOnDate,
+      activeRentals: activeRentalsOnDate,
     };
   });
 
@@ -113,6 +478,25 @@ export async function getDashboardStats() {
     if (Number.isNaN(d.getTime())) return null;
     return Math.floor(
       (todayDate.getTime() - d.getTime()) / (1000 * 60 * 60 * 24)
+    );
+  }
+
+
+  function continuousCalendarDays(startDate: any) {
+    const elapsed = daysSince(startDate);
+    return elapsed === null ? 0 : elapsed + 1;
+  }
+
+  function isActiveRental(row: any) {
+    const status = String(row?.status || "").trim().toLowerCase();
+    return (
+      !row?.end_date &&
+      !row?.return_date &&
+      (status === "active" ||
+        status === "live" ||
+        status === "rented" ||
+        status === "ongoing" ||
+        status === "")
     );
   }
 
@@ -180,7 +564,7 @@ export async function getDashboardStats() {
   const rentalOverdueAlerts: any[] = [];
 
   rentals
-    .filter((r: any) => r.status === "Active")
+    .filter((r: any) => isActiveRental(r))
     .forEach((r: any) => {
       const tool = tools.find((t: any) => Number(t.id) === Number(r.tool_id));
       if (!tool) return;
@@ -188,7 +572,7 @@ export async function getDashboardStats() {
       const overdueDays = Number(tool.rental_overdue_days || 0);
       if (!overdueDays) return;
 
-      const days = calcDays(r.start_date, null, r.avoid_sundays !== false);
+      const days = continuousCalendarDays(r.start_date);
 
       if (days > overdueDays) {
         const customer = customers.find(
@@ -210,25 +594,1026 @@ export async function getDashboardStats() {
       }
     });
 
+
+  const HIGH_PENDING_LIMIT = 10000;
+  const LARGE_DUE_BEFORE_NEW_RENTAL_LIMIT = 5000;
+  const SERVICE_DELAY_DAYS = 10;
+  const LONG_RENTAL_DAYS = 10;
+  const HIGH_ROUND_OFF_LIMIT = 500;
+  const REPEATED_ROUND_OFF_COUNT = 3;
+  const ROUND_OFF_LOOKBACK_DAYS = 30;
+
+  function rowDate(row: any, ...fields: string[]) {
+    for (const field of fields) {
+      const value = row?.[field];
+      if (value) return String(value).slice(0, 10);
+    }
+    return "";
+  }
+
+  function previousDate(dateValue: string) {
+    const date = new Date(`${dateValue}T00:00:00`);
+    if (Number.isNaN(date.getTime())) return dateValue;
+    date.setDate(date.getDate() - 1);
+    return date.toISOString().slice(0, 10);
+  }
+
+  function paymentEntryType(payment: any) {
+    return String(payment?.entry_type || "payment").trim().toLowerCase();
+  }
+
+  function customerMatchesRow(customer: any, row: any) {
+    const customerId = String(customer?.id || "").trim();
+    const rowCustomerId = String(row?.customer_id || "").trim();
+    const customerMobile = String(customer?.mobile || "").trim();
+    const rowMobile = String(row?.mobile || row?.customer_mobile || "").trim();
+
+    return Boolean(
+      (customerId && rowCustomerId && customerId === rowCustomerId) ||
+      (customerMobile && rowMobile && customerMobile === rowMobile)
+    );
+  }
+
+  function customerForRental(rental: any) {
+    return customers.find((customer: any) => customerMatchesRow(customer, rental));
+  }
+
+  function toolForRental(rental: any) {
+    return tools.find((tool: any) => Number(tool.id) === Number(rental.tool_id));
+  }
+
+  function customerLabel(customer: any) {
+    if (!customer) return "Unknown customer";
+    const name = customer.customer_name || customer.name || "Unknown customer";
+    const mobile = String(customer.mobile || "").trim();
+    return mobile ? `${name} - ${mobile}` : name;
+  }
+
+  function customerFinancials(customer: any) {
+    const customerRentals = rentals.filter((row: any) =>
+      customerMatchesRow(customer, row)
+    );
+    const customerPayments = payments.filter((row: any) =>
+      customerMatchesRow(customer, row)
+    );
+
+    const rentalBusiness = customerRentals.reduce(
+      (sum: number, rental: any) => sum + calcRentalAmount(rental),
+      0
+    );
+
+    let openingBalance = 0;
+    let received = 0;
+    let roundOff = 0;
+
+    customerPayments.forEach((payment: any) => {
+      const type = paymentEntryType(payment);
+      const amount = Math.abs(Number(payment.amount || 0));
+
+      if (type === "opening_due") {
+        openingBalance += amount;
+        return;
+      }
+
+      if (type === "opening_credit") {
+        openingBalance -= amount;
+        return;
+      }
+
+      received += Number(payment.amount || 0);
+      roundOff += Number(payment.discount || 0);
+    });
+
+    return {
+      customer,
+      rentals: customerRentals,
+      payments: customerPayments,
+      rentalBusiness,
+      openingBalance,
+      received,
+      roundOff,
+      balance: openingBalance + rentalBusiness - received - roundOff,
+    };
+  }
+
+  const customerFinancialRows = customers.map((customer: any) =>
+    customerFinancials(customer)
+  );
+
+  function financialRowForCustomer(customer: any) {
+    if (!customer) return null;
+    return customerFinancialRows.find(
+      (row: any) => String(row.customer?.id || "") === String(customer.id || "")
+    );
+  }
+
+  function balanceBeforeDate(customer: any, beforeDate: string) {
+    if (!customer || !beforeDate) return 0;
+
+    const cutOff = previousDate(beforeDate);
+    let openingBalance = 0;
+    let received = 0;
+    let roundOff = 0;
+
+    const customerPayments = payments.filter(
+      (payment: any) =>
+        customerMatchesRow(customer, payment) &&
+        rowDate(
+          payment,
+          "effective_date",
+          "payment_date",
+          "date",
+          "created_at"
+        ) <= cutOff
+    );
+
+    customerPayments.forEach((payment: any) => {
+      const type = paymentEntryType(payment);
+      const amount = Math.abs(Number(payment.amount || 0));
+
+      if (type === "opening_due") {
+        openingBalance += amount;
+      } else if (type === "opening_credit") {
+        openingBalance -= amount;
+      } else {
+        received += Number(payment.amount || 0);
+        roundOff += Number(payment.discount || 0);
+      }
+    });
+
+    const businessBeforeDate = rentals
+      .filter((rental: any) => {
+        if (!customerMatchesRow(customer, rental)) return false;
+        const startDate = rowDate(rental, "start_date", "date", "rental_date");
+        return Boolean(startDate && startDate <= cutOff);
+      })
+      .reduce((sum: number, rental: any) => {
+        const actualEnd = rowDate(
+          rental,
+          "end_date",
+          "return_date",
+          "closed_date"
+        );
+        const calculatedEnd =
+          actualEnd && actualEnd < cutOff ? actualEnd : cutOff;
+
+        return (
+          sum +
+          calcRentalAmount({
+            ...rental,
+            end_date: calculatedEnd,
+            return_date: calculatedEnd,
+          })
+        );
+      }, 0);
+
+    return openingBalance + businessBeforeDate - received - roundOff;
+  }
+
+  function oldestUnpaidAge(financial: any) {
+    if (!financial || Number(financial.balance || 0) <= 0) return null;
+
+    const charges: Array<{ date: string; amount: number }> = [];
+
+    financial.payments.forEach((payment: any) => {
+      if (paymentEntryType(payment) !== "opening_due") return;
+
+      const amount = Math.abs(Number(payment.amount || 0));
+      if (amount <= 0) return;
+
+      charges.push({
+        date:
+          rowDate(
+            payment,
+            "effective_date",
+            "payment_date",
+            "date",
+            "created_at"
+          ) || today,
+        amount,
+      });
+    });
+
+    financial.rentals.forEach((rental: any) => {
+      const amount = calcRentalAmount(rental);
+      if (amount <= 0) return;
+
+      charges.push({
+        date:
+          rowDate(rental, "start_date", "date", "rental_date", "created_at") ||
+          today,
+        amount,
+      });
+    });
+
+    charges.sort((a, b) => a.date.localeCompare(b.date));
+
+    let credits =
+      financial.received +
+      financial.roundOff +
+      Math.abs(
+        financial.payments
+          .filter((payment: any) => paymentEntryType(payment) === "opening_credit")
+          .reduce(
+            (sum: number, payment: any) =>
+              sum + Math.abs(Number(payment.amount || 0)),
+            0
+          )
+      );
+
+    for (const charge of charges) {
+      if (credits >= charge.amount) {
+        credits -= charge.amount;
+        continue;
+      }
+
+      const age = daysSince(charge.date);
+      return age === null ? null : age + 1;
+    }
+
+    return null;
+  }
+
+  const criticalRedFlags: any[] = [];
+
+  // 1. Whatever the tool, show every live rental continuously held for more than 10 calendar days.
+  rentals
+    .filter((rental: any) => isActiveRental(rental))
+    .forEach((rental: any) => {
+      const days = continuousCalendarDays(
+        rowDate(rental, "start_date", "date", "rental_date")
+      );
+      if (days <= LONG_RENTAL_DAYS) return;
+
+      const tool = toolForRental(rental);
+      const customer = customerForRental(rental);
+
+      criticalRedFlags.push({
+        type: "Rental over 10 days",
+        level: days >= 30 ? "critical" : "danger",
+        subject:
+          tool?.tool_name ||
+          rental.outside_item_name ||
+          rental.tool_name ||
+          "Rental item",
+        customer: customerLabel(customer),
+        shop: rental.shop || customer?.shop || "",
+        days,
+        amount: 0,
+        message: `Active continuously for ${days} calendar day(s).`,
+      });
+    });
+
+  // 2. Customers with a current positive balance of ₹10,000 or more.
+  customerFinancialRows
+    .filter((row: any) => Number(row.balance || 0) >= HIGH_PENDING_LIMIT)
+    .forEach((row: any) => {
+      criticalRedFlags.push({
+        type: "High pending balance",
+        level:
+          Number(row.balance || 0) >= HIGH_PENDING_LIMIT * 2
+            ? "critical"
+            : "danger",
+        subject:
+          row.customer.customer_name || row.customer.name || "Customer",
+        customer: row.customer.mobile || "",
+        shop: row.customer.shop || row.customer.branch || "",
+        days: 0,
+        amount: Number(row.balance || 0),
+        message: `Current unpaid balance is ₹${Number(row.balance || 0).toFixed(
+          0
+        )}.`,
+      });
+    });
+
+  // 3. Find the oldest charge that remains unpaid after FIFO allocation.
+  customerFinancialRows.forEach((row: any) => {
+    const age = oldestUnpaidAge(row);
+    if (age === null || age < 30) return;
+
+    const bucket = age >= 90 ? "90+ days" : age >= 60 ? "60+ days" : "30+ days";
+
+    criticalRedFlags.push({
+      type: `Long pending ${bucket}`,
+      level: age >= 90 ? "critical" : "danger",
+      subject:
+        row.customer.customer_name || row.customer.name || "Customer",
+      customer: row.customer.mobile || "",
+      shop: row.customer.shop || row.customer.branch || "",
+      days: age,
+      amount: Number(row.balance || 0),
+      message: `The oldest amount still unpaid is ${age} day(s) old.`,
+    });
+  });
+
+  // 4. Tools whose status is marked Missing.
+  tools
+    .filter(
+      (tool: any) =>
+        String(tool.status || "").trim().toLowerCase() === "missing"
+    )
+    .forEach((tool: any) => {
+      criticalRedFlags.push({
+        type: "Tool missing",
+        level: "critical",
+        subject: tool.tool_name || "Tool",
+        customer: "",
+        shop: tool.current_location || tool.home_branch || "",
+        days: 0,
+        amount: 0,
+        message: "Tool status is marked as Missing.",
+      });
+    });
+
+  // 5. Open service records not returned for more than 10 calendar days.
+  services
+    .filter((service: any) => {
+      const status = String(service.status || "").trim().toLowerCase();
+      return (
+        !service.date_in &&
+        status !== "completed" &&
+        status !== "returned"
+      );
+    })
+    .forEach((service: any) => {
+      const days = continuousCalendarDays(
+        rowDate(service, "date_out", "created_at")
+      );
+      if (days <= SERVICE_DELAY_DAYS) return;
+
+      const tool = tools.find(
+        (item: any) => Number(item.id) === Number(service.tool_id)
+      );
+
+      criticalRedFlags.push({
+        type: "Service delayed",
+        level: days >= 30 ? "critical" : "danger",
+        subject: tool?.tool_name || "Tool",
+        customer: service.service_centre || "",
+        shop: service.active_branch || service.home_branch || "",
+        days,
+        amount: Number(service.cost || service.amount || 0),
+        message: `Not returned from service after ${days} calendar day(s).`,
+      });
+    });
+
+  // 6. Return/end date exists, but the status still says live/active.
+  rentals
+    .filter((rental: any) => {
+      const status = String(rental.status || "").trim().toLowerCase();
+      const hasReturnDate = Boolean(rental.end_date || rental.return_date);
+      return (
+        hasReturnDate &&
+        ["active", "live", "rented", "ongoing"].includes(status)
+      );
+    })
+    .forEach((rental: any) => {
+      const tool = toolForRental(rental);
+      const customer = customerForRental(rental);
+
+      criticalRedFlags.push({
+        type: "Returned but still live",
+        level: "critical",
+        subject:
+          tool?.tool_name ||
+          rental.outside_item_name ||
+          rental.tool_name ||
+          "Rental item",
+        customer: customerLabel(customer),
+        shop: rental.shop || customer?.shop || "",
+        days: 0,
+        amount: 0,
+        message: "Return date exists, but rental status is still live.",
+      });
+    });
+
+  // 7. The same individual tool (stock quantity 1) appears in multiple live rentals.
+  const activeRentalsByTool = new Map<number, any[]>();
+
+  rentals
+    .filter(
+      (rental: any) =>
+        isActiveRental(rental) &&
+        !rental.is_outside_rent &&
+        Number(rental.tool_id || 0) > 0
+    )
+    .forEach((rental: any) => {
+      const toolId = Number(rental.tool_id);
+      activeRentalsByTool.set(toolId, [
+        ...(activeRentalsByTool.get(toolId) || []),
+        rental,
+      ]);
+    });
+
+  activeRentalsByTool.forEach((rows, toolId) => {
+    const tool = tools.find((item: any) => Number(item.id) === toolId);
+    const totalQty = Math.max(Number(tool?.total_qty || 1), 1);
+
+    if (totalQty !== 1 || rows.length < 2) return;
+
+    const customerNames = rows
+      .map((row: any) => customerLabel(customerForRental(row)))
+      .filter(Boolean)
+      .join(" | ");
+
+    criticalRedFlags.push({
+      type: "Duplicate individual rental",
+      level: "critical",
+      subject: tool?.tool_name || "Individual tool",
+      customer: customerNames || `${rows.length} active rental records`,
+      shop: Array.from(
+        new Set(rows.map((row: any) => row.shop).filter(Boolean))
+      ).join(", "),
+      days: 0,
+      amount: 0,
+      message: `This one individual tool is live in ${rows.length} rental records at the same time.`,
+    });
+  });
+
+  // 8. At the time of a new rental, the customer already owed ₹5,000 or more.
+  rentals
+    .filter((rental: any) => isActiveRental(rental))
+    .forEach((rental: any) => {
+      const customer = customerForRental(rental);
+      const rentalStart = rowDate(
+        rental,
+        "start_date",
+        "date",
+        "rental_date"
+      );
+      if (!customer || !rentalStart) return;
+
+      const priorBalance = balanceBeforeDate(customer, rentalStart);
+      if (priorBalance < LARGE_DUE_BEFORE_NEW_RENTAL_LIMIT) return;
+
+      const tool = toolForRental(rental);
+
+      criticalRedFlags.push({
+        type: "Large due before new rental",
+        level:
+          priorBalance >= HIGH_PENDING_LIMIT ? "critical" : "danger",
+        subject: customerLabel(customer),
+        customer:
+          tool?.tool_name ||
+          rental.outside_item_name ||
+          rental.tool_name ||
+          "Rental item",
+        shop: rental.shop || customer.shop || "",
+        days: continuousCalendarDays(rentalStart),
+        amount: priorBalance,
+        message: `Customer already owed ₹${priorBalance.toFixed(
+          0
+        )} before this rental started on ${rentalStart}.`,
+      });
+    });
+
+  // 9. Repeated round-off or unusually high payment/rental discount in the last 30 days.
+  const roundOffCutoff = new Date(todayDate);
+  roundOffCutoff.setDate(
+    roundOffCutoff.getDate() - ROUND_OFF_LOOKBACK_DAYS
+  );
+  const roundOffCutoffISO = roundOffCutoff.toISOString().slice(0, 10);
+
+  const roundOffEntries: any[] = [];
+
+  payments.forEach((payment: any) => {
+    const amount = Number(payment.discount || 0);
+    const date = rowDate(
+      payment,
+      "payment_date",
+      "effective_date",
+      "date",
+      "created_at"
+    );
+
+    if (
+      paymentEntryType(payment) === "opening_due" ||
+      paymentEntryType(payment) === "opening_credit" ||
+      amount <= 0 ||
+      !date ||
+      date < roundOffCutoffISO
+    ) {
+      return;
+    }
+
+    roundOffEntries.push({
+      customer_id: payment.customer_id,
+      mobile: payment.mobile || payment.customer_mobile || "",
+      customer_name: payment.customer_name || "",
+      shop: payment.shop || payment.branch || "",
+      amount,
+      date,
+      source: "Payment round-off",
+    });
+  });
+
+  rentals.forEach((rental: any) => {
+    const amount = Number(rental.discount || 0);
+    const date = rowDate(
+      rental,
+      "end_date",
+      "return_date",
+      "start_date",
+      "created_at"
+    );
+
+    if (amount <= 0 || !date || date < roundOffCutoffISO) return;
+
+    const customer = customerForRental(rental);
+
+    roundOffEntries.push({
+      customer_id: rental.customer_id,
+      mobile: customer?.mobile || rental.mobile || "",
+      customer_name:
+        customer?.customer_name ||
+        customer?.name ||
+        rental.customer_name ||
+        "",
+      shop: rental.shop || customer?.shop || "",
+      amount,
+      date,
+      source: "Rental discount",
+    });
+  });
+
+  const roundOffByCustomer = new Map<string, any[]>();
+
+  roundOffEntries.forEach((entry: any) => {
+    const key =
+      String(entry.customer_id || "").trim() ||
+      String(entry.mobile || "").trim() ||
+      String(entry.customer_name || "").trim();
+
+    if (!key) return;
+
+    roundOffByCustomer.set(key, [
+      ...(roundOffByCustomer.get(key) || []),
+      entry,
+    ]);
+  });
+
+  roundOffByCustomer.forEach((rows) => {
+    const totalRoundOff = rows.reduce(
+      (sum: number, row: any) => sum + Number(row.amount || 0),
+      0
+    );
+    const highestSingle = rows.reduce(
+      (highest: number, row: any) =>
+        Math.max(highest, Number(row.amount || 0)),
+      0
+    );
+
+    if (
+      rows.length < REPEATED_ROUND_OFF_COUNT &&
+      highestSingle < HIGH_ROUND_OFF_LIMIT
+    ) {
+      return;
+    }
+
+    const sample = rows[0];
+
+    criticalRedFlags.push({
+      type: "Round-off warning",
+      level:
+        highestSingle >= HIGH_ROUND_OFF_LIMIT ||
+        totalRoundOff >= HIGH_ROUND_OFF_LIMIT * 2
+          ? "critical"
+          : "danger",
+      subject: sample.customer_name || "Customer",
+      customer: sample.mobile || "",
+      shop: sample.shop || "",
+      days: 0,
+      amount: totalRoundOff,
+      message: `${rows.length} round-off/discount entr${
+        rows.length === 1 ? "y" : "ies"
+      } totalling ₹${totalRoundOff.toFixed(
+        0
+      )} in the last ${ROUND_OFF_LOOKBACK_DAYS} days. Highest single entry: ₹${highestSingle.toFixed(
+        0
+      )}.`,
+    });
+  });
+
+  const nearRedFlags: any[] = [];
+
+  function addNearFlag(row: any) {
+    if (!row) return;
+
+    nearRedFlags.push({
+      ...row,
+      level: "near",
+      isNear: true,
+    });
+  }
+
+  // 1. Closest active rental to the 10-day overdue limit.
+  const nearestOverdueRental = rentals
+    .filter((rental: any) => isActiveRental(rental))
+    .map((rental: any) => {
+      const days = continuousCalendarDays(
+        rowDate(rental, "start_date", "date", "rental_date")
+      );
+      const tool = toolForRental(rental);
+      const customer = customerForRental(rental);
+
+      return {
+        type: "Rental over 10 days",
+        subject:
+          tool?.tool_name ||
+          rental.outside_item_name ||
+          rental.tool_name ||
+          "Rental item",
+        customer: customerLabel(customer),
+        shop: rental.shop || customer?.shop || "",
+        days,
+        amount: 0,
+        message:
+          days > LONG_RENTAL_DAYS
+            ? `Already above the limit at ${days} calendar day(s).`
+            : `Closest live rental is ${days} day(s); red flag starts after ${LONG_RENTAL_DAYS} days.`,
+      };
+    })
+    .sort((a: any, b: any) => Number(b.days || 0) - Number(a.days || 0))[0];
+
+  addNearFlag(nearestOverdueRental);
+
+  // 2. Highest current positive balance below/nearest to ₹10,000.
+  const nearestHighDue = customerFinancialRows
+    .filter((row: any) => Number(row.balance || 0) > 0)
+    .sort(
+      (a: any, b: any) =>
+        Number(b.balance || 0) - Number(a.balance || 0)
+    )[0];
+
+  if (nearestHighDue) {
+    addNearFlag({
+      type: "High pending balance",
+      subject:
+        nearestHighDue.customer.customer_name ||
+        nearestHighDue.customer.name ||
+        "Customer",
+      customer: nearestHighDue.customer.mobile || "",
+      shop:
+        nearestHighDue.customer.shop ||
+        nearestHighDue.customer.branch ||
+        "",
+      days: 0,
+      amount: Number(nearestHighDue.balance || 0),
+      message: `Highest current due is ₹${Number(
+        nearestHighDue.balance || 0
+      ).toFixed(0)}; high-due flag starts at ₹${HIGH_PENDING_LIMIT}.`,
+    });
+  }
+
+  // 3. Oldest currently unpaid amount nearest to 30 days.
+  const nearestOldDue = customerFinancialRows
+    .map((row: any) => ({
+      row,
+      age: oldestUnpaidAge(row),
+    }))
+    .filter(
+      (item: any) =>
+        item.age !== null &&
+        Number(item.row.balance || 0) > 0
+    )
+    .sort((a: any, b: any) => Number(b.age || 0) - Number(a.age || 0))[0];
+
+  if (nearestOldDue) {
+    addNearFlag({
+      type: "Long pending near",
+      subject:
+        nearestOldDue.row.customer.customer_name ||
+        nearestOldDue.row.customer.name ||
+        "Customer",
+      customer: nearestOldDue.row.customer.mobile || "",
+      shop:
+        nearestOldDue.row.customer.shop ||
+        nearestOldDue.row.customer.branch ||
+        "",
+      days: Number(nearestOldDue.age || 0),
+      amount: Number(nearestOldDue.row.balance || 0),
+      message: `Oldest unpaid amount is ${Number(
+        nearestOldDue.age || 0
+      )} day(s) old; long-pending flag starts at 30 days.`,
+    });
+  }
+
+  // 4. Closest tool-status risk when no tool is marked Missing.
+  const missingStatusScores: Record<string, number> = {
+    damaged: 5,
+    inactive: 4,
+    unavailable: 3,
+    service: 2,
+    "in service": 2,
+    available: 0,
+  };
+
+  const nearestMissingTool = tools
+    .map((tool: any) => {
+      const status = String(tool.status || "Available")
+        .trim()
+        .toLowerCase();
+
+      return {
+        tool,
+        status,
+        score: missingStatusScores[status] ?? 1,
+      };
+    })
+    .sort((a: any, b: any) => Number(b.score) - Number(a.score))[0];
+
+  if (nearestMissingTool) {
+    addNearFlag({
+      type: "Tool missing",
+      subject: nearestMissingTool.tool.tool_name || "Tool",
+      customer: `Current status: ${
+        nearestMissingTool.tool.status || "Available"
+      }`,
+      shop:
+        nearestMissingTool.tool.current_location ||
+        nearestMissingTool.tool.home_branch ||
+        "",
+      days: 0,
+      amount: 0,
+      message:
+        nearestMissingTool.status === "available"
+          ? "No missing or risky-status tools. An available tool is shown as the nearest current item."
+          : `No tool is marked Missing. Closest current watch status is ${
+              nearestMissingTool.tool.status || "Unknown"
+            }.`,
+    });
+  }
+
+  // 5. Longest open service record nearest to the 10-day delay limit.
+  const nearestServiceDelay = services
+    .filter((service: any) => {
+      const status = String(service.status || "").trim().toLowerCase();
+      return (
+        !service.date_in &&
+        status !== "completed" &&
+        status !== "returned"
+      );
+    })
+    .map((service: any) => {
+      const days = continuousCalendarDays(
+        rowDate(service, "date_out", "created_at")
+      );
+      const tool = tools.find(
+        (item: any) => Number(item.id) === Number(service.tool_id)
+      );
+
+      return {
+        type: "Service delayed",
+        subject: tool?.tool_name || "Tool",
+        customer: service.service_centre || "",
+        shop: service.active_branch || service.home_branch || "",
+        days,
+        amount: Number(service.cost || service.amount || 0),
+        message:
+          days > SERVICE_DELAY_DAYS
+            ? `Already above the service-delay limit at ${days} day(s).`
+            : `Longest open service is ${days} day(s); delay flag starts after ${SERVICE_DELAY_DAYS} days.`,
+      };
+    })
+    .sort((a: any, b: any) => Number(b.days || 0) - Number(a.days || 0))[0];
+
+  addNearFlag(nearestServiceDelay);
+
+  // 6. Most recent correctly closed return, nearest comparison for status mismatch.
+  const nearestReturnedStatus = rentals
+    .filter((rental: any) => Boolean(rental.end_date || rental.return_date))
+    .map((rental: any) => {
+      const tool = toolForRental(rental);
+      const customer = customerForRental(rental);
+      const returnDate = rowDate(
+        rental,
+        "end_date",
+        "return_date",
+        "closed_date"
+      );
+
+      return {
+        type: "Returned but still live",
+        subject:
+          tool?.tool_name ||
+          rental.outside_item_name ||
+          rental.tool_name ||
+          "Rental item",
+        customer: customerLabel(customer),
+        shop: rental.shop || customer?.shop || "",
+        days: 0,
+        amount: 0,
+        returnDate,
+        message: `Latest returned record is dated ${
+          returnDate || "-"
+        } and currently has status ${rental.status || "Not set"}.`,
+      };
+    })
+    .sort((a: any, b: any) =>
+      String(b.returnDate || "").localeCompare(
+        String(a.returnDate || "")
+      )
+    )[0];
+
+  addNearFlag(nearestReturnedStatus);
+
+  // 7. Individual tool with the highest current live-rental count.
+  const nearestDuplicateTool = Array.from(activeRentalsByTool.entries())
+    .map(([toolId, rows]: any) => {
+      const tool = tools.find(
+        (item: any) => Number(item.id) === Number(toolId)
+      );
+      const totalQty = Math.max(Number(tool?.total_qty || 1), 1);
+
+      return {
+        tool,
+        rows,
+        totalQty,
+      };
+    })
+    .filter((item: any) => item.totalQty === 1)
+    .sort(
+      (a: any, b: any) =>
+        Number(b.rows.length || 0) - Number(a.rows.length || 0)
+    )[0];
+
+  if (nearestDuplicateTool) {
+    addNearFlag({
+      type: "Duplicate individual rental",
+      subject:
+        nearestDuplicateTool.tool?.tool_name || "Individual tool",
+      customer: nearestDuplicateTool.rows
+        .map((row: any) =>
+          customerLabel(customerForRental(row))
+        )
+        .join(" | "),
+      shop: Array.from(
+        new Set(
+          nearestDuplicateTool.rows
+            .map((row: any) => row.shop)
+            .filter(Boolean)
+        )
+      ).join(", "),
+      days: 0,
+      amount: 0,
+      message: `Highest current live count for an individual tool is ${nearestDuplicateTool.rows.length}; duplicate flag starts at 2.`,
+    });
+  }
+
+  // 8. Highest balance that existed before a currently active rental started.
+  const nearDueBeforeRentalCandidates = rentals
+    .filter((rental: any) => isActiveRental(rental))
+    .map((rental: any) => {
+      const customer = customerForRental(rental);
+      const rentalStart = rowDate(
+        rental,
+        "start_date",
+        "date",
+        "rental_date"
+      );
+      if (!customer || !rentalStart) return null;
+
+      const priorBalance = balanceBeforeDate(customer, rentalStart);
+      const tool = toolForRental(rental);
+
+      return {
+        type: "Large due before new rental",
+        subject: customerLabel(customer),
+        customer:
+          tool?.tool_name ||
+          rental.outside_item_name ||
+          rental.tool_name ||
+          "Rental item",
+        shop: rental.shop || customer.shop || "",
+        days: continuousCalendarDays(rentalStart),
+        amount: priorBalance,
+        message: `Highest existing due before an active rental was ₹${priorBalance.toFixed(
+          0
+        )}; flag starts at ₹${LARGE_DUE_BEFORE_NEW_RENTAL_LIMIT}.`,
+      };
+    })
+    .filter(Boolean)
+    .sort(
+      (a: any, b: any) =>
+        Number(b.amount || 0) - Number(a.amount || 0)
+    );
+
+  addNearFlag(nearDueBeforeRentalCandidates[0]);
+
+  // 9. Customer with the highest recent round-off activity below/nearest to the limit.
+  const nearestRoundOff = Array.from(roundOffByCustomer.values())
+    .map((rows: any[]) => {
+      const totalRoundOff = rows.reduce(
+        (sum: number, row: any) =>
+          sum + Number(row.amount || 0),
+        0
+      );
+      const highestSingle = rows.reduce(
+        (highest: number, row: any) =>
+          Math.max(highest, Number(row.amount || 0)),
+        0
+      );
+      const sample = rows[0];
+
+      return {
+        type: "Round-off warning",
+        subject: sample.customer_name || "Customer",
+        customer: sample.mobile || "",
+        shop: sample.shop || "",
+        days: 0,
+        amount: totalRoundOff,
+        count: rows.length,
+        highestSingle,
+        message: `${rows.length} recent round-off/discount entr${
+          rows.length === 1 ? "y" : "ies"
+        }, total ₹${totalRoundOff.toFixed(
+          0
+        )}, highest single ₹${highestSingle.toFixed(
+          0
+        )}. Warning starts at ${REPEATED_ROUND_OFF_COUNT} entries or ₹${HIGH_ROUND_OFF_LIMIT} in one entry.`,
+      };
+    })
+    .sort((a: any, b: any) => {
+      if (Number(b.highestSingle || 0) !== Number(a.highestSingle || 0)) {
+        return Number(b.highestSingle || 0) - Number(a.highestSingle || 0);
+      }
+
+      if (Number(b.count || 0) !== Number(a.count || 0)) {
+        return Number(b.count || 0) - Number(a.count || 0);
+      }
+
+      return Number(b.amount || 0) - Number(a.amount || 0);
+    })[0];
+
+  addNearFlag(nearestRoundOff);
+
+  const criticalRedFlagsSorted = criticalRedFlags.sort(
+    (a: any, b: any) => {
+      if (a.level !== b.level) {
+        return a.level === "critical" ? -1 : 1;
+      }
+
+      if (Number(a.amount || 0) !== Number(b.amount || 0)) {
+        return Number(b.amount || 0) - Number(a.amount || 0);
+      }
+
+      return Number(b.days || 0) - Number(a.days || 0);
+    }
+  );
+
   return {
-    totalTools: tools.length,
-    activeRentals: rentals.filter((r) => r.status === "Active").length,
+    totalTools: tools.reduce((sum: number, tool: any) => sum + Math.max(Number(tool.total_qty || 1), 1), 0),
+    activeRentals: rentals.filter((r) => isActiveRental(r)).length,
     toolsInService: tools.filter(
       (t) => t.status === "Service" || t.status === "In Service"
     ).length,
     missingTools: tools.filter((t) => t.status === "Missing").length,
     pendingBalance,
-    todayBusiness: shopStats.reduce((sum, s) => sum + s.todayBusiness, 0),
-    todayCollections: payments
-      .filter((p) => p.payment_date === today)
-      .reduce((sum, p) => sum + Number(p.amount || 0), 0),
-    serviceCost: services.reduce(
-      (sum, s) => sum + Number(s.cost || s.amount || 0),
+    todayBusiness: rentals.reduce(
+      (sum: number, rental: any) =>
+        sum + rentalDailyBusinessForDate(rental, businessDate),
       0
+    ),
+    todayCollections: payments
+      .filter((payment: any) => {
+        const type = String(payment.entry_type || "payment").toLowerCase();
+        return (
+          type !== "opening_due" &&
+          type !== "opening_credit" &&
+          isoDate(payment.payment_date || payment.effective_date || payment.created_at) ===
+            collectionDate
+        );
+      })
+      .reduce((sum: number, payment: any) => sum + Number(payment.amount || 0), 0),
+    serviceCost:
+      services
+        .filter((service: any) =>
+          isoDate(service.date_in || service.date_out || service.created_at).startsWith(
+            serviceMonth
+          )
+        )
+        .reduce(
+          (sum: number, service: any) =>
+            sum + Number(service.cost || service.amount || 0),
+          0
+        ) +
+      archivedTool
+        .filter((row: any) =>
+          isoDate(row.month_start).startsWith(serviceMonth)
+        )
+        .reduce(
+          (sum: number, row: any) =>
+            sum + Number(row.service_cost || 0),
+          0
+        ),
+    archivedShopTotals: archivedShop.filter((row: any) =>
+      isoDate(row.month_start).startsWith(shopSummaryMonth)
     ),
     shopStats,
     maintenanceAlerts,
     rentalOverdueAlerts,
+    criticalRedFlags: criticalRedFlagsSorted,
+    nearRedFlags,
   };
 }
 
@@ -324,6 +1709,9 @@ export async function getCustomers(search: string = "") {
 
   const rentalsRes = await supabase.from("rentals").select("*");
   const paymentsRes = await supabase.from("payments").select("*");
+  const archivedRes = await supabase
+    .from("archived_business_monthly")
+    .select("*");
 
   if (customersRes.error) {
     return { success: false, message: customersRes.error.message, data: [] };
@@ -337,11 +1725,49 @@ export async function getCustomers(search: string = "") {
     return { success: false, message: paymentsRes.error.message, data: [] };
   }
 
+  const archivedRows = archivedRes.error
+    ? []
+    : archivedRes.data || [];
+
   let data = buildCustomerBalances(
     customersRes.data || [],
     rentalsRes.data || [],
     paymentsRes.data || []
-  );
+  ).map((customer: any) => {
+    const oldRows = archivedRows.filter(
+      (row: any) =>
+        Number(row.customer_id || 0) ===
+        Number(customer.id || customer.customer_id || 0)
+    );
+    const archivedBusiness = oldRows.reduce(
+      (sum: number, row: any) =>
+        sum + Number(row.rental_business || 0),
+      0
+    );
+    const archivedReceived = oldRows.reduce(
+      (sum: number, row: any) =>
+        sum + Number(row.payments_received || 0),
+      0
+    );
+    const archivedRoundOff = oldRows.reduce(
+      (sum: number, row: any) =>
+        sum + Number(row.round_off || 0),
+      0
+    );
+
+    return {
+      ...customer,
+      archived_business_total: archivedBusiness,
+      archived_received_total: archivedReceived,
+      archived_round_off_total: archivedRoundOff,
+      lifetime_business:
+        Number(customer.rental_total || 0) +
+        archivedBusiness,
+      lifetime_received:
+        Number(customer.received_total || 0) +
+        archivedReceived,
+    };
+  });
 
   if (search.trim()) {
     const s = search.toLowerCase();
@@ -1453,6 +2879,11 @@ export async function getToolHistory(toolId: number) {
     .select("*")
     .eq("tool_id", toolId);
 
+  const { data: archivedHistory } = await supabase
+    .from("archived_tool_monthly")
+    .select("*")
+    .eq("tool_id", toolId);
+
   const movementHistory =
     movements?.map((m: any) => ({
       date: m.movement_date || m.date || m.created_at || "",
@@ -1479,11 +2910,33 @@ export async function getToolHistory(toolId: number) {
       status: s.status || "",
     })) || [];
 
-  const history = [...movementHistory, ...serviceHistory].sort(
+  const archivedSummaryHistory =
+    archivedHistory?.map((row: any) => ({
+      date: row.month_start || "",
+      type: "Archived Monthly Summary",
+      from_location: "",
+      to_location: row.shop || "",
+      service_centre: "",
+      note: `${Number(row.movement_count || 0)} movement(s), ${Number(
+        row.service_count || 0
+      )} completed service record(s)`,
+      work_done: "Old details summarized after six months",
+      cost: Number(row.service_cost || 0),
+      status: "Archived",
+    })) || [];
+
+  const history = [
+    ...movementHistory,
+    ...serviceHistory,
+    ...archivedSummaryHistory,
+  ].sort(
     (a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime()
   );
 
-  const totalServiceCost = serviceHistory.reduce(
+  const totalServiceCost = [
+    ...serviceHistory,
+    ...archivedSummaryHistory,
+  ].reduce(
     (sum, row) => sum + Number(row.cost || 0),
     0
   );
