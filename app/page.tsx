@@ -509,6 +509,22 @@ export default function Dashboard() {
           box-shadow: 0 5px 12px rgba(156,120,40,0.14) !important;
         }
 
+        .red-flag-column-old-due .red-flag-word {
+          color: #ffe500 !important;
+          text-shadow:
+            0 2px 0 #7f0000,
+            0 0 6px rgba(127, 0, 0, 0.95),
+            0 0 13px rgba(255, 229, 0, 0.72) !important;
+        }
+
+        .red-flag-column-old-due[open] .red-flag-word {
+          color: #8b1e1e !important;
+          animation: none !important;
+          text-shadow:
+            0 1px 0 #ffffff,
+            0 0 2px rgba(139, 30, 30, 0.22) !important;
+        }
+
 
         .red-flag-expanded {
           padding: 0 16px 18px;
@@ -1102,13 +1118,16 @@ export default function Dashboard() {
           {redFlagColumns.map((column) => (
             <details
               key={column.key}
-              className={
+              className={[
                 column.hasActual
                   ? "red-flag-column red-flag-column-active"
                   : column.isNearOnly
                   ? "red-flag-column red-flag-column-near"
-                  : "red-flag-column"
-              }
+                  : "red-flag-column",
+                column.key === "OLD DUE" ? "red-flag-column-old-due" : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
             >
               <summary>
                 <div className="red-flag-word">{column.key}</div>

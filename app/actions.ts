@@ -1635,6 +1635,483 @@ export async function getTools(search: string = "") {
   return { success: true, message: "Tools loaded", data: data || [] };
 }
 
+function cleanToolSearchText(value: string) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 80);
+}
+
+function cleanToolMetadataSearchTerm(value: string) {
+  return cleanToolSearchText(value)
+    .replace(/[,%()"'\\]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function toolMetadataOrFilter(search: string) {
+  return [
+    `category.ilike.%${search}%`,
+    `brand.ilike.%${search}%`,
+    `color.ilike.%${search}%`,
+    `home_branch.ilike.%${search}%`,
+    `current_location.ilike.%${search}%`,
+    `status.ilike.%${search}%`,
+  ].join(",");
+}
+
+function mergeToolRows(...rowSets: any[][]) {
+  const rowsById = new Map<string, any>();
+
+  for (const rows of rowSets) {
+    for (const row of rows || []) {
+      const key = String(row.id || `${row.tool_name}-${rowsById.size}`);
+      if (!rowsById.has(key)) rowsById.set(key, row);
+    }
+  }
+
+  return Array.from(rowsById.values()).sort((a: any, b: any) =>
+    String(a.tool_name || "").localeCompare(String(b.tool_name || ""))
+  );
+}
+
+function normalizeToolComparable(value: any) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function toolSearchTokens(value: string) {
+  return normalizeToolComparable(value)
+    .split(" ")
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .slice(0, 10);
+}
+
+function toolSearchAnchor(value: string) {
+  const tokens = toolSearchTokens(value);
+
+  return (
+    tokens.find(
+      (token) =>
+        /[a-z]/.test(token) &&
+        token.length >= 3 &&
+        !["tool", "tools", "item", "items"].includes(token)
+    ) ||
+    tokens.find((token) => token.length >= 2) ||
+    tokens[0] ||
+    ""
+  );
+}
+
+function toolSearchScore(row: any, search: string) {
+  const normalizedSearch = normalizeToolComparable(search);
+  const tokens = toolSearchTokens(search);
+  const toolName = normalizeToolComparable(row?.tool_name);
+  const allText = normalizeToolComparable(
+    [
+      row?.tool_name,
+      row?.category,
+      row?.brand,
+      row?.color,
+      row?.home_branch,
+      row?.current_location,
+      row?.status,
+    ]
+      .filter(Boolean)
+      .join(" ")
+  );
+
+  if (!normalizedSearch) return 0;
+  if (toolName === normalizedSearch) return 10000;
+  if (toolName.startsWith(normalizedSearch)) return 9000;
+  if (toolName.includes(normalizedSearch)) return 8000;
+
+  const nameMatches = tokens.filter((token) => toolName.includes(token)).length;
+  const allMatches = tokens.filter((token) => allText.includes(token)).length;
+
+  return nameMatches * 500 + allMatches * 100;
+}
+
+function rankToolRows(rows: any[], search: string) {
+  return [...rows]
+    .map((row) => ({ row, score: toolSearchScore(row, search) }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => {
+      if (a.score !== b.score) return b.score - a.score;
+      return String(a.row?.tool_name || "").localeCompare(
+        String(b.row?.tool_name || "")
+      );
+    })
+    .map((entry) => entry.row);
+}
+
+async function fallbackToolNameRows(
+  search: string,
+  selectColumns = "*",
+  limit = 200
+) {
+  const anchor = toolSearchAnchor(search);
+
+  if (!anchor) {
+    return { data: [] as any[], error: null as any };
+  }
+
+  const { data, error } = await supabase
+    .from("tools")
+    .select(selectColumns)
+    .ilike("tool_name", `%${anchor}%`)
+    .order("tool_name")
+    .limit(limit);
+
+  if (error) return { data: [] as any[], error };
+
+  return {
+    data: rankToolRows(data || [], search),
+    error: null as any,
+  };
+}
+
+export async function searchToolsForToolsPage(
+  search: string,
+  exactToolName = false
+) {
+  const term = cleanToolSearchText(search);
+
+  if (!term) {
+    return {
+      success: true,
+      message: "Enter a tool search",
+      data: [],
+      rentals: [],
+      services: [],
+      limited: false,
+    };
+  }
+
+  let allMatches: any[] = [];
+
+  if (exactToolName) {
+    const exactResult = await supabase
+      .from("tools")
+      .select("*")
+      .ilike("tool_name", term)
+      .order("tool_name");
+
+    if (exactResult.error) {
+      return {
+        success: false,
+        message: exactResult.error.message,
+        data: [],
+        rentals: [],
+        services: [],
+        limited: false,
+      };
+    }
+
+    // A clicked suggestion contains the actual saved tool name.
+    // Never replace it with nearby/fuzzy matches: only that selected spelling
+    // (including duplicate stock rows with the same name) may be returned.
+    allMatches = exactResult.data || [];
+  } else {
+    const metadataTerm = cleanToolMetadataSearchTerm(term);
+
+    const nameRequest = supabase
+      .from("tools")
+      .select("*")
+      .ilike("tool_name", `%${term}%`)
+      .order("tool_name")
+      .limit(51);
+
+    const metadataRequest = metadataTerm
+      ? supabase
+          .from("tools")
+          .select("*")
+          .or(toolMetadataOrFilter(metadataTerm))
+          .order("tool_name")
+          .limit(51)
+      : Promise.resolve({ data: [], error: null } as any);
+
+    const fallbackRequest = fallbackToolNameRows(term, "*", 250);
+
+    const [nameResult, metadataResult, fallbackResult] = await Promise.all([
+      nameRequest,
+      metadataRequest,
+      fallbackRequest,
+    ]);
+
+    if (nameResult.error) {
+      return {
+        success: false,
+        message: nameResult.error.message,
+        data: [],
+        rentals: [],
+        services: [],
+        limited: false,
+      };
+    }
+
+    if (metadataResult.error) {
+      return {
+        success: false,
+        message: metadataResult.error.message,
+        data: [],
+        rentals: [],
+        services: [],
+        limited: false,
+      };
+    }
+
+    if (fallbackResult.error) {
+      return {
+        success: false,
+        message: fallbackResult.error.message,
+        data: [],
+        rentals: [],
+        services: [],
+        limited: false,
+      };
+    }
+
+    allMatches = rankToolRows(
+      mergeToolRows(
+        nameResult.data || [],
+        metadataResult.data || [],
+        fallbackResult.data || []
+      ),
+      term
+    );
+  }
+
+  const limited = !exactToolName && allMatches.length > 50;
+  const tools = exactToolName ? allMatches : allMatches.slice(0, 50);
+  const toolIds = tools
+    .map((tool: any) => Number(tool.id))
+    .filter((id: number) => Number.isFinite(id) && id > 0);
+
+  if (toolIds.length === 0) {
+    return {
+      success: true,
+      message: "No matching tools found",
+      data: [],
+      rentals: [],
+      services: [],
+      limited,
+    };
+  }
+
+  const [rentalsRes, servicesRes] = await Promise.all([
+    supabase.from("rentals").select("*").in("tool_id", toolIds),
+    supabase.from("services").select("*").in("tool_id", toolIds),
+  ]);
+
+  return {
+    success: true,
+    message: limited
+      ? "Showing the first 50 matching tool rows"
+      : exactToolName
+      ? "Matching entries loaded"
+      : "Matching tools loaded",
+    data: tools,
+    rentals: rentalsRes.error ? [] : rentalsRes.data || [],
+    services: servicesRes.error ? [] : servicesRes.data || [],
+    limited,
+  };
+}
+
+export async function suggestToolsForToolsPage(search: string) {
+  const term = cleanToolSearchText(search);
+
+  if (term.length < 2) {
+    return {
+      success: true,
+      message: "Type at least two letters",
+      data: [],
+      limited: false,
+    };
+  }
+
+  const selectColumns =
+    "id,tool_name,total_qty,category,brand,home_branch,current_location,status";
+
+  const directRequest = supabase
+    .from("tools")
+    .select(selectColumns)
+    .ilike("tool_name", `%${term}%`)
+    .order("tool_name")
+    .limit(100);
+
+  const fallbackRequest = fallbackToolNameRows(
+    term,
+    selectColumns,
+    250
+  );
+
+  const [directResult, fallbackResult] = await Promise.all([
+    directRequest,
+    fallbackRequest,
+  ]);
+
+  if (directResult.error) {
+    return {
+      success: false,
+      message: directResult.error.message,
+      data: [],
+      limited: false,
+    };
+  }
+
+  if (fallbackResult.error) {
+    return {
+      success: false,
+      message: fallbackResult.error.message,
+      data: [],
+      limited: false,
+    };
+  }
+
+  const rankedRows = rankToolRows(
+    mergeToolRows(
+      directResult.data || [],
+      fallbackResult.data || []
+    ),
+    term
+  );
+
+  const groups = new Map<string, any>();
+
+  for (const row of rankedRows) {
+    const toolName = String(row.tool_name || "").trim();
+    if (!toolName) continue;
+
+    const key = toolName.toLowerCase();
+    const current =
+      groups.get(key) || {
+        tool_name: toolName,
+        qty: 0,
+        row_count: 0,
+        category: "",
+        brands: new Set<string>(),
+        locations: new Set<string>(),
+        statuses: new Set<string>(),
+        score: toolSearchScore(row, term),
+      };
+
+    current.qty += Math.max(Number(row.total_qty || 1), 1);
+    current.row_count += 1;
+    current.category ||= String(row.category || "").trim();
+    current.score = Math.max(
+      Number(current.score || 0),
+      toolSearchScore(row, term)
+    );
+
+    const brand = String(row.brand || "").trim();
+    const location = String(
+      row.current_location || row.home_branch || ""
+    ).trim();
+    const status = String(row.status || "").trim();
+
+    if (brand) current.brands.add(brand);
+    if (location) current.locations.add(location);
+    if (status) current.statuses.add(status);
+
+    groups.set(key, current);
+  }
+
+  const suggestions = Array.from(groups.values())
+    .map((row: any) => ({
+      tool_name: row.tool_name,
+      qty: row.qty,
+      row_count: row.row_count,
+      category: row.category,
+      brands: Array.from(row.brands).slice(0, 3),
+      locations: Array.from(row.locations).slice(0, 4),
+      statuses: Array.from(row.statuses).slice(0, 3),
+      score: Number(row.score || 0),
+    }))
+    .sort((a: any, b: any) => {
+      if (a.score !== b.score) return b.score - a.score;
+      return String(a.tool_name || "").localeCompare(
+        String(b.tool_name || "")
+      );
+    });
+
+  return {
+    success: true,
+    message: suggestions.length
+      ? "Live matching tool names loaded"
+      : "No matching tool names",
+    data: suggestions.slice(0, 20),
+    limited: suggestions.length > 20 || rankedRows.length >= 100,
+  };
+}
+
+export async function searchToolsForHistory(search: string) {
+  const term = cleanToolSearchText(search);
+
+  if (!term) {
+    return {
+      success: true,
+      message: "Enter a tool search",
+      data: [],
+      limited: false,
+    };
+  }
+
+  const directRequest = supabase
+    .from("tools")
+    .select("*")
+    .ilike("tool_name", `%${term}%`)
+    .order("tool_name")
+    .limit(51);
+
+  const fallbackRequest = fallbackToolNameRows(term, "*", 250);
+
+  const [directResult, fallbackResult] = await Promise.all([
+    directRequest,
+    fallbackRequest,
+  ]);
+
+  if (directResult.error) {
+    return {
+      success: false,
+      message: directResult.error.message,
+      data: [],
+      limited: false,
+    };
+  }
+
+  if (fallbackResult.error) {
+    return {
+      success: false,
+      message: fallbackResult.error.message,
+      data: [],
+      limited: false,
+    };
+  }
+
+  const matches = rankToolRows(
+    mergeToolRows(
+      directResult.data || [],
+      fallbackResult.data || []
+    ),
+    term
+  );
+
+  return {
+    success: true,
+    message:
+      matches.length > 50
+        ? "Showing the first 50 matching tools"
+        : "Matching tools loaded",
+    data: matches.slice(0, 50),
+    limited: matches.length > 50,
+  };
+}
+
 export async function saveTools(rows: any[]) {
   const filledRows = rows
     .filter((row) => row.tool_name && row.tool_name.trim() !== "")
@@ -1934,6 +2411,21 @@ function isToolUnavailableStatus(value: any) {
   return ["service", "in service", "missing", "inactive", "damaged"].includes(status);
 }
 
+function isActiveStockRental(row: any) {
+  if (row?.is_transport_charge) return false;
+  if (row?.end_date || row?.return_date || row?.closed_date) {
+    return false;
+  }
+
+  const status = String(row?.status || "Active")
+    .trim()
+    .toLowerCase();
+
+  return !["returned", "closed", "completed", "cancelled"].includes(
+    status,
+  );
+}
+
 async function validateRentalStock(rows: any[], excludeRentalId?: number) {
   const internalRows = rows.filter(
     (row) => row.customer_id && hasRentalItem(row) && row.start_date && !isOutsideRental(row),
@@ -1947,11 +2439,23 @@ async function validateRentalStock(rows: any[], excludeRentalId?: number) {
     new Set(internalRows.map((row) => Number(row.tool_id)).filter(Boolean)),
   );
 
-  const [{ data: tools, error: toolsError }, { data: activeRentals, error: rentalsError }] =
-    await Promise.all([
-      supabase.from("tools").select("*").in("id", toolIds),
-      supabase.from("rentals").select("id, tool_id, qty, shop, status").eq("status", "Active").in("tool_id", toolIds),
-    ]);
+  const [
+    { data: tools, error: toolsError },
+    { data: rentalRows, error: rentalsError },
+  ] = await Promise.all([
+    supabase.from("tools").select("*").in("id", toolIds),
+    supabase
+      .from("rentals")
+      .select(
+        "id, tool_id, qty, shop, status, end_date, is_transport_charge",
+      )
+      .is("end_date", null)
+      .in("tool_id", toolIds),
+  ]);
+
+  const activeRentals = (rentalRows || []).filter(
+    isActiveStockRental,
+  );
 
   if (toolsError) return { success: false, message: toolsError.message };
   if (rentalsError) return { success: false, message: rentalsError.message };
@@ -1989,13 +2493,49 @@ async function validateRentalStock(rows: any[], excludeRentalId?: number) {
     }
 
     const totalQty = Math.max(Number(tool.total_qty || 1), 1);
-    const alreadyRentedQty = (activeRentals || [])
-      .filter((rental: any) => Number(rental.id) !== Number(excludeRentalId || 0))
-      .filter((rental: any) => Number(rental.tool_id) === toolId)
-      .reduce((sum: number, rental: any) => sum + Number(rental.qty || 1), 0);
+    const matchingActiveRentals = activeRentals
+      .filter(
+        (rental: any) =>
+          Number(rental.id) !== Number(excludeRentalId || 0),
+      )
+      .filter(
+        (rental: any) => Number(rental.tool_id) === toolId,
+      );
+    const alreadyRentedQty = matchingActiveRentals.reduce(
+      (sum: number, rental: any) =>
+        sum + Math.max(Number(rental.qty || 1), 1),
+      0,
+    );
     const previousRequested = requestedByTool.get(toolId) || 0;
     const requestedQty = Math.max(Number(row.qty || 1), 1);
-    const availableQty = Math.max(totalQty - alreadyRentedQty - previousRequested, 0);
+
+    if (totalQty === 1) {
+      if (requestedQty !== 1) {
+        return {
+          success: false,
+          message: `${toolName} is an individual tool. Its rental quantity must be 1.`,
+        };
+      }
+
+      if (alreadyRentedQty > 0) {
+        return {
+          success: false,
+          message: `${toolName} is already on a live rental. The same individual tool cannot be rented twice at the same time.`,
+        };
+      }
+
+      if (previousRequested > 0) {
+        return {
+          success: false,
+          message: `${toolName} is entered more than once in the current rental entry. An individual tool can be saved only once.`,
+        };
+      }
+    }
+
+    const availableQty = Math.max(
+      totalQty - alreadyRentedQty - previousRequested,
+      0,
+    );
 
     if (requestedQty > availableQty) {
       return {
@@ -2004,7 +2544,10 @@ async function validateRentalStock(rows: any[], excludeRentalId?: number) {
       };
     }
 
-    requestedByTool.set(toolId, previousRequested + requestedQty);
+    requestedByTool.set(
+      toolId,
+      previousRequested + requestedQty,
+    );
   }
 
   return { success: true };

@@ -91,10 +91,10 @@ export default function PaymentsPage() {
   const [month, setMonth] = useState(thisMonth());
   const [shopFilter, setShopFilter] = useState("All Shops");
   const [customerFilter, setCustomerFilter] = useState("");
-  const [paymentShopFilter, setPaymentShopFilter] = useState("All Shops");
+  const [paymentShopFilter, setPaymentShopFilter] = useState("Karuvannur");
   const [closedSearchText, setClosedSearchText] = useState("");
   const [paymentQuickSearch, setPaymentQuickSearch] = useState("");
-  const [recentShopFilter, setRecentShopFilter] = useState("All Shops");
+  const [recentShopFilter, setRecentShopFilter] = useState("");
   const [recentFromDate, setRecentFromDate] = useState("");
   const [recentToDate, setRecentToDate] = useState("");
 
@@ -759,7 +759,7 @@ export default function PaymentsPage() {
   const recentPayments = payments
     .filter((p: any) => {
       const paymentShop = String(p.shop || p.branch || "").trim();
-      return recentShopFilter === "All Shops" || paymentShop === recentShopFilter;
+      return !recentShopFilter || paymentShop === recentShopFilter;
     })
     .filter((p: any) => {
       const paymentCustomerId = String(p.customer_id || "").trim();
@@ -783,7 +783,7 @@ export default function PaymentsPage() {
         String(a.payment_date || a.date || a.created_at || ""),
       ),
     )
-    .slice(0, 100);
+    .slice(0, 10);
 
   const statementRange = useMemo(
     () => getStatementRange(statementOptions),
@@ -1047,7 +1047,7 @@ export default function PaymentsPage() {
 
     function passesPaymentListFilters(row: any) {
       const rowShop = row.shop || row.branch || "";
-      if (paymentShopFilter !== "All Shops" && rowShop !== paymentShopFilter) {
+      if (rowShop !== paymentShopFilter) {
         return false;
       }
 
@@ -1190,7 +1190,8 @@ export default function PaymentsPage() {
           return String(b.latest_return_date || "").localeCompare(String(a.latest_return_date || ""));
         }
         return String(a.customer_name || "").localeCompare(String(b.customer_name || ""));
-      });
+      })
+      .slice(0, 10);
   }, [
     pendingReturnedRentals,
     rentals,
@@ -1603,10 +1604,25 @@ export default function PaymentsPage() {
             style={rentalPaymentShopSelectStyle}
             title="Select shop"
           >
-            {shops.map((shop) => (
-              <option key={shop}>{shop}</option>
-            ))}
+            {shops
+              .filter((shop) => shop !== "All Shops")
+              .map((shop) => (
+                <option key={shop} value={shop}>
+                  {shop}
+                </option>
+              ))}
           </select>
+        </div>
+
+        <div
+          style={{
+            margin: "10px 0 12px",
+            color: "#52647f",
+            fontSize: 14,
+            fontWeight: 850,
+          }}
+        >
+          Showing the latest 10 rental-payment customers for {paymentShopFilter}.
         </div>
 
         <RentalPaymentsTable
@@ -2103,8 +2119,8 @@ function RecentPaymentManager({
     : "Recent Payments";
 
   const subtitle = selectedMobile
-    ? "Showing payments for the selected customer. Use date range to check old payments."
-    : "Select a customer above to see only that customer, or use shop/date range for all payments.";
+    ? "Showing the latest 10 payments for the selected customer. Use the date range to narrow the result."
+    : "Showing only the latest 10 payments. Select a customer, shop or date range to narrow the result.";
 
   return (
     <div style={recentPaymentsInsidePaymentStyle}>
@@ -2125,9 +2141,14 @@ function RecentPaymentManager({
           style={recentPaymentControlStyle}
           title="Select shop"
         >
-          {shops.map((shop: string) => (
-            <option key={shop}>{shop}</option>
-          ))}
+          <option value="">Select Shop</option>
+          {shops
+            .filter((shop: string) => shop !== "All Shops")
+            .map((shop: string) => (
+              <option key={shop} value={shop}>
+                {shop}
+              </option>
+            ))}
         </select>
         <label style={recentPaymentDateLabelStyle}>
           From
@@ -3835,11 +3856,11 @@ function PaymentHistory({ payments }: any) {
         String(a.payment_date || a.date || a.created_at || ""),
       ),
     )
-    .slice(0, 8);
+    .slice(0, 10);
 
   return (
     <div style={paymentHistoryBoxStyle}>
-      <div style={paymentHistoryTitleStyle}>Payments Received</div>
+      <div style={paymentHistoryTitleStyle}>Last 10 Payments Received</div>
       {rows.length === 0 ? (
         <div style={paymentHistoryEmptyStyle}>No payments received yet</div>
       ) : (

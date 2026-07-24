@@ -1,9 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { Download, Printer, RefreshCw, Search } from "lucide-react";
+import {
+  useMemo,
+  useState,
+  type ChangeEvent,
+  type KeyboardEvent,
+} from "react";
+import { Download, Search } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import * as XLSX from "xlsx";
+import { useAppMessage } from "../contexts/AppMessageProvider";
 
 const shops = [
   "All Shops",
@@ -14,920 +19,1837 @@ const shops = [
   "Pattikkad",
 ];
 
-const statusOptions = [
-  { id: "All Status", label: "All Status" },
-  { id: "Live", label: "Live" },
-  { id: "Not Paid", label: "Not Paid" },
-  { id: "Paid", label: "Paid" },
+const reportOptions = [
+  {
+    value: "day_shop_business",
+    label: "Day-wise Shop Business",
+  },
+  {
+    value: "top_customers",
+    label: "Top Customers",
+  },
+  {
+    value: "unpaid_customers",
+    label: "Top 10 Most Unpaid Customers",
+  },
+  {
+    value: "top_tools",
+    label: "Top Tools",
+  },
+  {
+    value: "least_used_tools",
+    label: "Least 10 Used Tools",
+  },
+  {
+    value: "least_profit_tools",
+    label: "Least Profit Tools",
+  },
+  {
+    value: "tool_profit_analyzer",
+    label: "Tool Profit Analyzer",
+  },
+  {
+    value: "expense_report",
+    label: "Month-wise Expense Report",
+  },
+  {
+    value: "shop_performance",
+    label: "Shop Performance",
+  },
 ];
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
+const thisMonth = () => todayISO().slice(0, 7);
 
-function monthStartISO() {
-  const d = new Date();
-  return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
+function rupee(value: any) {
+  return `₹${Number(value || 0).toFixed(0)}`;
 }
 
 function cleanDate(value: any) {
   return String(value || "").slice(0, 10);
 }
 
-function formatDate(value: any) {
-  const v = cleanDate(value);
-  if (!v) return "-";
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return v;
-  return d.toLocaleDateString("en-GB");
-}
-
-function rupee(value: any) {
-  return `₹${Math.round(Number(value || 0))}`;
-}
-
 function rowShop(row: any) {
-  return row?.shop || row?.branch || row?.return_branch || row?.active_branch || "";
+  return String(
+    row?.shop ||
+      row?.branch ||
+      row?.from_branch ||
+      row?.return_branch ||
+      ""
+  ).trim();
 }
 
-function rowMobile(row: any, customer?: any) {
-  return row?.mobile || row?.customer_mobile || row?.phone || customer?.mobile || "";
+function rowMobile(row: any) {
+  return String(
+    row?.mobile || row?.customer_mobile || row?.phone || ""
+  ).trim();
 }
 
-function rentalStart(row: any) {
-  return cleanDate(row.start_date || row.date || row.rental_date || row.created_at);
+function normalize(value: any) {
+  return String(value || "").trim().toLowerCase();
 }
 
-function rentalEnd(row: any) {
-  return cleanDate(row.end_date || row.return_date || row.closed_date || "");
+function safeSearch(value: string) {
+  return String(value || "")
+    .trim()
+    .replace(/[,%()"'\\]/g, " ")
+    .replace(/\s+/g, " ")
+    .slice(0, 80);
 }
 
-function paymentDate(row: any) {
-  return cleanDate(row.payment_date || row.date || row.created_at);
+function monthRange(month: string) {
+  const safeMonth = month || thisMonth();
+  const [year, monthNumber] = safeMonth.split("-").map(Number);
+  const lastDay = new Date(year, monthNumber, 0).getDate();
+
+  return {
+    from: `${safeMonth}-01`,
+    to: `${safeMonth}-${String(lastDay).padStart(2, "0")}`,
+  };
 }
 
-function isActiveRental(row: any) {
-  const status = String(row?.status || "").toLowerCase();
-  return status.includes("active") || status.includes("live") || !rentalEnd(row);
+function dateInRange(value: any, from: string, to: string) {
+  const date = cleanDate(value);
+  return Boolean(date && date >= from && date <= to);
 }
 
-function isWithinRange(date: string, fromDate: string, toDate: string) {
-  if (!date) return false;
-  if (fromDate && date < fromDate) return false;
-  if (toDate && date > toDate) return false;
+function rentalOverlapsRange(row: any, from: string, to: string) {
+  const start = cleanDate(
+    row?.start_date || row?.date || row?.rental_date
+  );
+  const end = cleanDate(
+    row?.end_date || row?.return_date || row?.closed_date
+  );
+
+  if (!start || start > to) return false;
+  if (end && end < from) return false;
+
   return true;
 }
 
-function overlapsRange(start: string, end: string, fromDate: string, toDate: string) {
-  if (!start) return false;
-  const realEnd = end || toDate || todayISO();
-  if (fromDate && realEnd < fromDate) return false;
-  if (toDate && start > toDate) return false;
-  return true;
+function isActiveRentalOnDate(row: any, date: string) {
+  if (row?.is_transport_charge) return false;
+
+  const start = cleanDate(
+    row?.start_date || row?.date || row?.rental_date
+  );
+  const end = cleanDate(
+    row?.end_date || row?.return_date || row?.closed_date
+  );
+  const status = normalize(row?.status || "active");
+
+  if (!start || start > date) return false;
+  if (end && end < date) return false;
+
+  return !["returned", "closed", "completed", "cancelled"].includes(
+    status
+  );
 }
 
-function countDays(startValue: any, endValue: any, avoidSundays = true) {
-  const start = cleanDate(startValue);
-  const end = cleanDate(endValue || todayISO());
+function countRentalDays(
+  startValue: any,
+  endValue: any,
+  avoidSundays = true
+) {
+  const start = new Date(cleanDate(startValue));
+  const end = new Date(cleanDate(endValue));
 
-  if (!start || !end) return 1;
-
-  const startDate = new Date(start);
-  const endDate = new Date(end);
-
-  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return 1;
-  if (endDate < startDate) return 1;
+  if (
+    Number.isNaN(start.getTime()) ||
+    Number.isNaN(end.getTime()) ||
+    end < start
+  ) {
+    return 0;
+  }
 
   let days = 0;
-  const d = new Date(startDate);
+  const cursor = new Date(start);
 
-  while (d <= endDate) {
-    const isSunday = d.getDay() === 0;
-    if (!(avoidSundays && isSunday)) days++;
-    d.setDate(d.getDate() + 1);
+  while (cursor <= end) {
+    if (!(avoidSundays && cursor.getDay() === 0)) {
+      days += 1;
+    }
+
+    cursor.setDate(cursor.getDate() + 1);
   }
 
-  return Math.max(days, 1);
+  return days;
 }
 
-function getReportPeriod(row: any, fromDate: string, toDate: string) {
-  const start = rentalStart(row);
-  const realEnd = rentalEnd(row) || toDate || todayISO();
-  const from = fromDate && start < fromDate ? fromDate : start;
-  const to = toDate && realEnd > toDate ? toDate : realEnd;
-  return { from, to };
-}
+function rentalAmountWithinRange(
+  row: any,
+  from: string,
+  to: string
+) {
+  if (row?.is_transport_charge) {
+    const transportDate = cleanDate(
+      row.transport_date || row.start_date
+    );
 
-function rentalQty(row: any) {
-  return Number(row.qty || row.quantity || 1);
-}
-
-function hasRentalValue(value: any) {
-  return value !== undefined && value !== null && String(value).trim() !== "";
-}
-
-function firstRentalNumber(...values: any[]) {
-  const value = values.find(hasRentalValue);
-  const n = Number(value ?? 0);
-  return Number.isFinite(n) ? n : 0;
-}
-
-function rentalRate(row: any, tool: any) {
-  const directRateSource = [
-    row.daily_rate,
-    row.unit_price,
-    row.daily_rent,
-    row.rent,
-    row.rate,
-  ].find(hasRentalValue);
-
-  if (directRateSource !== undefined) {
-    return firstRentalNumber(directRateSource);
+    return dateInRange(transportDate, from, to)
+      ? Number(
+          row.transport_amount ||
+            row.total_amount ||
+            row.daily_rate ||
+            0
+        )
+      : 0;
   }
 
-  return firstRentalNumber(
-    tool?.daily_rent,
-    tool?.daily_rate,
-    tool?.rent,
-    tool?.rate,
+  if (!rentalOverlapsRange(row, from, to)) return 0;
+
+  const start = cleanDate(row.start_date);
+  const savedEnd = cleanDate(row.end_date);
+  const effectiveStart = start > from ? start : from;
+  const effectiveEnd =
+    savedEnd && savedEnd < to ? savedEnd : to;
+  const avoidSundays = row.avoid_sundays !== false;
+  const days = countRentalDays(
+    effectiveStart,
+    effectiveEnd,
+    avoidSundays
+  );
+
+  return Math.max(
+    days *
+      Math.max(Number(row.qty || 1), 1) *
+      Number(row.daily_rate || 0) -
+      Number(row.discount || 0),
     0
   );
 }
 
-function findCustomer(row: any, customers: any[]) {
-  return customers.find(
-    (c: any) =>
-      String(c.id || "") === String(row.customer_id || "") ||
-      (row.mobile && String(c.mobile || "") === String(row.mobile || ""))
-  );
-}
-
-function findTool(row: any, tools: any[]) {
-  return tools.find((t: any) => String(t.id || "") === String(row.tool_id || ""));
-}
-
-function displayCustomerName(row: any, customer: any) {
-  return row.customer_name || row.name || row.customer || customer?.customer_name || customer?.name || "-";
-}
-
-function displayToolName(row: any, tool: any) {
-  return row.tool_name || row.tool || row.item_name || row.description || tool?.tool_name || tool?.name || "-";
-}
-
-function statusKey(row: StatementRow) {
-  if (row.isLive) return "Live";
-  if (Number(row.balance || 0) <= 0) return "Paid";
-  return "Not Paid";
-}
-
-function statusText(row: StatementRow) {
-  const status = statusKey(row);
-  if (status === "Live") return "🔵 Live";
-  if (status === "Paid") return "✅ Paid";
-  return "🔴 Not Paid";
-}
-
-function statusRank(row: StatementRow) {
-  const status = statusKey(row);
-  if (status === "Live") return 1;
-  if (status === "Not Paid") return 2;
-  return 3;
-}
-
-type BaseRentalRow = {
-  original: any;
-  from: string;
-  to: string;
-  shop: string;
-  customerId: string;
-  customer: string;
-  mobile: string;
-  toolId: string;
-  tool: string;
-  qty: number;
-  rate: number;
-  days: number;
-  grossRent: number;
-  rentalDiscount: number;
-  isLive: boolean;
-};
-
-type StatementRow = {
-  from: string;
-  to: string;
-  shop: string;
-  customerId: string;
-  customer: string;
-  mobile: string;
-  toolId: string;
-  tool: string;
-  qty: number;
-  days: number;
-  rate: number;
-  grossRent: number;
-  payment: number;
-  discount: number;
-  balance: number;
-  isLive: boolean;
-};
-
-export default function ReportsPage() {
-  const [fromDate, setFromDate] = useState(monthStartISO());
-  const [toDate, setToDate] = useState(todayISO());
-  const [shopFilter, setShopFilter] = useState("All Shops");
-  const [customerFilter, setCustomerFilter] = useState("All Customers");
-  const [toolFilter, setToolFilter] = useState("All Tools");
-  const [statusFilter, setStatusFilter] = useState("All Status");
-  const [searchText, setSearchText] = useState("");
-
-  const [customers, setCustomers] = useState<any[]>([]);
-  const [rentals, setRentals] = useState<any[]>([]);
-  const [payments, setPayments] = useState<any[]>([]);
-  const [tools, setTools] = useState<any[]>([]);
-  const [message, setMessage] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  async function loadData() {
-    setLoading(true);
-
-    const [customersRes, rentalsRes, paymentsRes, toolsRes] = await Promise.all([
-      supabase.from("customers").select("*"),
-      supabase.from("rentals").select("*"),
-      supabase.from("payments").select("*"),
-      supabase.from("tools").select("*"),
-    ]);
-
-    setCustomers(customersRes.data || []);
-    setRentals(rentalsRes.data || []);
-    setPayments(paymentsRes.data || []);
-    setTools(toolsRes.data || []);
-
-    setLoading(false);
-    setMessage("Business Statement refreshed");
-    setTimeout(() => setMessage(""), 1800);
-  }
-
-  const baseRentalRows: BaseRentalRow[] = useMemo(() => {
-    return rentals
-      .filter((r: any) => {
-        const start = rentalStart(r);
-        const end = rentalEnd(r);
-        const shopOk = shopFilter === "All Shops" || rowShop(r) === shopFilter;
-        return shopOk && overlapsRange(start, end, fromDate, toDate);
-      })
-      .map((r: any) => {
-        const customer = findCustomer(r, customers);
-        const tool = findTool(r, tools);
-        const { from, to } = getReportPeriod(r, fromDate, toDate);
-        const avoidSundays = r.avoid_sundays === false || r.avoid_sundays === "false" ? false : true;
-        const days = countDays(from, to, avoidSundays);
-        const qty = rentalQty(r);
-        const rate = rentalRate(r, tool);
-        const grossRent = Math.max(0, qty * rate * days);
-
-        return {
-          original: r,
-          from,
-          to,
-          shop: rowShop(r),
-          customerId: String(r.customer_id || customer?.id || ""),
-          customer: displayCustomerName(r, customer),
-          mobile: rowMobile(r, customer) || "-",
-          toolId: String(r.tool_id || tool?.id || ""),
-          tool: displayToolName(r, tool),
-          qty,
-          rate,
-          days,
-          grossRent,
-          rentalDiscount: Number(r.discount || 0),
-          isLive: isActiveRental(r),
-        };
-      });
-  }, [rentals, customers, tools, shopFilter, fromDate, toDate]);
-
-  const customerOptions = useMemo(() => {
-    const map = new Map<string, string>();
-
-    baseRentalRows.forEach((r: any) => {
-      const key = r.customerId || r.mobile || r.customer;
-      if (!key) return;
-      map.set(key, `${r.customer} (${r.mobile})`);
-    });
-
-    return [{ id: "All Customers", label: "All Customers" }, ...Array.from(map).map(([id, label]) => ({ id, label }))];
-  }, [baseRentalRows]);
-
-  const toolOptions = useMemo(() => {
-    const map = new Map<string, string>();
-
-    baseRentalRows
-      .filter((r: any) => customerFilter === "All Customers" || r.customerId === customerFilter || r.mobile === customerFilter)
-      .forEach((r: any) => {
-        const key = r.toolId || r.tool;
-        if (!key) return;
-        map.set(key, r.tool);
-      });
-
-    return [{ id: "All Tools", label: "All Tools" }, ...Array.from(map).map(([id, label]) => ({ id, label }))];
-  }, [baseRentalRows, customerFilter]);
-
-  const filteredRentalRows = useMemo(() => {
-    const q = searchText.trim().toLowerCase();
-
-    return baseRentalRows.filter((r: any) => {
-      const customerOk = customerFilter === "All Customers" || r.customerId === customerFilter || r.mobile === customerFilter;
-      const toolOk = toolFilter === "All Tools" || r.toolId === toolFilter || r.tool === toolFilter;
-      const searchOk = !q || `${r.customer} ${r.mobile} ${r.tool} ${r.shop}`.toLowerCase().includes(q);
-
-      return customerOk && toolOk && searchOk;
-    });
-  }, [baseRentalRows, customerFilter, toolFilter, searchText]);
-
-  const filteredPayments = useMemo(() => {
-    return payments.filter((p: any) => {
-      const date = paymentDate(p);
-      const shopOk = shopFilter === "All Shops" || rowShop(p) === shopFilter;
-      return shopOk && isWithinRange(date, fromDate, toDate);
-    });
-  }, [payments, shopFilter, fromDate, toDate]);
-
-  const statementRows: StatementRow[] = useMemo(() => {
-    const groupMap = new Map<string, BaseRentalRow[]>();
-
-    filteredRentalRows.forEach((r: BaseRentalRow) => {
-      const customerKey = r.customerId || r.mobile || r.customer;
-      const toolKey = r.toolId || r.tool;
-      const key = `${customerKey}__${toolKey}__${r.shop}`;
-      if (!groupMap.has(key)) groupMap.set(key, []);
-      groupMap.get(key)?.push(r);
-    });
-
-    const groups: StatementRow[] = Array.from(groupMap.values()).map((items) => {
-      const first = items[0];
-      const isLive = items.some((r) => r.isLive);
-      const from = items.map((r) => r.from).sort()[0];
-      const to = isLive ? "LIVE" : items.map((r) => r.to).sort().slice(-1)[0];
-      const qty = items.reduce((sum, r) => sum + Number(r.qty || 0), 0);
-      const days = items.reduce((sum, r) => sum + Number(r.days || 0), 0);
-      const grossRent = items.reduce((sum, r) => sum + Number(r.grossRent || 0), 0);
-      const discount = items.reduce((sum, r) => sum + Number(r.rentalDiscount || 0), 0);
-      const rate =
-        items.length === 1
-          ? first.rate
-          : grossRent > 0 && qty > 0 && days > 0
-          ? grossRent / days / Math.max(1, qty / items.length)
-          : first.rate;
-
-      return {
-        from,
-        to,
-        shop: first.shop,
-        customerId: first.customerId,
-        customer: first.customer,
-        mobile: first.mobile,
-        toolId: first.toolId,
-        tool: first.tool,
-        qty,
-        days,
-        rate,
-        grossRent,
-        payment: 0,
-        discount,
-        balance: 0,
-        isLive,
-      };
-    });
-
-    function sameCustomer(row: StatementRow, payment: any) {
-      const rowCustomerId = String(row.customerId || "").trim();
-      const rowMobileValue = String(row.mobile || "").trim();
-      const paymentCustomerId = String(payment.customer_id || "").trim();
-      const paymentMobile = String(rowMobile(payment) || "").trim();
-
-      return Boolean(
-        (rowCustomerId && paymentCustomerId && rowCustomerId === paymentCustomerId) ||
-          (rowMobileValue && paymentMobile && rowMobileValue === paymentMobile),
-      );
-    }
-
-    const customerKeys = Array.from(
-      new Set(groups.map((g) => g.customerId || g.mobile || g.customer || "unknown")),
+function dailyRentalBusiness(row: any, date: string) {
+  if (row?.is_transport_charge) {
+    const transportDate = cleanDate(
+      row.transport_date || row.start_date
     );
 
-    const allocatedRows: StatementRow[] = [];
-
-    customerKeys.forEach((customerKey) => {
-      const customerRows = groups
-        .filter((g) => (g.customerId || g.mobile || g.customer || "unknown") === customerKey)
-        .sort((a, b) => {
-          if (a.isLive !== b.isLive) return a.isLive ? 1 : -1;
-          const dateCompare = String(a.from).localeCompare(String(b.from));
-          if (dateCompare !== 0) return dateCompare;
-          return String(a.tool).localeCompare(String(b.tool));
-        });
-
-      const customerPayments = filteredPayments
-        .filter((payment: any) => customerRows.some((row) => sameCustomer(row, payment)))
-        .sort((a: any, b: any) => String(paymentDate(a)).localeCompare(String(paymentDate(b))));
-
-      let remainingCash = customerPayments.reduce(
-        (sum: number, payment: any) => sum + Number(payment.amount || 0),
-        0,
-      );
-
-      let remainingPaymentDiscount = customerPayments.reduce(
-        (sum: number, payment: any) => sum + Number(payment.discount || 0),
-        0,
-      );
-
-      customerRows.forEach((row) => {
-        const rentalDiscount = Number(row.discount || 0);
-        const afterRentalDiscount = Math.max(0, Number(row.grossRent || 0) - rentalDiscount);
-        const appliedCash = Math.min(remainingCash, afterRentalDiscount);
-        remainingCash -= appliedCash;
-
-        const afterCash = Math.max(0, afterRentalDiscount - appliedCash);
-        const appliedPaymentDiscount = Math.min(remainingPaymentDiscount, afterCash);
-        remainingPaymentDiscount -= appliedPaymentDiscount;
-
-        const balance = Math.max(0, afterCash - appliedPaymentDiscount);
-
-        allocatedRows.push({
-          ...row,
-          payment: appliedCash,
-          discount: rentalDiscount + appliedPaymentDiscount,
-          balance,
-        });
-      });
-    });
-
-    return allocatedRows
-      .filter((row) => statusFilter === "All Status" || statusKey(row) === statusFilter)
-      .sort((a, b) => {
-        const statusDiff = statusRank(a) - statusRank(b);
-        if (statusDiff !== 0) return statusDiff;
-        return String(b.from).localeCompare(String(a.from));
-      });
-  }, [filteredRentalRows, filteredPayments, statusFilter]);
-
-  const totals = useMemo(() => {
-    const grossBusiness = statementRows.reduce((sum, r) => sum + Number(r.grossRent || 0), 0);
-    const paymentsReceived = statementRows.reduce((sum, r) => sum + Number(r.payment || 0), 0);
-    const discount = statementRows.reduce((sum, r) => sum + Number(r.discount || 0), 0);
-    const outstanding = statementRows.reduce((sum, r) => sum + Number(r.balance || 0), 0);
-
-    return {
-      grossBusiness,
-      discount,
-      paymentsReceived,
-      outstanding,
-      records: statementRows.length,
-      days: statementRows.reduce((sum, r) => sum + Number(r.days || 0), 0),
-      qty: statementRows.reduce((sum, r) => sum + Number(r.qty || 0), 0),
-    };
-  }, [statementRows]);
-
-  const subtitle = useMemo(() => {
-    const parts = [];
-    if (shopFilter !== "All Shops") parts.push(`${shopFilter} Shop`);
-    if (customerFilter !== "All Customers") {
-      const selected = customerOptions.find((c) => c.id === customerFilter)?.label;
-      if (selected) parts.push(`Customer: ${selected}`);
-    }
-    if (toolFilter !== "All Tools") {
-      const selected = toolOptions.find((t) => t.id === toolFilter)?.label;
-      if (selected) parts.push(`Tool: ${selected}`);
-    }
-    if (statusFilter !== "All Status") parts.push(`Status: ${statusFilter}`);
-    if (parts.length === 0) return "All Shops";
-    return parts.join("  •  ");
-  }, [shopFilter, customerFilter, toolFilter, statusFilter, customerOptions, toolOptions]);
-
-  function downloadExcel() {
-    const sheetData = [
-      ["TRIED & TRUE TOOLS"],
-      ["BUSINESS STATEMENT"],
-      [subtitle],
-      [`Period: ${formatDate(fromDate)} to ${formatDate(toDate)}`],
-      [],
-      ["From", "To", "Status", "Shop", "Customer", "Mobile", "Tool", "Qty", "Days", "Rent", "Round Off", "Balance"],
-      ...statementRows.map((r) => [
-        formatDate(r.from),
-        r.to === "LIVE" ? "LIVE" : formatDate(r.to),
-        statusText(r),
-        r.shop,
-        r.customer,
-        r.mobile,
-        r.tool,
-        r.qty,
-        r.days,
-        Math.round(Number(r.rate || 0)),
-        Math.round(Number(r.discount || 0)),
-        Math.round(Number(r.balance || 0)),
-      ]),
-      ["TOTAL", "", "", "", "", "", "", totals.qty, totals.days, totals.grossBusiness, totals.discount, totals.outstanding],
-    ];
-
-    const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
-    worksheet["!cols"] = [
-      { wch: 12 },
-      { wch: 12 },
-      { wch: 14 },
-      { wch: 14 },
-      { wch: 24 },
-      { wch: 14 },
-      { wch: 30 },
-      { wch: 8 },
-      { wch: 8 },
-      { wch: 12 },
-      { wch: 12 },
-      { wch: 12 },
-    ];
-
-    worksheet["!merges"] = [
-      { s: { r: 0, c: 0 }, e: { r: 0, c: 10 } },
-      { s: { r: 1, c: 0 }, e: { r: 1, c: 10 } },
-      { s: { r: 2, c: 0 }, e: { r: 2, c: 10 } },
-      { s: { r: 3, c: 0 }, e: { r: 3, c: 10 } },
-    ];
-
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Business Statement");
-    XLSX.writeFile(workbook, `Business_Statement_${fromDate}_to_${toDate}.xlsx`);
+    return transportDate === date
+      ? Number(
+          row.transport_amount ||
+            row.total_amount ||
+            row.daily_rate ||
+            0
+        )
+      : 0;
   }
 
-  function printStatement() {
-    window.print();
+  const start = cleanDate(row.start_date);
+  const end = cleanDate(row.end_date);
+
+  if (!start || start > date) return 0;
+  if (end && end < date) return 0;
+
+  const selectedDate = new Date(date);
+  if (
+    row.avoid_sundays !== false &&
+    !Number.isNaN(selectedDate.getTime()) &&
+    selectedDate.getDay() === 0
+  ) {
+    return 0;
   }
 
   return (
-    <main>
-      <style>{printStyles}</style>
+    Math.max(Number(row.qty || 1), 1) *
+    Number(row.daily_rate || 0)
+  );
+}
 
-      <section style={statementShellStyle}>
-        <div style={statementHeaderStyle}>
-          <div>
-            <div style={brandStyle}>TRIED & TRUE TOOLS</div>
-            <h1 style={titleStyle}>BUSINESS STATEMENT</h1>
-            <p style={subtitleStyle}>{subtitle}</p>
-            <p style={periodStyle}>Period: {formatDate(fromDate)} to {formatDate(toDate)}</p>
-          </div>
+function paymentEntryType(row: any) {
+  return normalize(row?.entry_type || "payment");
+}
 
-          <div style={actionWrapStyle} className="no-print">
-            <button className="btn-gray" type="button" onClick={loadData} disabled={loading}>
-              <RefreshCw size={16} /> {loading ? "Loading" : "Refresh"}
-            </button>
-            <button className="btn-blue" type="button" onClick={downloadExcel}>
-              <Download size={16} /> Excel
-            </button>
-            <button className="btn-gray" type="button" onClick={printStatement}>
-              <Printer size={16} /> Print
-            </button>
-          </div>
-        </div>
+function paymentCollection(row: any) {
+  const type = paymentEntryType(row);
 
-        {message && <div className="modern-message no-print">{message}</div>}
+  if (type === "opening_due" || type === "opening_credit") {
+    return 0;
+  }
 
-        <div style={filterPanelStyle} className="no-print">
-          <label style={filterLabelStyle}>
-            From Date
-            <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-          </label>
+  return Number(row?.amount || 0);
+}
 
-          <label style={filterLabelStyle}>
-            To Date
-            <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-          </label>
+function paymentRoundOff(row: any) {
+  const type = paymentEntryType(row);
 
-          <label style={filterLabelStyle}>
-            Shop
-            <select value={shopFilter} onChange={(e) => { setShopFilter(e.target.value); setCustomerFilter("All Customers"); setToolFilter("All Tools"); }}>
-              {shops.map((shop) => <option key={shop}>{shop}</option>)}
-            </select>
-          </label>
+  if (type === "opening_due" || type === "opening_credit") {
+    return 0;
+  }
 
-          <label style={filterLabelStyle}>
-            Customer
-            <select value={customerFilter} onChange={(e) => { setCustomerFilter(e.target.value); setToolFilter("All Tools"); }}>
-              {customerOptions.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
-            </select>
-          </label>
+  return Number(row?.discount || 0);
+}
 
-          <label style={filterLabelStyle}>
-            Tool
-            <select value={toolFilter} onChange={(e) => setToolFilter(e.target.value)}>
-              {toolOptions.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
-            </select>
-          </label>
+function openingBalanceAmount(row: any) {
+  const type = paymentEntryType(row);
+  const amount = Math.abs(Number(row?.amount || 0));
 
-          <label style={filterLabelStyle}>
-            Status
-            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-              {statusOptions.map((status) => (
-                <option key={status.id} value={status.id}>
-                  {status.label}
+  if (type === "opening_due") return amount;
+  if (type === "opening_credit") return -amount;
+
+  return 0;
+}
+
+function serviceDate(row: any) {
+  return cleanDate(
+    row?.date_in ||
+      row?.return_date ||
+      row?.date_out ||
+      row?.out_date ||
+      row?.created_at
+  );
+}
+
+function toolNameForRow(row: any, toolsById: Map<string, any>) {
+  if (row?.is_outside_rent) {
+    return String(row?.outside_item_name || "Outside Item");
+  }
+
+  const tool = toolsById.get(String(row?.tool_id || ""));
+
+  return String(
+    tool?.tool_name ||
+      row?.tool_name ||
+      row?.tool ||
+      "Unknown Tool"
+  );
+}
+
+function customerForRow(
+  row: any,
+  customersById: Map<string, any>,
+  customersByMobile: Map<string, any>
+) {
+  return (
+    customersById.get(String(row?.customer_id || "")) ||
+    customersByMobile.get(rowMobile(row)) ||
+    {}
+  );
+}
+
+function csvSafe(value: any) {
+  return `"${String(value ?? "").replaceAll('"', '""')}"`;
+}
+
+type ShopBusinessRow = {
+  shop: string;
+  business: number;
+  collections: number;
+  roundOff: number;
+  balance: number;
+  active: number;
+};
+
+type CustomerReportRow = {
+  customer: string;
+  mobile: string;
+  shop: string;
+  business: number;
+  collections: number;
+  balance: number;
+};
+
+type ToolReportSummary = {
+  tool: string;
+  qty: number;
+  location: string;
+  times: number;
+  days: number;
+  revenue: number;
+  serviceCost: number;
+  purchaseCost: number;
+  profit: number;
+  roi: number;
+};
+
+type ReportResult = {
+  title: string;
+  subtitle: string;
+  headers: string[];
+  rows: any[][];
+  summary: Array<{
+    label: string;
+    value: string | number;
+    tone?: "normal" | "green" | "red";
+  }>;
+};
+
+const emptyResult: ReportResult = {
+  title: "",
+  subtitle: "",
+  headers: [],
+  rows: [],
+  summary: [],
+};
+
+export default function ReportsPage() {
+  const { setAppMessage } = useAppMessage();
+
+  const [reportType, setReportType] = useState(
+    "day_shop_business"
+  );
+  const [month, setMonth] = useState(thisMonth());
+  const [selectedDate, setSelectedDate] = useState(todayISO());
+  const [shop, setShop] = useState("All Shops");
+  const [searchText, setSearchText] = useState("");
+  const [result, setResult] =
+    useState<ReportResult>(emptyResult);
+  const [loading, setLoading] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
+
+  const selectedReportLabel = useMemo(
+    () =>
+      reportOptions.find((option) => option.value === reportType)
+        ?.label || "Report",
+    [reportType]
+  );
+
+  const searchPlaceholder = useMemo(() => {
+    if (
+      reportType === "top_customers" ||
+      reportType === "unpaid_customers"
+    ) {
+      return "Customer name or mobile (optional)";
+    }
+
+    if (
+      reportType === "top_tools" ||
+      reportType === "least_used_tools" ||
+      reportType === "least_profit_tools" ||
+      reportType === "tool_profit_analyzer"
+    ) {
+      return "Tool name, brand or category (optional)";
+    }
+
+    if (reportType === "expense_report") {
+      return "Category, description or payment mode (optional)";
+    }
+
+    if (reportType === "shop_performance") {
+      return "Shop name (optional)";
+    }
+
+    return "The selected date and shop will be searched";
+  }, [reportType]);
+
+  function showError(message: string) {
+    setAppMessage({
+      type: "error",
+      title: "Error",
+      message,
+    });
+  }
+
+  async function queryRentalsForRange(
+    from: string,
+    to: string
+  ) {
+    let query: any = supabase
+      .from("rentals")
+      .select("*")
+      .lte("start_date", to);
+
+    if (shop !== "All Shops") {
+      query = query.eq("shop", shop);
+    }
+
+    const { data, error } = await query;
+
+    if (error) throw new Error(error.message);
+
+    return (data || []).filter((row: any) =>
+      rentalOverlapsRange(row, from, to)
+    );
+  }
+
+  async function queryPaymentsForRange(
+    from: string,
+    to: string
+  ) {
+    let query: any = supabase
+      .from("payments")
+      .select("*")
+      .gte("payment_date", from)
+      .lte("payment_date", to);
+
+    if (shop !== "All Shops") {
+      query = query.eq("shop", shop);
+    }
+
+    const { data, error } = await query;
+
+    if (error) throw new Error(error.message);
+
+    return data || [];
+  }
+
+  async function queryTools() {
+    let query: any = supabase
+      .from("tools")
+      .select("*")
+      .order("tool_name");
+
+    const search = safeSearch(searchText);
+
+    if (search) {
+      query = query.or(
+        [
+          `tool_name.ilike.%${search}%`,
+          `brand.ilike.%${search}%`,
+          `category.ilike.%${search}%`,
+        ].join(",")
+      );
+    }
+
+    const { data, error } = await query;
+
+    if (error) throw new Error(error.message);
+
+    return data || [];
+  }
+
+  async function queryCustomers() {
+    let query: any = supabase
+      .from("customers")
+      .select("*")
+      .order("customer_name");
+
+    const search = safeSearch(searchText);
+
+    if (search) {
+      query = query.or(
+        [
+          `customer_name.ilike.%${search}%`,
+          `mobile.ilike.%${search}%`,
+          `occupation.ilike.%${search}%`,
+          `address.ilike.%${search}%`,
+        ].join(",")
+      );
+    }
+
+    const { data, error } = await query;
+
+    if (error) throw new Error(error.message);
+
+    return data || [];
+  }
+
+  async function loadDayShopBusiness(): Promise<ReportResult> {
+    let rentalQuery: any = supabase
+      .from("rentals")
+      .select("*")
+      .lte("start_date", selectedDate);
+
+    let paymentQuery: any = supabase
+      .from("payments")
+      .select("*")
+      .eq("payment_date", selectedDate);
+
+    if (shop !== "All Shops") {
+      rentalQuery = rentalQuery.eq("shop", shop);
+      paymentQuery = paymentQuery.eq("shop", shop);
+    }
+
+    const [
+      { data: rentals, error: rentalError },
+      { data: payments, error: paymentError },
+    ] = await Promise.all([rentalQuery, paymentQuery]);
+
+    if (rentalError) throw new Error(rentalError.message);
+    if (paymentError) throw new Error(paymentError.message);
+
+    const selectedShops =
+      shop === "All Shops"
+        ? shops.filter((item) => item !== "All Shops")
+        : [shop];
+
+    const rows: ShopBusinessRow[] = selectedShops.map((shopName: string) => {
+      const shopRentals = (rentals || []).filter(
+        (row: any) =>
+          rowShop(row) === shopName &&
+          (row.is_transport_charge
+            ? cleanDate(
+                row.transport_date || row.start_date
+              ) === selectedDate
+            : isActiveRentalOnDate(row, selectedDate))
+      );
+      const shopPayments = (payments || []).filter(
+        (row: any) => rowShop(row) === shopName
+      );
+      const business = shopRentals.reduce(
+        (sum: number, row: any) =>
+          sum + dailyRentalBusiness(row, selectedDate),
+        0
+      );
+      const collections = shopPayments.reduce(
+        (sum: number, row: any) =>
+          sum + paymentCollection(row),
+        0
+      );
+      const roundOff = shopPayments.reduce(
+        (sum: number, row: any) =>
+          sum + paymentRoundOff(row),
+        0
+      );
+
+      return {
+        shop: shopName,
+        business,
+        collections,
+        roundOff,
+        balance: business - collections - roundOff,
+        active: shopRentals.filter(
+          (row: any) => !row.is_transport_charge
+        ).length,
+      };
+    });
+
+    const visibleRows = rows.filter(
+      (row) =>
+        shop !== "All Shops" ||
+        row.business !== 0 ||
+        row.collections !== 0 ||
+        row.active !== 0
+    );
+
+    return {
+      title: "Day-wise Shop Business",
+      subtitle: `${selectedDate} · ${shop}`,
+      headers: [
+        "Date",
+        "Shop",
+        "Business",
+        "Collections",
+        "Round Off",
+        "Balance",
+        "Live Rentals",
+      ],
+      rows: visibleRows.map((row) => [
+        selectedDate,
+        row.shop,
+        rupee(row.business),
+        rupee(row.collections),
+        rupee(row.roundOff),
+        rupee(row.balance),
+        row.active,
+      ]),
+      summary: [
+        {
+          label: "Business",
+          value: rupee(
+            visibleRows.reduce(
+              (sum, row) => sum + row.business,
+              0
+            )
+          ),
+        },
+        {
+          label: "Collections",
+          value: rupee(
+            visibleRows.reduce(
+              (sum: number, row: ShopBusinessRow) => sum + row.collections,
+              0
+            )
+          ),
+          tone: "green",
+        },
+        {
+          label: "Balance",
+          value: rupee(
+            visibleRows.reduce(
+              (sum: number, row: ShopBusinessRow) => sum + row.balance,
+              0
+            )
+          ),
+          tone: "red",
+        },
+      ],
+    };
+  }
+
+  async function loadCustomerReport(
+    unpaidOnly: boolean
+  ): Promise<ReportResult> {
+    const range = monthRange(month);
+    const customers = await queryCustomers();
+    const customerIds = customers.map((row: any) => row.id);
+
+    if (customerIds.length === 0) {
+      return {
+        title: unpaidOnly
+          ? "Top 10 Most Unpaid Customers"
+          : "Top Customers",
+        subtitle: `${month} · ${shop}`,
+        headers: unpaidOnly
+          ? ["Customer", "Mobile", "Shop", "Outstanding"]
+          : [
+              "Customer",
+              "Mobile",
+              "Shop",
+              "Business",
+              "Collections",
+              "Balance",
+            ],
+        rows: [],
+        summary: [],
+      };
+    }
+
+    let rentalQuery: any = supabase
+      .from("rentals")
+      .select("*")
+      .in("customer_id", customerIds);
+
+    let paymentQuery: any = supabase
+      .from("payments")
+      .select("*")
+      .in("customer_id", customerIds);
+
+    if (shop !== "All Shops" && !unpaidOnly) {
+      rentalQuery = rentalQuery.eq("shop", shop);
+      paymentQuery = paymentQuery.eq("shop", shop);
+    }
+
+    if (!unpaidOnly) {
+      rentalQuery = rentalQuery.lte("start_date", range.to);
+      paymentQuery = paymentQuery
+        .gte("payment_date", range.from)
+        .lte("payment_date", range.to);
+    }
+
+    const [
+      { data: rentalData, error: rentalError },
+      { data: paymentData, error: paymentError },
+    ] = await Promise.all([rentalQuery, paymentQuery]);
+
+    if (rentalError) throw new Error(rentalError.message);
+    if (paymentError) throw new Error(paymentError.message);
+
+    const rentals = unpaidOnly
+      ? rentalData || []
+      : (rentalData || []).filter((row: any) =>
+          rentalOverlapsRange(row, range.from, range.to)
+        );
+    const payments = paymentData || [];
+
+    const reportCustomers =
+      unpaidOnly && shop !== "All Shops"
+        ? customers.filter(
+            (customer: any) =>
+              String(customer.shop || customer.branch || "").trim() ===
+              shop
+          )
+        : customers;
+
+    const rows: CustomerReportRow[] = reportCustomers.map((customer: any) => {
+      const customerRentals = rentals.filter(
+        (row: any) =>
+          String(row.customer_id || "") === String(customer.id)
+      );
+      const customerPayments = payments.filter(
+        (row: any) =>
+          String(row.customer_id || "") === String(customer.id)
+      );
+
+      const business = customerRentals.reduce(
+        (sum: number, row: any) =>
+          sum +
+          rentalAmountWithinRange(
+            row,
+            unpaidOnly ? cleanDate(row.start_date) : range.from,
+            unpaidOnly ? cleanDate(row.end_date) || todayISO() : range.to
+          ),
+        0
+      );
+      const opening = customerPayments.reduce(
+        (sum: number, row: any) =>
+          sum + openingBalanceAmount(row),
+        0
+      );
+      const collections = customerPayments.reduce(
+        (sum: number, row: any) =>
+          sum + paymentCollection(row),
+        0
+      );
+      const roundOff = customerPayments.reduce(
+        (sum: number, row: any) =>
+          sum + paymentRoundOff(row),
+        0
+      );
+      const balance =
+        opening + business - collections - roundOff;
+
+      return {
+        customer: customer.customer_name || "-",
+        mobile: customer.mobile || "-",
+        shop: customer.shop || customer.branch || "-",
+        business,
+        collections,
+        balance,
+      };
+    });
+
+    if (unpaidOnly) {
+      const unpaid = rows
+        .filter((row: CustomerReportRow) => row.balance > 0)
+        .sort((a: CustomerReportRow, b: CustomerReportRow) => b.balance - a.balance)
+        .slice(0, 10);
+
+      return {
+        title: "Top 10 Most Unpaid Customers",
+        subtitle: `Current balance · ${shop}`,
+        headers: [
+          "Customer",
+          "Mobile",
+          "Shop",
+          "Outstanding",
+        ],
+        rows: unpaid.map((row: CustomerReportRow) => [
+          row.customer,
+          row.mobile,
+          row.shop,
+          rupee(row.balance),
+        ]),
+        summary: [
+          {
+            label: "Customers Shown",
+            value: unpaid.length,
+          },
+          {
+            label: "Outstanding",
+            value: rupee(
+              unpaid.reduce(
+                (sum, row) => sum + row.balance,
+                0
+              )
+            ),
+            tone: "red",
+          },
+        ],
+      };
+    }
+
+    const top = rows
+      .filter((row: CustomerReportRow) => row.business > 0)
+      .sort((a: CustomerReportRow, b: CustomerReportRow) => b.business - a.business)
+      .slice(0, 10);
+
+    return {
+      title: "Top Customers",
+      subtitle: `${month} · ${shop}`,
+      headers: [
+        "Customer",
+        "Mobile",
+        "Shop",
+        "Business",
+        "Collections",
+        "Balance",
+      ],
+      rows: top.map((row: CustomerReportRow) => [
+        row.customer,
+        row.mobile,
+        row.shop,
+        rupee(row.business),
+        rupee(row.collections),
+        rupee(row.balance),
+      ]),
+      summary: [
+        {
+          label: "Customers Shown",
+          value: top.length,
+        },
+        {
+          label: "Business",
+          value: rupee(
+            top.reduce((sum: number, row: CustomerReportRow) => sum + row.business, 0)
+          ),
+        },
+        {
+          label: "Collections",
+          value: rupee(
+            top.reduce(
+              (sum, row) => sum + row.collections,
+              0
+            )
+          ),
+          tone: "green",
+        },
+      ],
+    };
+  }
+
+  async function loadToolReport(
+    mode:
+      | "top"
+      | "least_used"
+      | "least_profit"
+      | "analyzer"
+  ): Promise<ReportResult> {
+    const range = monthRange(month);
+    const [tools, rentals, serviceResult] =
+      await Promise.all([
+        queryTools(),
+        queryRentalsForRange(range.from, range.to),
+        supabase.from("services").select("*"),
+      ]);
+
+    if (serviceResult.error) {
+      throw new Error(serviceResult.error.message);
+    }
+
+    const reportTools =
+      shop === "All Shops" || mode === "top"
+        ? tools
+        : tools.filter(
+            (tool: any) =>
+              String(
+                tool.current_location || tool.home_branch || ""
+              ).trim() === shop
+          );
+
+    const services = (serviceResult.data || []).filter(
+      (row: any) =>
+        dateInRange(serviceDate(row), range.from, range.to) &&
+        (shop === "All Shops" ||
+          rowShop(row) === shop ||
+          String(row.from_branch || "") === shop)
+    );
+
+    const summaries: ToolReportSummary[] = reportTools.map((tool: any) => {
+      const toolRentals = rentals.filter(
+        (row: any) =>
+          !row.is_outside_rent &&
+          !row.is_transport_charge &&
+          String(row.tool_id || "") === String(tool.id)
+      );
+      const toolServices = services.filter(
+        (row: any) =>
+          String(row.tool_id || "") === String(tool.id)
+      );
+      const revenue = toolRentals.reduce(
+        (sum: number, row: any) =>
+          sum +
+          rentalAmountWithinRange(row, range.from, range.to),
+        0
+      );
+      const serviceCost = toolServices.reduce(
+        (sum: number, row: any) =>
+          sum + Number(row.cost || row.amount || 0),
+        0
+      );
+      const purchaseCost = Number(tool.purchase_cost || 0);
+      const times = toolRentals.length;
+      const days = toolRentals.reduce((sum: number, row: any) => {
+        const start =
+          cleanDate(row.start_date) > range.from
+            ? cleanDate(row.start_date)
+            : range.from;
+        const endDate = cleanDate(row.end_date);
+        const end =
+          endDate && endDate < range.to ? endDate : range.to;
+
+        return (
+          sum +
+          countRentalDays(
+            start,
+            end,
+            row.avoid_sundays !== false
+          )
+        );
+      }, 0);
+      const profit = revenue - serviceCost - purchaseCost;
+
+      return {
+        tool: tool.tool_name || "Unknown Tool",
+        qty: Number(tool.total_qty || 1),
+        location:
+          tool.current_location || tool.home_branch || "-",
+        times,
+        days,
+        revenue,
+        serviceCost,
+        purchaseCost,
+        profit,
+        roi:
+          purchaseCost + serviceCost > 0
+            ? (profit / (purchaseCost + serviceCost)) * 100
+            : revenue > 0
+            ? 100
+            : 0,
+      };
+    });
+
+    let selected = summaries;
+    let title = "Tool Profit Analyzer";
+    let subtitle = `${month} · ${shop}`;
+
+    if (mode === "top") {
+      selected = summaries
+        .filter((row: ToolReportSummary) => row.times > 0)
+        .sort((a: ToolReportSummary, b: ToolReportSummary) => b.revenue - a.revenue)
+        .slice(0, 10);
+      title = "Top Tools";
+    } else if (mode === "least_used") {
+      selected = summaries
+        .sort((a: ToolReportSummary, b: ToolReportSummary) => {
+          if (a.times !== b.times) return a.times - b.times;
+          return a.revenue - b.revenue;
+        })
+        .slice(0, 10);
+      title = "Least 10 Used Tools";
+    } else if (mode === "least_profit") {
+      selected = summaries
+        .sort((a: ToolReportSummary, b: ToolReportSummary) => a.profit - b.profit)
+        .slice(0, 10);
+      title = "Least Profit Tools";
+    } else {
+      selected = summaries
+        .sort((a: ToolReportSummary, b: ToolReportSummary) => b.profit - a.profit)
+        .slice(0, 100);
+      title = "Tool Profit Analyzer";
+      subtitle = `${month} · ${shop} · Up to 100 tools`;
+    }
+
+    const headers =
+      mode === "least_used"
+        ? [
+            "Tool",
+            "Qty",
+            "Location",
+            "Times Rented",
+            "Rental Days",
+            "Revenue",
+          ]
+        : [
+            "Tool",
+            "Qty",
+            "Location",
+            "Times Rented",
+            "Rental Days",
+            "Revenue",
+            "Purchase",
+            "Service Cost",
+            "Profit",
+            "ROI %",
+          ];
+
+    const rows =
+      mode === "least_used"
+        ? selected.map((row: ToolReportSummary) => [
+            row.tool,
+            row.qty,
+            row.location,
+            row.times,
+            row.days,
+            rupee(row.revenue),
+          ])
+        : selected.map((row: ToolReportSummary) => [
+            row.tool,
+            row.qty,
+            row.location,
+            row.times,
+            row.days,
+            rupee(row.revenue),
+            rupee(row.purchaseCost),
+            rupee(row.serviceCost),
+            rupee(row.profit),
+            `${Number(row.roi || 0).toFixed(0)}%`,
+          ]);
+
+    return {
+      title,
+      subtitle,
+      headers,
+      rows,
+      summary: [
+        {
+          label: "Tools Shown",
+          value: selected.length,
+        },
+        {
+          label: "Revenue",
+          value: rupee(
+            selected.reduce(
+              (sum: number, row: ToolReportSummary) => sum + row.revenue,
+              0
+            )
+          ),
+          tone: "green",
+        },
+        {
+          label: "Profit",
+          value: rupee(
+            selected.reduce(
+              (sum: number, row: ToolReportSummary) => sum + row.profit,
+              0
+            )
+          ),
+          tone:
+            selected.reduce(
+              (sum: number, row: ToolReportSummary) => sum + row.profit,
+              0
+            ) >= 0
+              ? "green"
+              : "red",
+        },
+      ],
+    };
+  }
+
+  async function loadExpenseReport(): Promise<ReportResult> {
+    const range = monthRange(month);
+    let query: any = supabase
+      .from("expenses")
+      .select("*")
+      .gte("expense_date", range.from)
+      .lte("expense_date", range.to)
+      .order("expense_date", { ascending: false });
+
+    if (shop !== "All Shops") {
+      query = query.eq("shop", shop);
+    }
+
+    const { data, error } = await query;
+
+    if (error) throw new Error(error.message);
+
+    const search = normalize(searchText);
+    const expenses = (data || []).filter((row: any) => {
+      if (!search) return true;
+
+      return normalize(
+        `${row.category || ""} ${row.description || ""} ${
+          row.payment_mode || ""
+        } ${row.remarks || ""}`
+      ).includes(search);
+    });
+
+    const categoryTotals = new Map<string, number>();
+
+    expenses.forEach((row: any) => {
+      const category = row.category || "Other";
+      categoryTotals.set(
+        category,
+        (categoryTotals.get(category) || 0) +
+          Number(row.amount || 0)
+      );
+    });
+
+    return {
+      title: "Month-wise Expense Report",
+      subtitle: `${month} · ${shop}`,
+      headers: [
+        "Date",
+        "Shop",
+        "Category",
+        "Description",
+        "Amount",
+        "Payment Mode",
+        "Remarks",
+      ],
+      rows: expenses.slice(0, 200).map((row: any) => [
+        cleanDate(row.expense_date),
+        row.shop || "-",
+        row.category || "-",
+        row.description || "-",
+        rupee(row.amount),
+        row.payment_mode || "-",
+        row.remarks || "-",
+      ]),
+      summary: [
+        {
+          label: "Entries",
+          value: expenses.length,
+        },
+        {
+          label: "Total Expense",
+          value: rupee(
+            expenses.reduce(
+              (sum: number, row: any) =>
+                sum + Number(row.amount || 0),
+              0
+            )
+          ),
+          tone: "red",
+        },
+        {
+          label: "Categories",
+          value: categoryTotals.size,
+        },
+      ],
+    };
+  }
+
+  async function loadShopPerformance(): Promise<ReportResult> {
+    const range = monthRange(month);
+    const [
+      rentals,
+      payments,
+      { data: expenses, error: expenseError },
+      { data: services, error: serviceError },
+      { data: tools, error: toolError },
+    ] = await Promise.all([
+      queryRentalsForRange(range.from, range.to),
+      queryPaymentsForRange(range.from, range.to),
+      supabase
+        .from("expenses")
+        .select("*")
+        .gte("expense_date", range.from)
+        .lte("expense_date", range.to),
+      supabase.from("services").select("*"),
+      supabase.from("tools").select("*"),
+    ]);
+
+    if (expenseError) throw new Error(expenseError.message);
+    if (serviceError) throw new Error(serviceError.message);
+    if (toolError) throw new Error(toolError.message);
+
+    const search = normalize(searchText);
+    const selectedShops = shops
+      .filter((item) => item !== "All Shops")
+      .filter(
+        (item) =>
+          (shop === "All Shops" || item === shop) &&
+          (!search || normalize(item).includes(search))
+      );
+
+    const rows = selectedShops.map((shopName) => {
+      const shopRentals = rentals.filter(
+        (row: any) => rowShop(row) === shopName
+      );
+      const shopPayments = payments.filter(
+        (row: any) => rowShop(row) === shopName
+      );
+      const shopExpenses = (expenses || []).filter(
+        (row: any) => rowShop(row) === shopName
+      );
+      const shopServices = (services || []).filter(
+        (row: any) =>
+          dateInRange(serviceDate(row), range.from, range.to) &&
+          (rowShop(row) === shopName ||
+            String(row.from_branch || "") === shopName)
+      );
+      const shopTools = (tools || []).filter(
+        (row: any) =>
+          String(
+            row.current_location || row.home_branch || ""
+          ).trim() === shopName
+      );
+      const business = shopRentals.reduce(
+        (sum: number, row: any) =>
+          sum +
+          rentalAmountWithinRange(row, range.from, range.to),
+        0
+      );
+      const collections = shopPayments.reduce(
+        (sum: number, row: any) =>
+          sum + paymentCollection(row),
+        0
+      );
+      const roundOff = shopPayments.reduce(
+        (sum: number, row: any) =>
+          sum + paymentRoundOff(row),
+        0
+      );
+      const expenseTotal = shopExpenses.reduce(
+        (sum: number, row: any) =>
+          sum + Number(row.amount || 0),
+        0
+      );
+      const serviceCost = shopServices.reduce(
+        (sum: number, row: any) =>
+          sum + Number(row.cost || row.amount || 0),
+        0
+      );
+      const stockQty = shopTools.reduce(
+        (sum: number, row: any) =>
+          sum + Math.max(Number(row.total_qty || 1), 1),
+        0
+      );
+      const active = shopRentals.filter((row: any) =>
+        isActiveRentalOnDate(row, range.to)
+      ).length;
+      const net =
+        business -
+        expenseTotal -
+        serviceCost -
+        roundOff;
+
+      return {
+        shop: shopName,
+        business,
+        collections,
+        roundOff,
+        expenseTotal,
+        serviceCost,
+        net,
+        active,
+        stockQty,
+      };
+    });
+
+    return {
+      title: "Shop Performance",
+      subtitle: `${month}`,
+      headers: [
+        "Shop",
+        "Business",
+        "Collections",
+        "Round Off",
+        "Expenses",
+        "Service Cost",
+        "Net",
+        "Live Rentals",
+        "Stock Qty",
+      ],
+      rows: rows.map((row) => [
+        row.shop,
+        rupee(row.business),
+        rupee(row.collections),
+        rupee(row.roundOff),
+        rupee(row.expenseTotal),
+        rupee(row.serviceCost),
+        rupee(row.net),
+        row.active,
+        row.stockQty,
+      ]),
+      summary: [
+        {
+          label: "Business",
+          value: rupee(
+            rows.reduce((sum, row) => sum + row.business, 0)
+          ),
+        },
+        {
+          label: "Collections",
+          value: rupee(
+            rows.reduce(
+              (sum, row) => sum + row.collections,
+              0
+            )
+          ),
+          tone: "green",
+        },
+        {
+          label: "Net",
+          value: rupee(
+            rows.reduce((sum, row) => sum + row.net, 0)
+          ),
+          tone:
+            rows.reduce((sum, row) => sum + row.net, 0) >= 0
+              ? "green"
+              : "red",
+        },
+      ],
+    };
+  }
+
+  async function searchReport() {
+    setLoading(true);
+    setHasSearched(false);
+
+    try {
+      let nextResult: ReportResult;
+
+      switch (reportType) {
+        case "day_shop_business":
+          nextResult = await loadDayShopBusiness();
+          break;
+        case "top_customers":
+          nextResult = await loadCustomerReport(false);
+          break;
+        case "unpaid_customers":
+          nextResult = await loadCustomerReport(true);
+          break;
+        case "top_tools":
+          nextResult = await loadToolReport("top");
+          break;
+        case "least_used_tools":
+          nextResult = await loadToolReport("least_used");
+          break;
+        case "least_profit_tools":
+          nextResult = await loadToolReport("least_profit");
+          break;
+        case "tool_profit_analyzer":
+          nextResult = await loadToolReport("analyzer");
+          break;
+        case "expense_report":
+          nextResult = await loadExpenseReport();
+          break;
+        case "shop_performance":
+          nextResult = await loadShopPerformance();
+          break;
+        default:
+          nextResult = emptyResult;
+      }
+
+      setResult(nextResult);
+      setHasSearched(true);
+    } catch (error: any) {
+      setResult(emptyResult);
+      showError(error?.message || "Failed to load report");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function clearReport() {
+    setResult(emptyResult);
+    setHasSearched(false);
+    setSearchText("");
+  }
+
+  function downloadCsv() {
+    if (!hasSearched || result.rows.length === 0) {
+      showError("Search and load a report before downloading");
+      return;
+    }
+
+    const csv = [result.headers, ...result.rows]
+      .map((row) => row.map(csvSafe).join(","))
+      .join("\n");
+    const blob = new Blob([csv], {
+      type: "text/csv;charset=utf-8;",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = `T&T_${result.title.replaceAll(
+      " ",
+      "_"
+    )}_${reportType === "day_shop_business" ? selectedDate : month}.csv`;
+    link.click();
+
+    URL.revokeObjectURL(url);
+  }
+
+  const showMonth =
+    reportType !== "day_shop_business" &&
+    reportType !== "unpaid_customers";
+
+  return (
+    <main className="reports-search-page">
+      <style>{reportsStyles}</style>
+
+      <h1>Reports</h1>
+      <p className="reports-page-subtitle">
+        Select one report and search. Other reports remain closed and
+        no report data is loaded automatically.
+      </p>
+
+      <section className="panel reports-search-panel">
+        <div className="reports-search-grid">
+          <label>
+            Report
+            <select
+              value={reportType}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+                setReportType(event.target.value);
+                clearReport();
+              }}
+            >
+              {reportOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
                 </option>
               ))}
             </select>
           </label>
 
-          <label style={filterLabelStyle}>
-            Search
-            <div style={searchBoxStyle}>
-              <Search size={16} />
+          {reportType === "day_shop_business" && (
+            <label>
+              Date
               <input
-                value={searchText}
-                onChange={(e) => setSearchText(e.target.value)}
-                placeholder="Name / Mobile / Tool"
-                style={{ border: 0, padding: 0, outline: "none", width: "100%" }}
+                type="date"
+                value={selectedDate}
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  setSelectedDate(event.target.value)
+                }
               />
-            </div>
+            </label>
+          )}
+
+          {showMonth && (
+            <label>
+              Month
+              <input
+                type="month"
+                value={month}
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  setMonth(event.target.value)
+                }
+              />
+            </label>
+          )}
+
+          <label>
+            Shop
+            <select
+              value={shop}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                setShop(event.target.value)
+              }
+            >
+              {shops.map((shopName) => (
+                <option key={shopName}>{shopName}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="reports-keyword-field">
+            Search
+            <input
+              value={searchText}
+              onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                setSearchText(event.target.value)
+              }
+              placeholder={searchPlaceholder}
+              disabled={reportType === "day_shop_business"}
+              onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void searchReport();
+                }
+              }}
+            />
           </label>
         </div>
 
-        <div style={summaryGridStyle}>
-          <SummaryBox title="Total Business" value={rupee(totals.grossBusiness)} />
-          <SummaryBox title="Payments" value={rupee(totals.paymentsReceived)} />
-          <SummaryBox title="Round Off" value={rupee(totals.discount)} />
-          <SummaryBox title="Balance" value={rupee(totals.outstanding)} danger />
-          <SummaryBox title="Rows" value={totals.records} />
-          <SummaryBox title="Days" value={totals.days} />
-        </div>
+        <div className="reports-search-actions">
+          <button
+            className="btn-blue"
+            type="button"
+            onClick={() => void searchReport()}
+            disabled={loading}
+          >
+            <Search size={17} />
+            {loading ? "Searching..." : `Search ${selectedReportLabel}`}
+          </button>
 
-        <div style={tableFrameStyle}>
-          <table style={statementTableStyle}>
-            <thead>
-              <tr>
-                <th>From</th>
-                <th>To</th>
-                <th>Status</th>
-                <th>Shop</th>
-                <th>Customer</th>
-                <th>Mobile</th>
-                <th>Tool</th>
-                <th style={{ textAlign: "right" }}>Qty</th>
-                <th style={{ textAlign: "right" }}>Days</th>
-                <th style={{ textAlign: "right" }}>Rent</th>
-                <th style={{ textAlign: "right" }}>Round Off</th>
-                <th style={{ textAlign: "right" }}>Balance</th>
-              </tr>
-            </thead>
+          <button
+            className="btn-gray"
+            type="button"
+            onClick={clearReport}
+          >
+            Clear
+          </button>
 
-            <tbody>
-              {statementRows.map((row, index) => (
-                <tr key={`${row.mobile}-${row.tool}-${row.from}-${index}`}>
-                  <td>{formatDate(row.from)}</td>
-                  <td style={{ fontWeight: 950, color: row.to === "LIVE" ? "#0057ff" : "#0f172a" }}>
-                    {row.to === "LIVE" ? "🔵 LIVE" : formatDate(row.to)}
-                  </td>
-                  <td style={{ fontWeight: 950 }}>
-                    <span
-                      style={{
-                        ...statusBadgeStyle,
-                        ...(statusKey(row) === "Live"
-                          ? liveBadgeStyle
-                          : statusKey(row) === "Paid"
-                          ? paidBadgeStyle
-                          : notPaidBadgeStyle),
-                      }}
-                    >
-                      {statusText(row)}
-                    </span>
-                  </td>
-                  <td style={{fontWeight:800}}>{row.shop}</td>
-                  <td><strong>{row.customer}</strong></td>
-                  <td style={{ fontWeight: 800 }}>{row.mobile}</td>
-                  <td>{row.tool}</td>
-                  <td style={{ textAlign: "right", fontWeight: 800 }}>{row.qty}</td>
-                  <td style={{ textAlign: "right", fontWeight: 800 }}>{row.days}</td>
-                  <td style={{ textAlign: "right", fontWeight: 900 }}>{rupee(row.rate)}</td>
-                  <td style={{ textAlign: "right", fontWeight: 900 }}>{rupee(row.discount)}</td>
-                  <td style={{ textAlign: "right", fontWeight: 950, color: Number(row.balance || 0) > 0 ? "#b91c1c" : "#166534" }}>{rupee(row.balance)}</td>
-                </tr>
-              ))}
-
-              {statementRows.length === 0 && (
-                <tr>
-                  <td colSpan={12} style={{ textAlign: "center", padding: 24, fontWeight: 900 }}>
-                    No business statement data found
-                  </td>
-                </tr>
-              )}
-            </tbody>
-
-            <tfoot>
-              <tr>
-                <td colSpan={7}>TOTAL</td>
-                <td style={{ textAlign: "right" }}>{totals.qty}</td>
-                <td style={{ textAlign: "right" }}>{totals.days}</td>
-                <td style={{ textAlign: "right" }}>{rupee(totals.grossBusiness)}</td>
-                <td style={{ textAlign: "right" }}>{rupee(totals.discount)}</td>
-                <td style={{ textAlign: "right" }}>{rupee(totals.outstanding)}</td>
-              </tr>
-            </tfoot>
-          </table>
+          <button
+            className="btn-green"
+            type="button"
+            onClick={downloadCsv}
+            disabled={!hasSearched || result.rows.length === 0}
+          >
+            <Download size={17} />
+            Download Result
+          </button>
         </div>
       </section>
+
+      {!hasSearched ? (
+        <section className="panel reports-empty-state">
+          <strong>{selectedReportLabel}</strong>
+          <span>
+            Choose the required filters and click Search. Nothing is
+            displayed or loaded before that.
+          </span>
+        </section>
+      ) : (
+        <>
+          <div className="reports-summary-grid">
+            {result.summary.map((item: ReportResult["summary"][number]) => (
+              <div
+                className={`reports-summary-card ${
+                  item.tone === "green"
+                    ? "reports-summary-green"
+                    : item.tone === "red"
+                    ? "reports-summary-red"
+                    : ""
+                }`}
+                key={item.label}
+              >
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+              </div>
+            ))}
+          </div>
+
+          <section className="panel reports-result-card">
+            <div className="reports-result-header">
+              <div>
+                <h2>{result.title}</h2>
+                <p>{result.subtitle}</p>
+              </div>
+
+              <strong>{result.rows.length} row(s)</strong>
+            </div>
+
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    {result.headers.map((header: string) => (
+                      <th key={header}>{header}</th>
+                    ))}
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {result.rows.map((row: any[], rowIndex: number) => (
+                    <tr key={rowIndex}>
+                      {row.map((cell: any, cellIndex: number) => (
+                        <td
+                          key={cellIndex}
+                          className={
+                            String(cell).includes("₹")
+                              ? "strong"
+                              : ""
+                          }
+                        >
+                          {cell === "" || cell === null
+                            ? "-"
+                            : cell}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+
+                  {result.rows.length === 0 && (
+                    <tr>
+                      <td
+                        colSpan={Math.max(
+                          result.headers.length,
+                          1
+                        )}
+                        className="reports-no-data"
+                      >
+                        No matching data found for this search.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </>
+      )}
     </main>
   );
 }
 
-function SummaryBox({ title, value, danger = false }: any) {
-  return (
-    <div style={{ ...summaryBoxStyle, borderColor: danger ? "#fecaca" : "#bfdbfe", background: danger ? "#fef2f2" : "#eff6ff" }}>
-      <div style={{ fontSize: 12, fontWeight: 950, color: "#475569", textTransform: "uppercase" }}>{title}</div>
-      <div style={{ fontSize: 22, fontWeight: 1000, color: danger ? "#b91c1c" : "#0f2a5f" }}>{value}</div>
-    </div>
-  );
-}
+const reportsStyles = `
+  .reports-search-page h1 {
+    margin-bottom: 4px;
+  }
 
-const statementShellStyle: any = {
-  background: "#ffffff",
-  borderRadius: 18,
-  border: "1px solid #bfdbfe",
-  boxShadow: "0 18px 45px rgba(15, 42, 95, 0.10)",
-  overflow: "hidden",
-};
+  .reports-page-subtitle {
+    margin: 0 0 18px;
+    color: #64748b;
+    font-size: 16px;
+    font-weight: 800;
+  }
 
-const statementHeaderStyle: any = {
-  display: "flex",
-  justifyContent: "space-between",
-  gap: 16,
-  alignItems: "flex-start",
-  background: "linear-gradient(135deg, #0f2a5f, #0057ff)",
-  color: "white",
-  padding: "22px 24px",
-};
+  .reports-search-panel {
+    border: 1px solid #bdd0e8;
+    background: linear-gradient(145deg, #f8fbff, #eef5ff);
+  }
 
-const brandStyle: any = {
-  fontSize: 25,
-  fontWeight: 1000,
-  letterSpacing: 1.6,
-  opacity: 0.92,
-};
+  .reports-search-grid {
+    display: grid;
+    grid-template-columns:
+      minmax(220px, 1.2fr)
+      minmax(150px, 0.7fr)
+      minmax(170px, 0.8fr)
+      minmax(260px, 1.4fr);
+    gap: 12px;
+  }
 
-const titleStyle: any = {
-  margin: "12px 0 12px",
-  fontSize: 76,
-  lineHeight: 1.15,
-  fontWeight: 1000,
-  color: "#ffffff",
-  letterSpacing: 1,
-};
-
-const subtitleStyle: any = {
-  margin: 0,
-  fontSize: 30,
-  fontWeight: 850,
-  opacity: 0.94,
-};
-
-const periodStyle: any = {
-  margin: "6px 0 0",
-  fontSize: 18,
-  fontWeight: 800,
-  opacity: 0.85,
-};
-
-const actionWrapStyle: any = {
-  display: "flex",
-  gap: 10,
-  flexWrap: "wrap",
-  justifyContent: "flex-end",
-};
-
-const filterPanelStyle: any = {
-  display: "grid",
-  gridTemplateColumns: "repeat(7, minmax(140px, 1fr))",
-  gap: 12,
-  padding: 18,
-  background: "#f8fbff",
-  borderBottom: "1px solid #dbeafe",
-};
-
-const filterLabelStyle: any = {
-  display: "grid",
-  gap: 6,
-  color: "#0f172a",
-  fontSize: 13,
-  fontWeight: 950,
-};
-
-const searchBoxStyle: any = {
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  height: 42,
-  padding: "0 12px",
-  background: "white",
-  border: "1px solid #cbd5e1",
-  borderRadius: 12,
-};
-
-const summaryGridStyle: any = {
-  display: "grid",
-  gridTemplateColumns: "repeat(6, minmax(130px, 1fr))",
-  gap: 12,
-  padding: 18,
-};
-
-const summaryBoxStyle: any = {
-  border: "1px solid #bfdbfe",
-  borderRadius: 14,
-  padding: "13px 14px",
-};
-
-const tableFrameStyle: any = {
-  margin: "0 18px 18px",
-  overflow: "auto",
-  border: "1px solid #0f2a5f",
-  borderRadius: 14,
-  maxHeight: "70vh",
-};
-
-const statementTableStyle: any = {
-  width: "100%",
-  minWidth: 1080,
-  borderCollapse: "collapse",
-  fontSize: 14,
-};
-
-const statusBadgeStyle: any = {
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  minWidth: 98,
-  padding: "6px 10px",
-  borderRadius: 999,
-  fontSize: 13,
-  fontWeight: 1000,
-  border: "1px solid transparent",
-};
-
-const liveBadgeStyle: any = {
-  color: "#0057ff",
-  background: "#eff6ff",
-  borderColor: "#bfdbfe",
-};
-
-const notPaidBadgeStyle: any = {
-  color: "#b91c1c",
-  background: "#fef2f2",
-  borderColor: "#fecaca",
-};
-
-const paidBadgeStyle: any = {
-  color: "#166534",
-  background: "#f0fdf4",
-  borderColor: "#bbf7d0",
-};
-
-const printStyles = `
-  table th {
-    position: sticky;
-    top: 0;
-    background: #0f2a5f;
-    color: white;
-    padding: 11px 10px;
+  .reports-search-grid label {
+    display: grid;
+    gap: 6px;
+    color: #405372;
+    font-size: 13px;
     font-weight: 950;
-    border: 1px solid #0b214d;
+    text-transform: uppercase;
+  }
+
+  .reports-search-grid input,
+  .reports-search-grid select {
+    width: 100%;
+    min-height: 45px;
+    padding: 9px 11px;
+    font-size: 16px;
+    font-weight: 850;
+    text-transform: none;
+  }
+
+  .reports-keyword-field {
+    min-width: 0;
+  }
+
+  .reports-search-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 15px;
+  }
+
+  .reports-search-actions button {
+    display: inline-flex;
+    min-height: 43px;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    padding: 9px 15px;
+    font-size: 15px;
+    font-weight: 900;
+  }
+
+  .reports-empty-state {
+    display: grid;
+    gap: 7px;
+    padding: 34px 20px;
+    border: 1px dashed #9bb3d1;
+    background: #f8fbff;
+    text-align: center;
+  }
+
+  .reports-empty-state strong {
+    color: #143f82;
+    font-size: 22px;
+    font-weight: 1000;
+  }
+
+  .reports-empty-state span {
+    color: #60718a;
+    font-size: 16px;
+    font-weight: 800;
+  }
+
+  .reports-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 11px;
+    margin-bottom: 15px;
+  }
+
+  .reports-summary-card {
+    padding: 14px 15px;
+    border: 1px solid #bfd1e8;
+    border-radius: 14px;
+    background: #eff6ff;
+  }
+
+  .reports-summary-card span {
+    display: block;
+    color: #60718a;
+    font-size: 12px;
+    font-weight: 950;
+    text-transform: uppercase;
+  }
+
+  .reports-summary-card strong {
+    display: block;
+    margin-top: 4px;
+    color: #143f82;
+    font-size: 25px;
+    font-weight: 1000;
+  }
+
+  .reports-summary-green {
+    border-color: #9cd9b5;
+    background: #ecfdf3;
+  }
+
+  .reports-summary-green strong {
+    color: #0b8848;
+  }
+
+  .reports-summary-red {
+    border-color: #f3a0a0;
+    background: #fff1f1;
+  }
+
+  .reports-summary-red strong {
+    color: #c62828;
+  }
+
+  .reports-result-card {
+    overflow: hidden;
+  }
+
+  .reports-result-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+
+  .reports-result-header h2 {
+    margin: 0;
+    color: #143f82;
+  }
+
+  .reports-result-header p {
+    margin: 4px 0 0;
+    color: #64748b;
+    font-weight: 800;
+  }
+
+  .reports-result-card table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 15px;
+  }
+
+  .reports-result-card th {
+    padding: 11px 9px;
+    background: #143f82;
+    color: #ffffff;
+    font-weight: 950;
+    text-align: left;
     white-space: nowrap;
   }
 
-  table td {
-    padding: 10px;
-    border: 1px solid #dbeafe;
-    color: #0f172a;
-    background: white;
-    white-space: nowrap;
+  .reports-result-card td {
+    padding: 11px 9px;
+    border-bottom: 1px solid #dfe8f2;
+    font-weight: 800;
+    vertical-align: top;
   }
 
-  table tbody tr:nth-child(even) td {
+  .reports-result-card tbody tr:nth-child(even) td {
     background: #f8fbff;
   }
 
-  table tfoot td {
-    position: sticky;
-    bottom: 0;
-    background: #071735 !important;
-    color: white;
-    font-size: 15px;
-    font-weight: 1000;
-    border-color: #071735;
+  .reports-result-card td.strong {
+    font-weight: 950;
   }
 
-  @media (max-width: 900px) {
-    main { padding: 10px !important; }
-    .no-print { display: flex; }
+  .reports-no-data {
+    padding: 30px !important;
+    color: #64748b;
+    text-align: center;
+    font-size: 17px;
+    font-weight: 900 !important;
   }
 
-  @media print {
-    body { background: white !important; }
-    main { padding: 0 !important; }
-    .no-print { display: none !important; }
-    table th { position: static !important; }
-    table tfoot td { position: static !important; }
+  @media (max-width: 1100px) {
+    .reports-search-grid {
+      grid-template-columns: repeat(2, minmax(180px, 1fr));
+    }
+  }
+
+  @media (max-width: 650px) {
+    .reports-search-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .reports-search-actions button {
+      flex: 1 1 160px;
+    }
   }
 `;

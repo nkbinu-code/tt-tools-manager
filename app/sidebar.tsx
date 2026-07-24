@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import AutoRecoverySync from "./components/AutoRecoverySync";
 import {
   Home,
   Wrench,
@@ -13,9 +12,8 @@ import {
   BarChart3,
   ReceiptText,
   Bell,
-  DatabaseBackup,
-  Settings,
   LogOut,
+  DatabaseBackup,
 } from "lucide-react";
 
 const mainMenu = [
@@ -24,7 +22,12 @@ const mainMenu = [
   { name: "Customers", href: "/customers", icon: Users, color: "#8b2cff" },
   { name: "Rentals", href: "/rentals", icon: CalendarDays, color: "#ff7a00" },
   { name: "Payments", href: "/payments", icon: Wallet, color: "#00bcd4" },
-  { name: "Sales & Inventory", href: "/sales", icon: ShoppingCart, color: "#ff2d75" },
+  {
+    name: "Sales & Inventory",
+    href: "/sales",
+    icon: ShoppingCart,
+    color: "#ff2d75",
+  },
   { name: "Service", href: "/service", icon: Wrench, color: "#00bcd4" },
   { name: "Reports", href: "/reports", icon: BarChart3, color: "#8b2cff" },
 ];
@@ -32,8 +35,12 @@ const mainMenu = [
 const otherMenu = [
   { name: "Expenses", href: "/expenses", icon: ReceiptText, color: "#ff7a00" },
   { name: "Reminders", href: "/reminders", icon: Bell, color: "#8b2cff" },
-  { name: "Backup & Restore", href: "/backup-recovery", icon: DatabaseBackup, color: "#245bc5" },
-  { name: "Settings", href: "/settings", icon: Settings, color: "#23c000" },
+  {
+    name: "Backup & Restore",
+    href: "/backup-recovery",
+    icon: DatabaseBackup,
+    color: "#0f9f63",
+  },
 ];
 
 export default function Sidebar() {
@@ -53,14 +60,13 @@ export default function Sidebar() {
 
   return (
     <aside className="modern-sidebar">
-      <AutoRecoverySync />
       <div className="brand-vertical">
         <div className="brand-icon">
           <Wrench size={24} />
         </div>
 
         <h2>
-          T&T Tools
+          T&amp;T Tools
           <br />
           Manager
         </h2>
@@ -112,14 +118,25 @@ export default function Sidebar() {
 
           <div>
             <strong>Admin</strong>
-            <small>T&T Tools</small>
+            <small>T&amp;T Tools</small>
           </div>
         </div>
 
-        <div className="logout-link" onClick={handleLogout}>
+        <button
+          type="button"
+          className="logout-link"
+          onClick={() => void handleLogout()}
+          style={{
+            width: "100%",
+            border: 0,
+            background: "transparent",
+            font: "inherit",
+            cursor: "pointer",
+          }}
+        >
           <LogOut size={21} color="#ff2d55" />
           <span>Logout</span>
-        </div>
+        </button>
       </div>
     </aside>
   );

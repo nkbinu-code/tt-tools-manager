@@ -14,7 +14,11 @@ function safeNumber(value: any) {
 
 function firstNumber(row: any, keys: string[]) {
   for (const key of keys) {
-    if (row?.[key] !== undefined && row?.[key] !== null && row?.[key] !== "") {
+    if (
+      row?.[key] !== undefined &&
+      row?.[key] !== null &&
+      row?.[key] !== ""
+    ) {
       const n = Number(row[key]);
       if (Number.isFinite(n)) return n;
     }
@@ -24,7 +28,19 @@ function firstNumber(row: any, keys: string[]) {
 }
 
 function rowMobile(row: any) {
-  return String(row?.mobile || row?.customer_mobile || row?.phone || "").trim();
+  return String(
+    row?.mobile || row?.customer_mobile || row?.phone || ""
+  ).trim();
+}
+
+function rowCustomerName(row: any) {
+  return String(
+    row?.customer_name || row?.name || row?.customer || ""
+  ).trim();
+}
+
+function normalizeText(value: any) {
+  return String(value || "").trim().toLowerCase();
 }
 
 function countDays(startValue: any, endValue?: any, avoidSundays = true) {
@@ -40,16 +56,16 @@ function countDays(startValue: any, endValue?: any, avoidSundays = true) {
   if (end < start) return 1;
 
   let count = 0;
-  const d = new Date(start);
+  const date = new Date(start);
 
-  while (d <= end) {
-    const isSunday = d.getDay() === 0;
+  while (date <= end) {
+    const isSunday = date.getDay() === 0;
 
     if (!(avoidSundays && isSunday)) {
-      count++;
+      count += 1;
     }
 
-    d.setDate(d.getDate() + 1);
+    date.setDate(date.getDate() + 1);
   }
 
   return Math.max(count, 1);
@@ -69,7 +85,7 @@ function calcRentalAmount(row: any) {
   const days = countDays(
     row?.start_date || row?.date || row?.rental_date,
     row?.end_date || row?.return_date,
-    avoidSundays,
+    avoidSundays
   );
 
   return Math.max(qty * rate * days - discount, 0);
@@ -90,29 +106,28 @@ function calcPaymentDiscount(row: any) {
 }
 
 function belongsToCustomer(row: any, customer: any) {
-  const customerId = String(customer?.id || customer?.customer_id || "").trim();
+  const customerId = String(
+    customer?.id || customer?.customer_id || ""
+  ).trim();
   const rowCustomerId = String(row?.customer_id || "").trim();
 
   const customerMobile = String(customer?.mobile || "").trim();
   const dataMobile = rowMobile(row);
 
-  const customerName = normalizeText(customer?.customer_name || customer?.name);
+  const customerName = normalizeText(
+    customer?.customer_name || customer?.name
+  );
   const dataName = normalizeText(rowCustomerName(row));
 
   return (
     (customerId && rowCustomerId && rowCustomerId === customerId) ||
     (customerMobile && dataMobile && dataMobile === customerMobile) ||
-    (!rowCustomerId && !dataMobile && customerName && dataName && dataName === customerName)
+    (!rowCustomerId &&
+      !dataMobile &&
+      customerName &&
+      dataName &&
+      dataName === customerName)
   );
-}
-
-
-function rowCustomerName(row: any) {
-  return String(row?.customer_name || row?.name || row?.customer || "").trim();
-}
-
-function normalizeText(value: any) {
-  return String(value || "").trim().toLowerCase();
 }
 
 function dateValue(value: any) {
@@ -121,16 +136,16 @@ function dateValue(value: any) {
   const raw = String(value).trim();
   if (!raw) return null;
 
-  const d = new Date(raw);
-  if (Number.isNaN(d.getTime())) return null;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return null;
 
-  return d;
+  return date;
 }
 
 function firstDate(row: any, keys: string[]) {
   for (const key of keys) {
-    const d = dateValue(row?.[key]);
-    if (d) return d;
+    const date = dateValue(row?.[key]);
+    if (date) return date;
   }
 
   return null;
@@ -145,7 +160,7 @@ function addTransaction(
   list: any[],
   date: Date | null,
   type: string,
-  amount = 0,
+  amount = 0
 ) {
   if (!date) return;
 
@@ -157,15 +172,23 @@ function addTransaction(
   });
 }
 
-function buildLastTransaction(customerRentals: any[], customerPayments: any[]) {
+function buildLastTransaction(
+  customerRentals: any[],
+  customerPayments: any[]
+) {
   const transactions: any[] = [];
 
   for (const rental of customerRentals || []) {
     addTransaction(
       transactions,
-      firstDate(rental, ["start_date", "rental_date", "date", "created_at"]),
+      firstDate(rental, [
+        "start_date",
+        "rental_date",
+        "date",
+        "created_at",
+      ]),
       "Tool Taken",
-      calcRentalAmount(rental),
+      calcRentalAmount(rental)
     );
 
     const status = String(rental?.status || "").toLowerCase();
@@ -179,14 +202,26 @@ function buildLastTransaction(customerRentals: any[], customerPayments: any[]) {
     if (returnedDate || status === "returned") {
       addTransaction(
         transactions,
-        returnedDate || firstDate(rental, ["updated_at", "created_at"]),
+        returnedDate ||
+          firstDate(rental, ["updated_at", "created_at"]),
         "Tool Returned",
-        calcRentalAmount(rental),
+        calcRentalAmount(rental)
       );
     }
   }
 
   for (const payment of customerPayments || []) {
+    const entryType = String(
+      payment?.entry_type || "payment"
+    ).toLowerCase();
+
+    if (
+      entryType === "opening_due" ||
+      entryType === "opening_credit"
+    ) {
+      continue;
+    }
+
     addTransaction(
       transactions,
       firstDate(payment, [
@@ -196,8 +231,8 @@ function buildLastTransaction(customerRentals: any[], customerPayments: any[]) {
         "date",
         "created_at",
       ]),
-      "Money Received",
-      calcPaymentAmount(payment),
+      entryType === "advance" ? "Advance Received" : "Money Received",
+      calcPaymentAmount(payment)
     );
   }
 
@@ -223,40 +258,53 @@ function buildLastTransaction(customerRentals: any[], customerPayments: any[]) {
   };
 }
 
-function buildCustomerActualBalance(customer: any, rentals: any[], payments: any[]) {
+function buildCustomerActualBalance(
+  customer: any,
+  rentals: any[],
+  payments: any[]
+) {
   const customerRentals = (rentals || []).filter((row) =>
-    belongsToCustomer(row, customer),
+    belongsToCustomer(row, customer)
   );
 
   const customerPayments = (payments || []).filter((row) =>
-    belongsToCustomer(row, customer),
+    belongsToCustomer(row, customer)
   );
 
   const rentalTotal = customerRentals.reduce(
     (sum, row) => sum + calcRentalAmount(row),
-    0,
+    0
   );
 
   const openingBalance = customerPayments.reduce((sum, row) => {
     const type = String(row.entry_type || "payment").toLowerCase();
     const amount = Math.abs(calcPaymentAmount(row));
+
     if (type === "opening_due") return sum + amount;
     if (type === "opening_credit") return sum - amount;
+
     return sum;
   }, 0);
 
   const receivedTotal = customerPayments.reduce((sum, row) => {
     const type = String(row.entry_type || "payment").toLowerCase();
-    if (type === "opening_due" || type === "opening_credit") return sum;
+
+    if (type === "opening_due" || type === "opening_credit") {
+      return sum;
+    }
+
     return sum + calcPaymentAmount(row);
   }, 0);
 
   const discountTotal = customerPayments.reduce(
     (sum, row) => sum + calcPaymentDiscount(row),
-    0,
+    0
   );
 
-  const lastTransaction = buildLastTransaction(customerRentals, customerPayments);
+  const lastTransaction = buildLastTransaction(
+    customerRentals,
+    customerPayments
+  );
 
   return {
     ...customer,
@@ -264,27 +312,60 @@ function buildCustomerActualBalance(customer: any, rentals: any[], payments: any
     opening_balance: openingBalance,
     received_total: receivedTotal,
     discount_total: discountTotal,
-    balance: openingBalance + rentalTotal - receivedTotal - discountTotal,
+    balance:
+      openingBalance + rentalTotal - receivedTotal - discountTotal,
     ...lastTransaction,
   };
 }
 
-export async function getCustomers(search: string = "") {
-  const customersRes = await supabase
-    .from("customers")
-    .select("*")
-    .order("customer_name", { ascending: true });
+function cleanCustomerSearchText(value: string) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 100);
+}
 
-  const rentalsRes = await supabase.from("rentals").select("*");
-  const paymentsRes = await supabase.from("payments").select("*");
+function safeCustomerFilterText(value: string) {
+  return cleanCustomerSearchText(value)
+    .replace(/[,%()"'\\]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-  if (customersRes.error) {
+function customerSearchFilter(term: string) {
+  return [
+    `customer_name.ilike.%${term}%`,
+    `mobile.ilike.%${term}%`,
+    `occupation.ilike.%${term}%`,
+    `address.ilike.%${term}%`,
+    `shop.ilike.%${term}%`,
+    `notes.ilike.%${term}%`,
+  ].join(",");
+}
+
+async function loadCustomerFinancialRows(customers: any[]) {
+  const customerIds = customers
+    .map((customer: any) => Number(customer.id))
+    .filter((id: number) => Number.isFinite(id) && id > 0);
+
+  if (customerIds.length === 0) {
     return {
-      success: false,
-      message: customersRes.error.message,
+      success: true,
+      message: "No matching customers found",
       data: [],
     };
   }
+
+  const [rentalsRes, paymentsRes] = await Promise.all([
+    supabase
+      .from("rentals")
+      .select("*")
+      .in("customer_id", customerIds),
+    supabase
+      .from("payments")
+      .select("*")
+      .in("customer_id", customerIds),
+  ]);
 
   if (rentalsRes.error) {
     return {
@@ -302,34 +383,140 @@ export async function getCustomers(search: string = "") {
     };
   }
 
-  let data = (customersRes.data || []).map((customer) =>
-    buildCustomerActualBalance(
-      customer,
-      rentalsRes.data || [],
-      paymentsRes.data || [],
+  return {
+    success: true,
+    message: "Customer details loaded",
+    data: customers.map((customer: any) =>
+      buildCustomerActualBalance(
+        customer,
+        rentalsRes.data || [],
+        paymentsRes.data || []
+      )
     ),
-  );
+  };
+}
 
-  if (search && search.trim() !== "") {
-    const s = search.trim().toLowerCase();
+export async function searchCustomersForPage(
+  search: string,
+  exactCustomerId?: number | null
+) {
+  const term = cleanCustomerSearchText(search);
 
-    data = data.filter((row) =>
-      `${row.customer_name || ""} ${row.mobile || ""} ${row.occupation || ""} ${row.address || ""} ${row.shop || ""}`
-        .toLowerCase()
-        .includes(s),
-    );
+  if (!term && !exactCustomerId) {
+    return {
+      success: true,
+      message: "Enter a customer search",
+      data: [],
+      limited: false,
+    };
   }
+
+  let query = supabase
+    .from("customers")
+    .select("*")
+    .order("customer_name", { ascending: true });
+
+  if (exactCustomerId) {
+    query = query.eq("id", exactCustomerId);
+  } else {
+    const safeTerm = safeCustomerFilterText(term);
+
+    if (!safeTerm) {
+      return {
+        success: true,
+        message: "Enter a valid customer search",
+        data: [],
+        limited: false,
+      };
+    }
+
+    query = query.or(customerSearchFilter(safeTerm)).limit(51);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    return {
+      success: false,
+      message: error.message,
+      data: [],
+      limited: false,
+    };
+  }
+
+  const allMatches = data || [];
+  const limited = !exactCustomerId && allMatches.length > 50;
+  const customers = exactCustomerId
+    ? allMatches
+    : allMatches.slice(0, 50);
+
+  const enriched = await loadCustomerFinancialRows(customers);
+
+  return {
+    ...enriched,
+    limited,
+    message: limited
+      ? "Showing the first 50 matching customers"
+      : exactCustomerId
+      ? "Selected customer loaded"
+      : enriched.message,
+  };
+}
+
+export async function suggestCustomersForPage(search: string) {
+  const term = safeCustomerFilterText(search);
+
+  if (term.length < 2) {
+    return {
+      success: true,
+      message: "Type at least two letters or numbers",
+      data: [],
+      limited: false,
+    };
+  }
+
+  const { data, error } = await supabase
+    .from("customers")
+    .select(
+      "id,customer_name,mobile,occupation,address,shop,rating,notes"
+    )
+    .or(customerSearchFilter(term))
+    .order("customer_name", { ascending: true })
+    .limit(21);
+
+  if (error) {
+    return {
+      success: false,
+      message: error.message,
+      data: [],
+      limited: false,
+    };
+  }
+
+  const rows = data || [];
 
   return {
     success: true,
-    message: "Customers loaded",
-    data,
+    message: rows.length
+      ? "Live matching customers loaded"
+      : "No matching customers",
+    data: rows.slice(0, 20),
+    limited: rows.length > 20,
   };
+}
+
+/**
+ * Compatibility action for any older screen still calling getCustomers().
+ * The new Customers page does not call this with an empty search.
+ */
+export async function getCustomers(search: string = "") {
+  return searchCustomersForPage(search, null);
 }
 
 async function upsertOpeningBalance(customer: any, rawValue: any) {
   const value = Number(rawValue || 0);
   const customerId = customer?.id;
+
   if (!customerId) return { error: null };
 
   const { data: existing, error: findError } = await supabase
@@ -343,7 +530,11 @@ async function upsertOpeningBalance(customer: any, rawValue: any) {
 
   if (value === 0) {
     if (!existing?.id) return { error: null };
-    return await supabase.from("payments").delete().eq("id", existing.id);
+
+    return await supabase
+      .from("payments")
+      .delete()
+      .eq("id", existing.id);
   }
 
   const entry = {
@@ -363,8 +554,12 @@ async function upsertOpeningBalance(customer: any, rawValue: any) {
   };
 
   if (existing?.id) {
-    return await supabase.from("payments").update(entry).eq("id", existing.id);
+    return await supabase
+      .from("payments")
+      .update(entry)
+      .eq("id", existing.id);
   }
+
   return await supabase.from("payments").insert(entry);
 }
 
@@ -426,15 +621,31 @@ export async function saveCustomer(row: any) {
     };
   }
 
-  const { data: savedCustomer, error: savedCustomerError } = await supabase
-    .from("customers")
-    .select("*")
-    .eq("mobile", mobile)
-    .single();
+  const { data: savedCustomer, error: savedCustomerError } =
+    await supabase
+      .from("customers")
+      .select("*")
+      .eq("mobile", mobile)
+      .single();
 
-  if (savedCustomerError) return { success: false, message: savedCustomerError.message };
-  const openingResult: any = await upsertOpeningBalance(savedCustomer, row.opening_balance);
-  if (openingResult.error) return { success: false, message: openingResult.error.message };
+  if (savedCustomerError) {
+    return {
+      success: false,
+      message: savedCustomerError.message,
+    };
+  }
+
+  const openingResult: any = await upsertOpeningBalance(
+    savedCustomer,
+    row.opening_balance
+  );
+
+  if (openingResult.error) {
+    return {
+      success: false,
+      message: openingResult.error.message,
+    };
+  }
 
   revalidatePath("/customers");
   revalidatePath("/rentals");
@@ -448,6 +659,7 @@ export async function saveCustomer(row: any) {
     message: existing
       ? "Customer updated successfully"
       : "Customer saved successfully",
+    customer: savedCustomer,
   };
 }
 
@@ -472,8 +684,17 @@ export async function updateCustomer(id: number, row: any) {
     };
   }
 
-  const openingResult: any = await upsertOpeningBalance({ id, ...row }, row.opening_balance);
-  if (openingResult.error) return { success: false, message: openingResult.error.message };
+  const openingResult: any = await upsertOpeningBalance(
+    { id, ...row },
+    row.opening_balance
+  );
+
+  if (openingResult.error) {
+    return {
+      success: false,
+      message: openingResult.error.message,
+    };
+  }
 
   revalidatePath("/customers");
   revalidatePath("/rentals");
@@ -489,7 +710,10 @@ export async function updateCustomer(id: number, row: any) {
 }
 
 export async function deleteCustomer(id: number) {
-  const { error } = await supabase.from("customers").delete().eq("id", id);
+  const { error } = await supabase
+    .from("customers")
+    .delete()
+    .eq("id", id);
 
   if (error) {
     return {

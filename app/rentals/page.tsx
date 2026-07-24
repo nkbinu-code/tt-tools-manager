@@ -238,13 +238,15 @@ const liveSearchStyle: CSSProperties = {
 
 const shopTabsStyle: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(6, minmax(130px, 1fr))",
+  gridTemplateColumns: "repeat(5, minmax(130px, 1fr))",
   gap: 10,
   marginBottom: 16,
 };
 
 const shopTabStyle: CSSProperties = {
-  border: "1px solid #bfdbfe",
+  borderWidth: 1,
+  borderStyle: "solid",
+  borderColor: "#bfdbfe",
   background: "#eff6ff",
   color: "#0f2a5f",
   borderRadius: 14,
@@ -354,7 +356,7 @@ export default function RentalsPage() {
   const [tools, setTools] = useState<any[]>([]);
   const [rentals, setRentals] = useState<any[]>([]);
   const [rows, setRows] = useState<any[]>(
-    Array.from({ length: 20 }, () => ({ ...emptyRental })),
+    Array.from({ length: 10 }, () => ({ ...emptyRental })),
   );
 
   const [transportRows, setTransportRows] = useState<any[]>([
@@ -365,8 +367,15 @@ export default function RentalsPage() {
   const [selectedBranch, setSelectedBranch] = useState("");
   const [bulkDate, setBulkDate] = useState(today);
   const [businessDate, setBusinessDate] = useState(today);
-  const [liveBranchFilter, setLiveBranchFilter] = useState("All Shops");
+  const [liveBranchFilter, setLiveBranchFilter] = useState(branches[0]);
   const [liveSearchText, setLiveSearchText] = useState("");
+  const [returnedSearchText, setReturnedSearchText] = useState("");
+  const [toolSearchTexts, setToolSearchTexts] = useState<Record<number, string>>(
+    {},
+  );
+  const [openToolSearchRow, setOpenToolSearchRow] = useState<number | null>(
+    null,
+  );
 
   const [newCustomer, setNewCustomer] = useState<any>({ ...emptyNewCustomer });
   const [showAddCustomer, setShowAddCustomer] = useState(false);
@@ -432,15 +441,34 @@ export default function RentalsPage() {
     ).values(),
   );
 
+  function isLiveRentalRecord(rental: any) {
+    if (rental?.is_transport_charge) return false;
+    if (rental?.end_date || rental?.return_date || rental?.closed_date) {
+      return false;
+    }
+
+    const status = String(rental?.status || "Active")
+      .trim()
+      .toLowerCase();
+
+    return !["returned", "closed", "completed", "cancelled"].includes(
+      status,
+    );
+  }
+
   function availableQtyForTool(tool: any) {
     const totalQty = Math.max(Number(tool?.total_qty || 1), 1);
     const activeQty = rentals
       .filter(
         (rental: any) =>
-          rental.status === "Active" &&
+          isLiveRentalRecord(rental) &&
           Number(rental.tool_id) === Number(tool?.id),
       )
-      .reduce((sum: number, rental: any) => sum + Number(rental.qty || 1), 0);
+      .reduce(
+        (sum: number, rental: any) =>
+          sum + Math.max(Number(rental.qty || 1), 1),
+        0,
+      );
 
     return Math.max(totalQty - activeQty, 0);
   }
@@ -482,6 +510,12 @@ export default function RentalsPage() {
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    if (selectedBranch) {
+      setLiveBranchFilter(selectedBranch);
+    }
+  }, [selectedBranch]);
 
   useEffect(() => {
     try {
@@ -555,8 +589,10 @@ export default function RentalsPage() {
     setRows(
       draftPrompt.rows?.length
         ? draftPrompt.rows
-        : Array.from({ length: 20 }, () => ({ ...emptyRental })),
+        : Array.from({ length: 10 }, () => ({ ...emptyRental })),
     );
+    setToolSearchTexts({});
+    setOpenToolSearchRow(null);
     setTransportRows(
       draftPrompt.transportRows?.length
         ? draftPrompt.transportRows
@@ -773,20 +809,61 @@ export default function RentalsPage() {
     setAddCustomerRowIndex(null);
   }
 
-  function handleToolChange(index: number, toolId: string) {
-    const selectedTool = tools.find((t) => String(t.id) === String(toolId));
+  function handleToolChange(index: number, toolId: string): boolean {
+    const selectedTool = tools.find(
+      (tool) => String(tool.id) === String(toolId),
+    );
 
     if (selectedTool && selectedBranch) {
+      const toolName = selectedTool.tool_name || "Selected item";
       const currentLocation = String(
-        selectedTool.current_location || selectedTool.home_branch || "",
+        selectedTool.current_location ||
+          selectedTool.home_branch ||
+          "",
       ).trim();
+      const totalQty = Math.max(
+        Number(selectedTool.total_qty || 1),
+        1,
+      );
+      const isIndividualTool = totalQty === 1;
+
+      const alreadyLive = rentals.some(
+        (rental: any) =>
+          isLiveRentalRecord(rental) &&
+          Number(rental.tool_id) === Number(selectedTool.id),
+      );
+
+      const alreadySelectedInEntry = rows.some(
+        (entry: any, rowIndex: number) =>
+          rowIndex !== index &&
+          !entry.is_outside_rent &&
+          Number(entry.tool_id) === Number(selectedTool.id),
+      );
+
+      if (isIndividualTool && alreadyLive) {
+        showWarning(
+          `${toolName} is already on a live rental. The same individual tool cannot be rented twice at the same time.`,
+        );
+        return false;
+      }
+
+      if (isIndividualTool && alreadySelectedInEntry) {
+        showWarning(
+          `${toolName} is already selected in another entry row. An individual tool can be entered only once.`,
+        );
+        return false;
+      }
+
       const availableQty = availableQtyForTool(selectedTool);
 
-      if (currentLocation !== selectedBranch || availableQty <= 0) {
+      if (
+        currentLocation !== selectedBranch ||
+        availableQty <= 0
+      ) {
         showWarning(
-          `${selectedTool.tool_name || "Selected item"} is not available at ${selectedBranch}. Move it to ${selectedBranch} first.`,
+          `${toolName} is not available at ${selectedBranch}. Move it to ${selectedBranch} first.`,
         );
-        return;
+        return false;
       }
     }
 
@@ -799,9 +876,14 @@ export default function RentalsPage() {
       outside_item_name: "",
       outside_shop_name: "",
       daily_rate: selectedTool?.daily_rent || 0,
+      qty:
+        Math.max(Number(selectedTool?.total_qty || 1), 1) === 1
+          ? 1
+          : updated[index].qty,
     };
 
     setRows(updated);
+    return true;
   }
 
   function setOutsideRentMode(index: number, enabled: boolean) {
@@ -818,6 +900,16 @@ export default function RentalsPage() {
     };
 
     setRows(updated);
+
+    setToolSearchTexts((previous) => {
+      const next = { ...previous };
+      delete next[index];
+      return next;
+    });
+
+    if (openToolSearchRow === index) {
+      setOpenToolSearchRow(null);
+    }
   }
 
   function customerName(id: number) {
@@ -828,6 +920,74 @@ export default function RentalsPage() {
   function toolName(id: number) {
     const t = tools.find((x) => Number(x.id) === Number(id));
     return t ? t.tool_name : "";
+  }
+
+  function currentToolSearchText(index: number, row: any) {
+    if (Object.prototype.hasOwnProperty.call(toolSearchTexts, index)) {
+      return toolSearchTexts[index] || "";
+    }
+
+    return row?.tool_id ? toolName(row.tool_id) : "";
+  }
+
+  function matchingToolsForSearch(searchText: string) {
+    const query = String(searchText || "").trim().toLowerCase();
+
+    if (!query) {
+      return rentableTools.slice(0, 30);
+    }
+
+    return rentableTools.filter((tool: any) =>
+      String(tool.tool_name || "").toLowerCase().includes(query),
+    );
+  }
+
+  function handleToolSearchInput(index: number, value: string) {
+    setToolSearchTexts((previous) => ({
+      ...previous,
+      [index]: value,
+    }));
+    setOpenToolSearchRow(index);
+
+    const selectedTool = tools.find(
+      (tool: any) => String(tool.id) === String(rows[index]?.tool_id || ""),
+    );
+    const selectedName = String(selectedTool?.tool_name || "");
+
+    if (
+      rows[index]?.tool_id &&
+      value.trim().toLowerCase() !== selectedName.trim().toLowerCase()
+    ) {
+      setRows((previous) =>
+        previous.map((row, rowIndex) =>
+          rowIndex === index
+            ? {
+                ...row,
+                tool_id: "",
+                daily_rate: 0,
+              }
+            : row,
+        ),
+      );
+    }
+  }
+
+  function selectToolFromSearch(index: number, tool: any) {
+    const accepted = handleToolChange(index, String(tool.id));
+
+    if (!accepted) return;
+
+    setToolSearchTexts((previous) => ({
+      ...previous,
+      [index]: String(tool.tool_name || ""),
+    }));
+    setOpenToolSearchRow(null);
+  }
+
+  function clearRentalEntryRows() {
+    setRows(Array.from({ length: 10 }, () => ({ ...emptyRental })));
+    setToolSearchTexts({});
+    setOpenToolSearchRow(null);
   }
 
   function rentalCustomerDetails(row: any) {
@@ -1084,7 +1244,7 @@ export default function RentalsPage() {
       return;
     }
     clearRentalDraft(false);
-    setRows(Array.from({ length: 20 }, () => ({ ...emptyRental })));
+    clearRentalEntryRows();
     setTransportRows([emptyTransport(), emptyTransport()]);
     await loadData();
   }
@@ -1283,22 +1443,43 @@ export default function RentalsPage() {
   }
 
 
-  const activeRentals = rentals.filter((r) => r.status === "Active");
+  const activeRentals = rentals.filter((r) =>
+    isLiveRentalRecord(r),
+  );
   const returnedRentals = rentals
-    .filter((r) => r.status === "Returned")
-    .filter((r) => liveBranchFilter === "All Shops" || r.shop === liveBranchFilter)
+    .filter((r) => !isLiveRentalRecord(r))
+    .filter((r) => r.shop === liveBranchFilter)
     .filter((r) => {
-      const q = liveSearchText.trim().toLowerCase();
+      const q = returnedSearchText.trim().toLowerCase();
       if (!q) return true;
-      return `${customerName(r.customer_id)} ${rentalToolDetails(r)} ${r.shop || ""}`
+
+      return `${customerName(r.customer_id)} ${r.mobile || r.customer_mobile || ""} ${rentalToolDetails(r)} ${r.shop || ""} ${r.start_date || ""} ${r.end_date || r.return_date || ""}`
         .toLowerCase()
         .includes(q);
     })
-    .slice(0, 100);
+    .sort((a: any, b: any) => {
+      const aDate = String(
+        a.end_date ||
+          a.return_date ||
+          a.closed_date ||
+          a.updated_at ||
+          a.created_at ||
+          "",
+      );
+      const bDate = String(
+        b.end_date ||
+          b.return_date ||
+          b.closed_date ||
+          b.updated_at ||
+          b.created_at ||
+          "",
+      );
+
+      return bDate.localeCompare(aDate);
+    })
+    .slice(0, 5);
   const filteredActiveRentals = activeRentals
-    .filter(
-      (r) => liveBranchFilter === "All Shops" || r.shop === liveBranchFilter,
-    )
+    .filter((r) => r.shop === liveBranchFilter)
     .filter((r) => {
       const q = liveSearchText.trim().toLowerCase();
       if (!q) return true;
@@ -2667,23 +2848,126 @@ export default function RentalsPage() {
                         gap: 5,
                       }}
                     >
-                      <select
-                        style={compactSelectStyle}
-                        value={row.tool_id}
-                        onChange={(e) => handleToolChange(index, e.target.value)}
-                        disabled={!selectedBranch}
-                      >
-                        <option value="">
-                          {selectedBranch
-                            ? "Select Tool"
-                            : "Select rental shop first"}
-                        </option>
-                        {rentableTools.map((t: any) => (
-                          <option key={t.id} value={t.id}>
-                            {t.tool_name} - Avl {availableQtyForTool(t)} - ₹{t.daily_rent}/day
-                          </option>
-                        ))}
-                      </select>
+                      <div style={{ minWidth: 0 }}>
+                        <input
+                          type="search"
+                          value={currentToolSearchText(index, row)}
+                          onChange={(event) =>
+                            handleToolSearchInput(index, event.target.value)
+                          }
+                          onFocus={() => setOpenToolSearchRow(index)}
+                          onBlur={() =>
+                            window.setTimeout(() => {
+                              setOpenToolSearchRow((current) =>
+                                current === index ? null : current,
+                              );
+                            }, 150)
+                          }
+                          disabled={!selectedBranch}
+                          placeholder={
+                            selectedBranch
+                              ? "Type any part of tool name"
+                              : "Select rental shop first"
+                          }
+                          autoComplete="off"
+                          style={{
+                            ...compactInputStyle,
+                            minHeight: 38,
+                            border:
+                              openToolSearchRow === index
+                                ? "2px solid #0057ff"
+                                : "1px solid #cbd5e1",
+                            background: selectedBranch
+                              ? "#ffffff"
+                              : "#f1f5f9",
+                          }}
+                        />
+
+                        {selectedBranch && openToolSearchRow === index && (
+                          <div
+                            style={{
+                              marginTop: 4,
+                              maxHeight: 230,
+                              overflowY: "auto",
+                              border: "1px solid #9db7dc",
+                              borderRadius: 9,
+                              background: "#ffffff",
+                              boxShadow:
+                                "0 12px 28px rgba(15, 42, 95, 0.18)",
+                            }}
+                          >
+                            {matchingToolsForSearch(
+                              currentToolSearchText(index, row),
+                            ).map((t: any) => (
+                              <button
+                                key={t.id}
+                                type="button"
+                                onMouseDown={(event) =>
+                                  event.preventDefault()
+                                }
+                                onClick={() =>
+                                  selectToolFromSearch(index, t)
+                                }
+                                style={{
+                                  width: "100%",
+                                  display: "grid",
+                                  gridTemplateColumns:
+                                    "minmax(0, 1fr) auto",
+                                  gap: 8,
+                                  alignItems: "center",
+                                  padding: "9px 10px",
+                                  border: 0,
+                                  borderBottom:
+                                    "1px solid #e2e8f0",
+                                  background: "#ffffff",
+                                  color: "#10234c",
+                                  textAlign: "left",
+                                  cursor: "pointer",
+                                  fontSize: 14,
+                                  fontWeight: 900,
+                                }}
+                              >
+                                <span
+                                  style={{
+                                    minWidth: 0,
+                                    overflowWrap: "anywhere",
+                                  }}
+                                >
+                                  {t.tool_name}
+                                </span>
+
+                                <small
+                                  style={{
+                                    color: "#52647f",
+                                    fontWeight: 850,
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  Avl {availableQtyForTool(t)} · ₹
+                                  {Number(t.daily_rent || 0).toFixed(0)}
+                                </small>
+                              </button>
+                            ))}
+
+                            {matchingToolsForSearch(
+                              currentToolSearchText(index, row),
+                            ).length === 0 && (
+                              <div
+                                style={{
+                                  padding: "12px",
+                                  color: "#b42318",
+                                  fontSize: 14,
+                                  fontWeight: 900,
+                                  textAlign: "center",
+                                }}
+                              >
+                                No available tool contains “
+                                {currentToolSearchText(index, row)}”
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
 
                       <button
                         type="button"
@@ -2890,15 +3174,13 @@ export default function RentalsPage() {
                 ])
               }
             >
-              + Add 5 Rows
+              + Add More Rows
             </button>
 
             <button
               className="btn-gray"
               style={{ marginLeft: 8 }}
-              onClick={() =>
-                setRows(Array.from({ length: 20 }, () => ({ ...emptyRental })))
-              }
+              onClick={clearRentalEntryRows}
             >
               Clear Table
             </button>
@@ -2934,7 +3216,7 @@ export default function RentalsPage() {
             flexWrap: "wrap",
           }}
         >
-          <h2 style={{ margin: 0 }}>Live Rentals</h2>
+          <h2 style={{ margin: 0 }}>Live Rentals — {liveBranchFilter}</h2>
 
           <input
             value={liveSearchText}
@@ -2945,11 +3227,10 @@ export default function RentalsPage() {
         </div>
 
         <div style={shopTabsStyle}>
-          {["All Shops", ...branches].map((shop) => {
-            const count =
-              shop === "All Shops"
-                ? activeRentals.length
-                : activeRentals.filter((r) => r.shop === shop).length;
+          {branches.map((shop) => {
+            const count = activeRentals.filter(
+              (r) => r.shop === shop,
+            ).length;
 
             return (
               <button
@@ -3093,16 +3374,235 @@ export default function RentalsPage() {
       </div>
 
       <div className="panel">
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, marginBottom:12 }}>
-          <div><h2 style={{ margin:0 }}>Returned Rentals</h2><p style={{ margin:"4px 0 0", color:"#64748b", fontWeight:800 }}>Latest 100 returned entries. Every edit requires an explanation.</p></div>
-          <strong>{returnedRentals.length} shown</strong>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "flex-end",
+            flexWrap: "wrap",
+            gap: 14,
+            marginBottom: 14,
+          }}
+        >
+          <div>
+            <h2 style={{ margin: 0 }}>Returned Rentals</h2>
+            <p
+              style={{
+                margin: "4px 0 0",
+                color: "#64748b",
+                fontWeight: 800,
+              }}
+            >
+              Latest 5 returned entries for the selected shop. Every edit
+              requires an explanation.
+            </p>
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-end",
+              flexWrap: "wrap",
+              gap: 10,
+              width: "min(660px, 100%)",
+            }}
+          >
+            <label
+              style={{
+                display: "grid",
+                gap: 5,
+                flex: "1 1 430px",
+                color: "#475569",
+                fontSize: 13,
+                fontWeight: 950,
+                textTransform: "uppercase",
+              }}
+            >
+              Search Returned Rentals
+              <input
+                type="search"
+                value={returnedSearchText}
+                onChange={(event) =>
+                  setReturnedSearchText(event.target.value)
+                }
+                placeholder="Search customer, mobile, item, shop or date..."
+                style={{
+                  width: "100%",
+                  minHeight: 46,
+                  padding: "10px 13px",
+                  border: "1px solid #a9bdd8",
+                  borderRadius: 12,
+                  background: "#ffffff",
+                  color: "#0f172a",
+                  fontSize: 16,
+                  fontWeight: 850,
+                  outline: "none",
+                }}
+              />
+            </label>
+
+            {returnedSearchText && (
+              <button
+                type="button"
+                className="btn-gray"
+                onClick={() => setReturnedSearchText("")}
+                style={{ minHeight: 46 }}
+              >
+                Clear
+              </button>
+            )}
+
+            <strong
+              style={{
+                minHeight: 46,
+                display: "inline-flex",
+                alignItems: "center",
+                padding: "0 14px",
+                border: "1px solid #bfdbfe",
+                borderRadius: 12,
+                background: "#eff6ff",
+                color: "#0f2a5f",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {returnedRentals.length} shown
+            </strong>
+          </div>
         </div>
-        <div style={{ overflowX:"auto" }}>
-          <table style={compactTableStyle}>
-            <thead><tr><th style={compactHeaderStyle}>Customer</th><th style={compactHeaderStyle}>Item</th><th style={compactHeaderStyle}>Qty</th><th style={compactHeaderStyle}>Rate</th><th style={compactHeaderStyle}>Start</th><th style={compactHeaderStyle}>Return</th><th style={compactHeaderStyle}>Amount</th><th style={compactHeaderStyle}>Shop</th><th style={compactHeaderStyle}>Action</th></tr></thead>
+
+        <div style={{ width: "100%", overflowX: "hidden" }}>
+          <table style={{ ...compactTableStyle, tableLayout: "fixed" }}>
+            <colgroup>
+              <col style={{ width: "22%" }} />
+              <col style={{ width: "24%" }} />
+              <col style={{ width: "5%" }} />
+              <col style={{ width: "7%" }} />
+              <col style={{ width: "9%" }} />
+              <col style={{ width: "9%" }} />
+              <col style={{ width: "8%" }} />
+              <col style={{ width: "8%" }} />
+              <col style={{ width: "8%" }} />
+            </colgroup>
+
+            <thead>
+              <tr>
+                <th style={{ ...compactHeaderStyle, textAlign: "left" }}>
+                  Customer
+                </th>
+                <th style={{ ...compactHeaderStyle, textAlign: "left" }}>
+                  Item
+                </th>
+                <th style={compactHeaderStyle}>Qty</th>
+                <th style={compactHeaderStyle}>Rate</th>
+                <th style={compactHeaderStyle}>Start</th>
+                <th style={compactHeaderStyle}>Return</th>
+                <th style={compactHeaderStyle}>Amount</th>
+                <th style={compactHeaderStyle}>Shop</th>
+                <th style={compactHeaderStyle}>Action</th>
+              </tr>
+            </thead>
+
             <tbody>
-              {returnedRentals.map((r:any)=><tr key={`returned-${r.id}`}><td style={compactCellStyle}>{customerName(r.customer_id)}</td><td style={compactCellStyle}>{rentalToolDetails(r)}</td><td style={compactCenterCellStyle}>{r.qty || 1}</td><td style={compactCenterCellStyle}>₹{Number(r.daily_rate || 0).toFixed(0)}</td><td style={compactCenterCellStyle}>{r.start_date || "-"}</td><td style={compactCenterCellStyle}>{r.end_date || "-"}</td><td style={compactCenterCellStyle}>₹{Number(r.total_amount || calcTotal(r)).toFixed(0)}</td><td style={compactCenterCellStyle}>{r.shop || "-"}</td><td style={compactCenterCellStyle}><button className="btn-blue" onClick={()=>openEditRental(r)}>Edit</button></td></tr>)}
-              {returnedRentals.length === 0 && <tr><td colSpan={9} style={compactCenterCellStyle}>No returned rentals found</td></tr>}
+              {returnedRentals.map((r: any) => (
+                <tr key={`returned-${r.id}`}>
+                  <td
+                    style={{
+                      ...compactCellStyle,
+                      fontSize: 16,
+                      fontWeight: 950,
+                      whiteSpace: "normal",
+                      overflowWrap: "anywhere",
+                    }}
+                  >
+                    {customerName(r.customer_id)}
+                  </td>
+                  <td
+                    style={{
+                      ...compactCellStyle,
+                      fontSize: 16,
+                      fontWeight: 900,
+                      whiteSpace: "normal",
+                      overflowWrap: "anywhere",
+                    }}
+                  >
+                    {rentalToolDetails(r)}
+                  </td>
+                  <td style={compactCenterCellStyle}>{r.qty || 1}</td>
+                  <td style={compactCenterCellStyle}>
+                    ₹{Number(r.daily_rate || 0).toFixed(0)}
+                  </td>
+                  <td
+                    style={{
+                      ...compactCenterCellStyle,
+                      paddingLeft: 3,
+                      paddingRight: 3,
+                      fontSize: 13,
+                    }}
+                  >
+                    {r.start_date || "-"}
+                  </td>
+                  <td
+                    style={{
+                      ...compactCenterCellStyle,
+                      paddingLeft: 3,
+                      paddingRight: 3,
+                      fontSize: 13,
+                    }}
+                  >
+                    {r.end_date || r.return_date || "-"}
+                  </td>
+                  <td
+                    style={{
+                      ...compactCenterCellStyle,
+                      paddingLeft: 3,
+                      paddingRight: 3,
+                    }}
+                  >
+                    ₹{Number(r.total_amount || calcTotal(r)).toFixed(0)}
+                  </td>
+                  <td
+                    style={{
+                      ...compactCenterCellStyle,
+                      paddingLeft: 3,
+                      paddingRight: 3,
+                      fontSize: 13,
+                      whiteSpace: "normal",
+                      overflowWrap: "anywhere",
+                    }}
+                  >
+                    {r.shop || "-"}
+                  </td>
+                  <td
+                    style={{
+                      ...compactCenterCellStyle,
+                      paddingLeft: 3,
+                      paddingRight: 3,
+                    }}
+                  >
+                    <button
+                      className="btn-blue"
+                      onClick={() => openEditRental(r)}
+                      style={{
+                        padding: "7px 9px",
+                        minWidth: 0,
+                        fontSize: 13,
+                      }}
+                    >
+                      Edit
+                    </button>
+                  </td>
+                </tr>
+              ))}
+
+              {returnedRentals.length === 0 && (
+                <tr>
+                  <td colSpan={9} style={compactCenterCellStyle}>
+                    {returnedSearchText
+                      ? "No returned rentals match this search"
+                      : "No returned rentals found for the selected shop"}
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
