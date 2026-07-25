@@ -1775,13 +1775,59 @@ async function fallbackToolNameRows(
   };
 }
 
+const ALL_TOOLS_SEARCH_TOKEN = "__ALL_TOOLS__";
+const TOOL_SEARCH_PAGE_SIZE = 1000;
+
+async function fetchEveryToolRow(selectColumns = "*") {
+  const rows: any[] = [];
+  let from = 0;
+
+  while (true) {
+    const { data, error } = await supabase
+      .from("tools")
+      .select(selectColumns)
+      .order("tool_name")
+      .range(from, from + TOOL_SEARCH_PAGE_SIZE - 1);
+
+    if (error) return { data: [] as any[], error };
+
+    const page = data || [];
+    rows.push(...page);
+
+    if (page.length < TOOL_SEARCH_PAGE_SIZE) break;
+    from += TOOL_SEARCH_PAGE_SIZE;
+  }
+
+  return { data: rows, error: null as any };
+}
+
+async function fetchRowsForToolIds(table: "rentals" | "services", toolIds: number[]) {
+  const rows: any[] = [];
+  const chunkSize = 100;
+
+  for (let index = 0; index < toolIds.length; index += chunkSize) {
+    const chunk = toolIds.slice(index, index + chunkSize);
+    const { data, error } = await supabase
+      .from(table)
+      .select("*")
+      .in("tool_id", chunk);
+
+    if (error) return { data: [] as any[], error };
+    rows.push(...(data || []));
+  }
+
+  return { data: rows, error: null as any };
+}
+
 export async function searchToolsForToolsPage(
   search: string,
   exactToolName = false
 ) {
-  const term = cleanToolSearchText(search);
+  const rawSearch = String(search || "").trim();
+  const showAllTools = rawSearch === ALL_TOOLS_SEARCH_TOKEN;
+  const term = showAllTools ? "" : cleanToolSearchText(rawSearch);
 
-  if (!term) {
+  if (!showAllTools && !term) {
     return {
       success: true,
       message: "Enter a tool search",
@@ -1792,102 +1838,36 @@ export async function searchToolsForToolsPage(
     };
   }
 
-  let allMatches: any[] = [];
+  const toolsResult = await fetchEveryToolRow("*");
 
-  if (exactToolName) {
-    const exactResult = await supabase
-      .from("tools")
-      .select("*")
-      .ilike("tool_name", term)
-      .order("tool_name");
-
-    if (exactResult.error) {
-      return {
-        success: false,
-        message: exactResult.error.message,
-        data: [],
-        rentals: [],
-        services: [],
-        limited: false,
-      };
-    }
-
-    // A clicked suggestion contains the actual saved tool name.
-    // Never replace it with nearby/fuzzy matches: only that selected spelling
-    // (including duplicate stock rows with the same name) may be returned.
-    allMatches = exactResult.data || [];
-  } else {
-    const metadataTerm = cleanToolMetadataSearchTerm(term);
-
-    const nameRequest = supabase
-      .from("tools")
-      .select("*")
-      .ilike("tool_name", `%${term}%`)
-      .order("tool_name")
-      .limit(51);
-
-    const metadataRequest = metadataTerm
-      ? supabase
-          .from("tools")
-          .select("*")
-          .or(toolMetadataOrFilter(metadataTerm))
-          .order("tool_name")
-          .limit(51)
-      : Promise.resolve({ data: [], error: null } as any);
-
-    const fallbackRequest = fallbackToolNameRows(term, "*", 250);
-
-    const [nameResult, metadataResult, fallbackResult] = await Promise.all([
-      nameRequest,
-      metadataRequest,
-      fallbackRequest,
-    ]);
-
-    if (nameResult.error) {
-      return {
-        success: false,
-        message: nameResult.error.message,
-        data: [],
-        rentals: [],
-        services: [],
-        limited: false,
-      };
-    }
-
-    if (metadataResult.error) {
-      return {
-        success: false,
-        message: metadataResult.error.message,
-        data: [],
-        rentals: [],
-        services: [],
-        limited: false,
-      };
-    }
-
-    if (fallbackResult.error) {
-      return {
-        success: false,
-        message: fallbackResult.error.message,
-        data: [],
-        rentals: [],
-        services: [],
-        limited: false,
-      };
-    }
-
-    allMatches = rankToolRows(
-      mergeToolRows(
-        nameResult.data || [],
-        metadataResult.data || [],
-        fallbackResult.data || []
-      ),
-      term
-    );
+  if (toolsResult.error) {
+    return {
+      success: false,
+      message: toolsResult.error.message,
+      data: [],
+      rentals: [],
+      services: [],
+      limited: false,
+    };
   }
 
-  const limited = !exactToolName && allMatches.length > 50;
-  const tools = exactToolName ? allMatches : allMatches.slice(0, 50);
+  const allRows = toolsResult.data || [];
+  let tools: any[] = [];
+
+  if (showAllTools) {
+    tools = allRows;
+  } else if (exactToolName) {
+    const normalizedTerm = normalizeToolComparable(term);
+    tools = allRows.filter(
+      (row: any) => normalizeToolComparable(row?.tool_name) === normalizedTerm
+    );
+  } else {
+    // Search every saved tool row locally after loading the complete tools table.
+    // This prevents broad searches such as "pressure washer" from being reduced
+    // to one clicked suggestion or an arbitrary first-50 server result.
+    tools = rankToolRows(allRows, term);
+  }
+
   const toolIds = tools
     .map((tool: any) => Number(tool.id))
     .filter((id: number) => Number.isFinite(id) && id > 0);
@@ -1899,36 +1879,36 @@ export async function searchToolsForToolsPage(
       data: [],
       rentals: [],
       services: [],
-      limited,
+      limited: false,
     };
   }
 
   const [rentalsRes, servicesRes] = await Promise.all([
-    supabase.from("rentals").select("*").in("tool_id", toolIds),
-    supabase.from("services").select("*").in("tool_id", toolIds),
+    fetchRowsForToolIds("rentals", toolIds),
+    fetchRowsForToolIds("services", toolIds),
   ]);
 
   return {
     success: true,
-    message: limited
-      ? "Showing the first 50 matching tool rows"
+    message: showAllTools
+      ? "All tools loaded"
       : exactToolName
       ? "Matching entries loaded"
-      : "Matching tools loaded",
+      : "All matching tools loaded",
     data: tools,
     rentals: rentalsRes.error ? [] : rentalsRes.data || [],
     services: servicesRes.error ? [] : servicesRes.data || [],
-    limited,
+    limited: false,
   };
 }
 
 export async function suggestToolsForToolsPage(search: string) {
   const term = cleanToolSearchText(search);
 
-  if (term.length < 2) {
+  if (term.length < 1) {
     return {
       success: true,
-      message: "Type at least two letters",
+      message: "Type at least one letter",
       data: [],
       limited: false,
     };
@@ -1936,51 +1916,18 @@ export async function suggestToolsForToolsPage(search: string) {
 
   const selectColumns =
     "id,tool_name,total_qty,category,brand,home_branch,current_location,status";
+  const allRowsResult = await fetchEveryToolRow(selectColumns);
 
-  const directRequest = supabase
-    .from("tools")
-    .select(selectColumns)
-    .ilike("tool_name", `%${term}%`)
-    .order("tool_name")
-    .limit(100);
-
-  const fallbackRequest = fallbackToolNameRows(
-    term,
-    selectColumns,
-    250
-  );
-
-  const [directResult, fallbackResult] = await Promise.all([
-    directRequest,
-    fallbackRequest,
-  ]);
-
-  if (directResult.error) {
+  if (allRowsResult.error) {
     return {
       success: false,
-      message: directResult.error.message,
+      message: allRowsResult.error.message,
       data: [],
       limited: false,
     };
   }
 
-  if (fallbackResult.error) {
-    return {
-      success: false,
-      message: fallbackResult.error.message,
-      data: [],
-      limited: false,
-    };
-  }
-
-  const rankedRows = rankToolRows(
-    mergeToolRows(
-      directResult.data || [],
-      fallbackResult.data || []
-    ),
-    term
-  );
-
+  const rankedRows = rankToolRows(allRowsResult.data || [], term);
   const groups = new Map<string, any>();
 
   for (const row of rankedRows) {
@@ -1988,36 +1935,29 @@ export async function suggestToolsForToolsPage(search: string) {
     if (!toolName) continue;
 
     const key = toolName.toLowerCase();
-    const current =
-      groups.get(key) || {
-        tool_name: toolName,
-        qty: 0,
-        row_count: 0,
-        category: "",
-        brands: new Set<string>(),
-        locations: new Set<string>(),
-        statuses: new Set<string>(),
-        score: toolSearchScore(row, term),
-      };
+    const current = groups.get(key) || {
+      tool_name: toolName,
+      qty: 0,
+      row_count: 0,
+      category: "",
+      brands: new Set<string>(),
+      locations: new Set<string>(),
+      statuses: new Set<string>(),
+      score: toolSearchScore(row, term),
+    };
 
     current.qty += Math.max(Number(row.total_qty || 1), 1);
     current.row_count += 1;
     current.category ||= String(row.category || "").trim();
-    current.score = Math.max(
-      Number(current.score || 0),
-      toolSearchScore(row, term)
-    );
+    current.score = Math.max(Number(current.score || 0), toolSearchScore(row, term));
 
     const brand = String(row.brand || "").trim();
-    const location = String(
-      row.current_location || row.home_branch || ""
-    ).trim();
+    const location = String(row.current_location || row.home_branch || "").trim();
     const status = String(row.status || "").trim();
 
     if (brand) current.brands.add(brand);
     if (location) current.locations.add(location);
     if (status) current.statuses.add(status);
-
     groups.set(key, current);
   }
 
@@ -2027,25 +1967,21 @@ export async function suggestToolsForToolsPage(search: string) {
       qty: row.qty,
       row_count: row.row_count,
       category: row.category,
-      brands: Array.from(row.brands).slice(0, 3),
-      locations: Array.from(row.locations).slice(0, 4),
-      statuses: Array.from(row.statuses).slice(0, 3),
+      brands: Array.from(row.brands),
+      locations: Array.from(row.locations),
+      statuses: Array.from(row.statuses),
       score: Number(row.score || 0),
     }))
     .sort((a: any, b: any) => {
       if (a.score !== b.score) return b.score - a.score;
-      return String(a.tool_name || "").localeCompare(
-        String(b.tool_name || "")
-      );
+      return String(a.tool_name || "").localeCompare(String(b.tool_name || ""));
     });
 
   return {
     success: true,
-    message: suggestions.length
-      ? "Live matching tool names loaded"
-      : "No matching tool names",
-    data: suggestions.slice(0, 20),
-    limited: suggestions.length > 20 || rankedRows.length >= 100,
+    message: suggestions.length ? "All matching tool names loaded" : "No matching tool names",
+    data: suggestions,
+    limited: false,
   };
 }
 
@@ -2061,54 +1997,24 @@ export async function searchToolsForHistory(search: string) {
     };
   }
 
-  const directRequest = supabase
-    .from("tools")
-    .select("*")
-    .ilike("tool_name", `%${term}%`)
-    .order("tool_name")
-    .limit(51);
+  const allRowsResult = await fetchEveryToolRow("*");
 
-  const fallbackRequest = fallbackToolNameRows(term, "*", 250);
-
-  const [directResult, fallbackResult] = await Promise.all([
-    directRequest,
-    fallbackRequest,
-  ]);
-
-  if (directResult.error) {
+  if (allRowsResult.error) {
     return {
       success: false,
-      message: directResult.error.message,
+      message: allRowsResult.error.message,
       data: [],
       limited: false,
     };
   }
 
-  if (fallbackResult.error) {
-    return {
-      success: false,
-      message: fallbackResult.error.message,
-      data: [],
-      limited: false,
-    };
-  }
-
-  const matches = rankToolRows(
-    mergeToolRows(
-      directResult.data || [],
-      fallbackResult.data || []
-    ),
-    term
-  );
+  const matches = rankToolRows(allRowsResult.data || [], term);
 
   return {
     success: true,
-    message:
-      matches.length > 50
-        ? "Showing the first 50 matching tools"
-        : "Matching tools loaded",
-    data: matches.slice(0, 50),
-    limited: matches.length > 50,
+    message: "All matching tools loaded",
+    data: matches,
+    limited: false,
   };
 }
 
@@ -2411,21 +2317,6 @@ function isToolUnavailableStatus(value: any) {
   return ["service", "in service", "missing", "inactive", "damaged"].includes(status);
 }
 
-function isActiveStockRental(row: any) {
-  if (row?.is_transport_charge) return false;
-  if (row?.end_date || row?.return_date || row?.closed_date) {
-    return false;
-  }
-
-  const status = String(row?.status || "Active")
-    .trim()
-    .toLowerCase();
-
-  return !["returned", "closed", "completed", "cancelled"].includes(
-    status,
-  );
-}
-
 async function validateRentalStock(rows: any[], excludeRentalId?: number) {
   const internalRows = rows.filter(
     (row) => row.customer_id && hasRentalItem(row) && row.start_date && !isOutsideRental(row),
@@ -2439,23 +2330,11 @@ async function validateRentalStock(rows: any[], excludeRentalId?: number) {
     new Set(internalRows.map((row) => Number(row.tool_id)).filter(Boolean)),
   );
 
-  const [
-    { data: tools, error: toolsError },
-    { data: rentalRows, error: rentalsError },
-  ] = await Promise.all([
-    supabase.from("tools").select("*").in("id", toolIds),
-    supabase
-      .from("rentals")
-      .select(
-        "id, tool_id, qty, shop, status, end_date, is_transport_charge",
-      )
-      .is("end_date", null)
-      .in("tool_id", toolIds),
-  ]);
-
-  const activeRentals = (rentalRows || []).filter(
-    isActiveStockRental,
-  );
+  const [{ data: tools, error: toolsError }, { data: activeRentals, error: rentalsError }] =
+    await Promise.all([
+      supabase.from("tools").select("*").in("id", toolIds),
+      supabase.from("rentals").select("id, tool_id, qty, shop, status").eq("status", "Active").in("tool_id", toolIds),
+    ]);
 
   if (toolsError) return { success: false, message: toolsError.message };
   if (rentalsError) return { success: false, message: rentalsError.message };
@@ -2493,49 +2372,13 @@ async function validateRentalStock(rows: any[], excludeRentalId?: number) {
     }
 
     const totalQty = Math.max(Number(tool.total_qty || 1), 1);
-    const matchingActiveRentals = activeRentals
-      .filter(
-        (rental: any) =>
-          Number(rental.id) !== Number(excludeRentalId || 0),
-      )
-      .filter(
-        (rental: any) => Number(rental.tool_id) === toolId,
-      );
-    const alreadyRentedQty = matchingActiveRentals.reduce(
-      (sum: number, rental: any) =>
-        sum + Math.max(Number(rental.qty || 1), 1),
-      0,
-    );
+    const alreadyRentedQty = (activeRentals || [])
+      .filter((rental: any) => Number(rental.id) !== Number(excludeRentalId || 0))
+      .filter((rental: any) => Number(rental.tool_id) === toolId)
+      .reduce((sum: number, rental: any) => sum + Number(rental.qty || 1), 0);
     const previousRequested = requestedByTool.get(toolId) || 0;
     const requestedQty = Math.max(Number(row.qty || 1), 1);
-
-    if (totalQty === 1) {
-      if (requestedQty !== 1) {
-        return {
-          success: false,
-          message: `${toolName} is an individual tool. Its rental quantity must be 1.`,
-        };
-      }
-
-      if (alreadyRentedQty > 0) {
-        return {
-          success: false,
-          message: `${toolName} is already on a live rental. The same individual tool cannot be rented twice at the same time.`,
-        };
-      }
-
-      if (previousRequested > 0) {
-        return {
-          success: false,
-          message: `${toolName} is entered more than once in the current rental entry. An individual tool can be saved only once.`,
-        };
-      }
-    }
-
-    const availableQty = Math.max(
-      totalQty - alreadyRentedQty - previousRequested,
-      0,
-    );
+    const availableQty = Math.max(totalQty - alreadyRentedQty - previousRequested, 0);
 
     if (requestedQty > availableQty) {
       return {
@@ -2544,10 +2387,7 @@ async function validateRentalStock(rows: any[], excludeRentalId?: number) {
       };
     }
 
-    requestedByTool.set(
-      toolId,
-      previousRequested + requestedQty,
-    );
+    requestedByTool.set(toolId, previousRequested + requestedQty);
   }
 
   return { success: true };
@@ -2821,6 +2661,22 @@ export async function updateRentalWithAudit(payload: any) {
     };
   }
 
+  // Save the actual rental correction first. A missing or restricted
+  // rental_edit_history table must never block an important rental correction.
+  const { error: updateError } = await supabase
+    .from("rentals")
+    .update(updated)
+    .eq("id", rentalId);
+
+  if (updateError) {
+    return {
+      success: false,
+      message: `Could not update rental: ${updateError.message}`,
+    };
+  }
+
+  // Audit history is useful, but it is secondary to correcting the rental.
+  // Attempt it after the rental update and report a warning if it fails.
   const { error: auditError } = await supabase.from("rental_edit_history").insert({
     rental_id: rentalId,
     previous_values: existing,
@@ -2830,28 +2686,31 @@ export async function updateRentalWithAudit(payload: any) {
     edited_by: editedBy,
   });
 
-  if (auditError) {
-    return { success: false, message: `Could not save edit history: ${auditError.message}` };
-  }
-
-  const { error: updateError } = await supabase
-    .from("rentals")
-    .update(updated)
-    .eq("id", rentalId);
-
-  if (updateError) return { success: false, message: updateError.message };
-
   revalidatePath("/rentals");
   revalidatePath("/customers");
   revalidatePath("/payments");
   revalidatePath("/collections");
   revalidatePath("/");
 
+  if (auditError) {
+    console.error("Rental updated, but edit history could not be saved:", auditError.message);
+
+    return {
+      success: true,
+      warning: true,
+      message:
+        existing.status === "Returned"
+          ? "Returned rental updated successfully. Edit history could not be saved."
+          : "Rental updated successfully. Edit history could not be saved.",
+    };
+  }
+
   return {
     success: true,
-    message: existing.status === "Returned"
-      ? "Returned rental updated and explanation saved"
-      : "Rental updated and edit history saved",
+    message:
+      existing.status === "Returned"
+        ? "Returned rental updated and explanation saved"
+        : "Rental updated and edit history saved",
   };
 }
 
