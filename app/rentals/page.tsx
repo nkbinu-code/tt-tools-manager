@@ -430,16 +430,151 @@ export default function RentalsPage() {
     });
   }
 
+  // Keep every physical/database tool record. Deduplicating by tool name can hide
+  // tools that share the same name or quantity items stored across several shops.
   const uniqueTools = Array.from(
     new Map(
-      tools.map((tool: any) => [
-        String(tool.tool_name || "")
-          .trim()
-          .toLowerCase(),
+      tools.map((tool: any, index: number) => [
+        String(tool?.id ?? `tool-${index}`),
         tool,
       ]),
     ).values(),
   );
+
+  const branchCodes: Record<string, string[]> = {
+    Karuvannur: ["karuvannur", "kvr"],
+    Ollur: ["ollur", "olr"],
+    Kachery: ["kachery", "kch"],
+    "Mulayam Rd": ["mulayam rd", "mulayam", "mly"],
+    Pattikkad: ["pattikkad", "ptk"],
+  };
+
+  function normalizeBranch(value: any) {
+    const text = String(value || "").trim().toLowerCase();
+
+    for (const branch of branches) {
+      if ((branchCodes[branch] || []).includes(text)) return branch;
+    }
+
+    return String(value || "").trim();
+  }
+
+  function numericValue(value: any): number | null {
+    if (value === null || value === undefined || value === "") return null;
+    const numberValue = Number(value);
+    return Number.isFinite(numberValue) ? Math.max(numberValue, 0) : null;
+  }
+
+  function quantityFromObject(value: any, branch: string): number | null {
+    if (!value) return null;
+
+    let objectValue = value;
+    if (typeof value === "string") {
+      try {
+        objectValue = JSON.parse(value);
+      } catch {
+        return null;
+      }
+    }
+
+    if (!objectValue || typeof objectValue !== "object" || Array.isArray(objectValue)) {
+      return null;
+    }
+
+    const aliases = [branch, ...(branchCodes[branch] || [])];
+    for (const alias of aliases) {
+      const matchedKey = Object.keys(objectValue).find(
+        (key) => key.trim().toLowerCase() === alias.toLowerCase(),
+      );
+      if (matchedKey) {
+        const quantity = numericValue(objectValue[matchedKey]);
+        if (quantity !== null) return quantity;
+      }
+    }
+
+    return null;
+  }
+
+  function quantityFromPlacementText(value: any, branch: string): number | null {
+    const text = String(value || "").trim();
+    if (!text) return null;
+
+    const aliases = branchCodes[branch] || [];
+    for (const alias of aliases) {
+      const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const quantityMatch = text.match(
+        new RegExp(`(?:^|[^a-z0-9])${escaped}\\s*\\(\\s*(\\d+(?:\\.\\d+)?)\\s*\\)`, "i"),
+      );
+      if (quantityMatch) return Math.max(Number(quantityMatch[1] || 0), 0);
+    }
+
+    return null;
+  }
+
+  function toolStockAtBranch(tool: any, branch: string): number {
+    if (!tool || !branch) return 0;
+
+    const branchSlug = branch.toLowerCase().replace(/[^a-z0-9]+/g, "_");
+    const aliases = branchCodes[branch] || [];
+    const possibleFields = [
+      `${branchSlug}_qty`,
+      `qty_${branchSlug}`,
+      `${branchSlug}_quantity`,
+      `quantity_${branchSlug}`,
+      `${branchSlug}_stock`,
+      `stock_${branchSlug}`,
+      ...aliases.flatMap((alias) => {
+        const slug = alias.replace(/[^a-z0-9]+/g, "_");
+        return [
+          `${slug}_qty`,
+          `qty_${slug}`,
+          `${slug}_quantity`,
+          `quantity_${slug}`,
+          `${slug}_stock`,
+          `stock_${slug}`,
+        ];
+      }),
+    ];
+
+    for (const field of possibleFields) {
+      const quantity = numericValue(tool?.[field]);
+      if (quantity !== null) return quantity;
+    }
+
+    for (const field of [
+      "shop_quantities",
+      "branch_quantities",
+      "location_quantities",
+      "quantities_by_shop",
+      "stock_by_shop",
+      "shop_stock",
+      "placement",
+    ]) {
+      const quantity = quantityFromObject(tool?.[field], branch);
+      if (quantity !== null) return quantity;
+    }
+
+    for (const field of [
+      "current_location",
+      "home_branch",
+      "location",
+      "home_location",
+      "placement",
+    ]) {
+      const quantity = quantityFromPlacementText(tool?.[field], branch);
+      if (quantity !== null) return quantity;
+    }
+
+    const totalQty = Math.max(Number(tool?.total_qty || 1), 1);
+    const currentLocation = normalizeBranch(
+      tool?.current_location || tool?.home_branch || tool?.location || "",
+    );
+
+    // Individual tools and older records normally have one plain location.
+    if (currentLocation === branch) return totalQty;
+
+    return 0;
+  }
 
   function isLiveRentalRecord(rental: any) {
     if (rental?.is_transport_charge) return false;
@@ -456,13 +591,16 @@ export default function RentalsPage() {
     );
   }
 
-  function availableQtyForTool(tool: any) {
-    const totalQty = Math.max(Number(tool?.total_qty || 1), 1);
-    const activeQty = rentals
+  function availableQtyForTool(tool: any, branch = selectedBranch) {
+    if (!branch) return 0;
+
+    const shopStock = toolStockAtBranch(tool, branch);
+    const activeQtyAtShop = rentals
       .filter(
         (rental: any) =>
           isLiveRentalRecord(rental) &&
-          Number(rental.tool_id) === Number(tool?.id),
+          Number(rental.tool_id) === Number(tool?.id) &&
+          normalizeBranch(rental.shop) === branch,
       )
       .reduce(
         (sum: number, rental: any) =>
@@ -470,15 +608,12 @@ export default function RentalsPage() {
         0,
       );
 
-    return Math.max(totalQty - activeQty, 0);
+    return Math.max(shopStock - activeQtyAtShop, 0);
   }
 
   const rentableTools = uniqueTools.filter((tool: any) => {
     if (!selectedBranch) return false;
 
-    const currentLocation = String(
-      tool.current_location || tool.home_branch || "",
-    ).trim();
     const status = String(tool.status || "").trim().toLowerCase();
     const blockedStatus = [
       "service",
@@ -488,11 +623,7 @@ export default function RentalsPage() {
       "damaged",
     ].includes(status);
 
-    return (
-      currentLocation === selectedBranch &&
-      !blockedStatus &&
-      availableQtyForTool(tool) > 0
-    );
+    return !blockedStatus && availableQtyForTool(tool, selectedBranch) > 0;
   });
 
   async function loadData() {
@@ -816,11 +947,6 @@ export default function RentalsPage() {
 
     if (selectedTool && selectedBranch) {
       const toolName = selectedTool.tool_name || "Selected item";
-      const currentLocation = String(
-        selectedTool.current_location ||
-          selectedTool.home_branch ||
-          "",
-      ).trim();
       const totalQty = Math.max(
         Number(selectedTool.total_qty || 1),
         1,
@@ -854,12 +980,9 @@ export default function RentalsPage() {
         return false;
       }
 
-      const availableQty = availableQtyForTool(selectedTool);
+      const availableQty = availableQtyForTool(selectedTool, selectedBranch);
 
-      if (
-        currentLocation !== selectedBranch ||
-        availableQty <= 0
-      ) {
+      if (availableQty <= 0) {
         showWarning(
           `${toolName} is not available at ${selectedBranch}. Move it to ${selectedBranch} first.`,
         );
