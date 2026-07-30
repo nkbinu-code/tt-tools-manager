@@ -872,24 +872,40 @@ export default function RentalsPage() {
   }
 
   function removeRowFromCustomerGroup(index: number) {
-    setRows((current) =>
-      current.map((row, rowIndex) =>
-        rowIndex === index
-          ? { ...row, _customer_group_id: "" }
-          : row,
-      ),
-    );
-  }
+    setRows((current) => {
+      const groupId = String(current[index]?._customer_group_id || "");
+      if (!groupId) return current;
 
-  function clearCustomerGroup(groupId: string) {
-    if (!groupId) return;
-    setRows((current) =>
-      current.map((row) =>
-        row._customer_group_id === groupId
-          ? { ...row, _customer_group_id: "" }
+      const detached = current.map((row, rowIndex) =>
+        rowIndex === index
+          ? {
+              ...row,
+              customer_id: "",
+              mobile: "",
+              customer_name: "",
+              _customer_group_id: "",
+            }
           : row,
-      ),
-    );
+      );
+      const remainingGroupRows = detached.filter(
+        (row) => String(row._customer_group_id || "") === groupId,
+      );
+
+      // A single row is no longer a group, so remove its group highlight too.
+      if (remainingGroupRows.length <= 1) {
+        return detached.map((row) =>
+          String(row._customer_group_id || "") === groupId
+            ? { ...row, _customer_group_id: "" }
+            : row,
+        );
+      }
+
+      return detached;
+    });
+    setMobileSuggestions((current: any) => ({
+      ...current,
+      [index]: [],
+    }));
   }
 
   const customerGroupColors = useMemo(() => {
@@ -938,7 +954,7 @@ export default function RentalsPage() {
 
     setMobileSuggestions({
       ...mobileSuggestions,
-      [index]: matches.slice(0, 8),
+      [index]: matches.slice(0, 10),
     });
 
     const exact = customers.find((c) => String(c.mobile) === String(value));
@@ -2951,9 +2967,22 @@ export default function RentalsPage() {
               const isFirstGroupRow =
                 groupIndexes.length > 1 && groupIndexes[0] === index;
               const isGrouped = groupIndexes.length > 1;
+              const groupToneClass =
+                groupColor === "#b91c1c"
+                  ? "customer-group-red"
+                  : groupColor === "#0f2a5f"
+                    ? "customer-group-navy"
+                    : groupColor === "#dc2626"
+                      ? "customer-group-coral"
+                      : "customer-group-blue";
               return (
               <tr
                 key={index}
+                className={
+                  isGrouped
+                    ? `customer-group-row ${groupToneClass}`
+                    : undefined
+                }
                 onFocusCapture={() => setActiveEntryRow(index)}
                 style={{
                   background:
@@ -2963,21 +2992,7 @@ export default function RentalsPage() {
                       ? "#f8fafc"
                       : "#ffffff",
                   boxShadow: groupColor
-                    ? [
-                        `inset 5px 0 0 ${groupColor}`,
-                        isGrouped && groupIndexes[0] === index
-                          ? `inset 0 2px 0 ${groupColor}`
-                          : "",
-                        isGrouped &&
-                        groupIndexes[groupIndexes.length - 1] === index
-                          ? `inset 0 -2px 0 ${groupColor}`
-                          : "",
-                        activeEntryRow === index
-                          ? `inset 0 0 0 2px ${groupColor}`
-                          : "",
-                      ]
-                        .filter(Boolean)
-                        .join(", ")
+                    ? `inset 4px 0 0 ${groupColor}`
                     : activeEntryRow === index
                       ? "inset 0 0 0 2px #0057ff"
                       : undefined,
@@ -2994,54 +3009,31 @@ export default function RentalsPage() {
                 </td>
 
                 <td
-                  style={{
-                    ...compactCenterCellStyle,
-                    backgroundImage: isGrouped
-                      ? `linear-gradient(${groupColor}, ${groupColor})`
-                      : undefined,
-                    backgroundPosition: "50% 0",
-                    backgroundRepeat: "no-repeat",
-                    backgroundSize: "3px 100%",
-                  }}
+                  style={compactCenterCellStyle}
                 >
                   {isGrouped && (
-                    <div
+                    <button
+                      type="button"
+                      title="Remove this row from the copied customer group"
+                      onClick={() => removeRowFromCustomerGroup(index)}
                       style={{
-                        width: 28,
+                        width: 20,
                         height: 20,
+                        padding: 0,
                         margin: "0 auto 4px",
-                        position: "relative",
-                        borderLeft: `3px solid ${groupColor}`,
-                        borderBottom: `3px solid ${groupColor}`,
-                        borderBottomLeftRadius: 10,
+                        display: "block",
+                        border: `1px solid ${groupColor}`,
+                        borderRadius: "50%",
+                        background: "#ffffff",
+                        color: groupColor,
+                        fontSize: 14,
+                        fontWeight: 1000,
+                        lineHeight: "17px",
+                        cursor: "pointer",
                       }}
                     >
-                      <button
-                        type="button"
-                        title={
-                          "Make this line individual"
-                        }
-                        onClick={() => removeRowFromCustomerGroup(index)}
-                        style={{
-                          position: "absolute",
-                          right: -8,
-                          bottom: -9,
-                          width: 18,
-                          height: 18,
-                          padding: 0,
-                          border: "1px solid #ffffff",
-                          borderRadius: "50%",
-                          background: groupColor,
-                          color: "#ffffff",
-                          fontSize: 13,
-                          fontWeight: 1000,
-                          lineHeight: "16px",
-                          cursor: "pointer",
-                        }}
-                      >
-                        ×
-                      </button>
-                    </div>
+                      ×
+                    </button>
                   )}
                   <button
                     type="button"
@@ -3069,7 +3061,6 @@ export default function RentalsPage() {
                   <div
                     style={{
                       position: "relative",
-                      marginLeft: isGrouped && !isFirstGroupRow ? 12 : 0,
                     }}
                   >
                     <input
@@ -3082,9 +3073,7 @@ export default function RentalsPage() {
                         handleMobileChange(index, e.target.value)
                       }
                       placeholder={
-                        isGrouped && !isFirstGroupRow
-                          ? "Same customer"
-                          : "Mobile"
+                        "Mobile"
                       }
                       readOnly={isGrouped && !isFirstGroupRow}
                     />
@@ -3095,21 +3084,29 @@ export default function RentalsPage() {
                           position: "absolute",
                           top: "100%",
                           left: 0,
-                          right: 0,
+                          width: "min(360px, 75vw)",
                           background: "white",
-                          border: "1px solid #d1d5db",
-                          zIndex: 999,
-                          maxHeight: 220,
+                          border: "1px solid #93b4f8",
+                          borderRadius: 9,
+                          boxShadow: "0 12px 28px rgba(15, 42, 95, 0.2)",
+                          zIndex: 1200,
+                          maxHeight: 360,
                           overflowY: "auto",
+                          fontSize: 14.4,
+                          lineHeight: 1.15,
                         }}
                       >
                         {mobileSuggestions[index].map((c: any) => (
                           <div
                             key={c.id}
                             style={{
-                              padding: "8px",
+                              display: "grid",
+                              gridTemplateColumns: "92px minmax(0, 1fr)",
+                              gap: 7,
+                              alignItems: "center",
+                              padding: "6px 8px",
                               cursor: "pointer",
-                              borderBottom: "1px solid #eee",
+                              borderBottom: "1px solid #e3ecff",
                             }}
                             onClick={() => {
                               const updated = [...rows];
@@ -3133,9 +3130,19 @@ export default function RentalsPage() {
                               warnForSelectedCustomer(c);
                             }}
                           >
-                            <strong>{c.mobile}</strong>
-                            {" - "}
-                            {c.customer_name}
+                            <strong style={{ whiteSpace: "nowrap" }}>
+                              {c.mobile}
+                            </strong>
+                            <span
+                              style={{
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                              }}
+                              title={c.customer_name}
+                            >
+                              {c.customer_name}
+                            </span>
                           </div>
                         ))}
                       </div>
@@ -3144,70 +3151,20 @@ export default function RentalsPage() {
                 </td>
 
                 <td style={compactCellStyle}>
-                  {isGrouped && !isFirstGroupRow ? (
-                    <div
-                      style={{
-                        marginLeft: 14,
-                        color: groupColor,
-                        fontWeight: 950,
-                        fontSize: 12,
-                      }}
-                    >
-                      ↳ {row.customer_name}
-                    </div>
-                  ) : (
-                    <div
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns:
-                          isGrouped && isFirstGroupRow
-                            ? "minmax(0, 1fr) 24px"
-                            : "1fr",
-                        gap: 4,
-                        alignItems: "center",
-                      }}
-                    >
-                      <input
-                        style={{
-                          ...compactInputStyle,
-                          marginLeft: groupColor ? 6 : 0,
-                          borderColor: groupColor || "#cbd5e1",
-                          fontWeight: 950,
-                        }}
-                        value={row.customer_name}
-                        readOnly
-                        placeholder="Name"
-                      />
-                      {isGrouped && isFirstGroupRow && (
-                        <button
-                          type="button"
-                          title="Clear the complete customer group"
-                          onClick={() => clearCustomerGroup(groupKey)}
-                          style={{
-                            width: 22,
-                            height: 22,
-                            padding: 0,
-                            border: 0,
-                            borderRadius: "50%",
-                            background: groupColor,
-                            color: "#ffffff",
-                            fontWeight: 1000,
-                            cursor: "pointer",
-                          }}
-                        >
-                          ×
-                        </button>
-                      )}
-                    </div>
-                  )}
+                  <input
+                    style={{
+                      ...compactInputStyle,
+                      borderColor: groupColor || "#cbd5e1",
+                      fontWeight: 950,
+                    }}
+                    value={row.customer_name}
+                    readOnly
+                    placeholder="Name"
+                  />
                 </td>
 
                 <td
-                  style={{
-                    ...compactCellStyle,
-                    paddingLeft:
-                      isGrouped && !isFirstGroupRow ? 18 : compactCellStyle.padding,
-                  }}
+                  style={compactCellStyle}
                 >
                   {row.is_outside_rent ? (
                     <div style={{ display: "grid", gap: 5 }}>
@@ -3988,8 +3945,7 @@ export default function RentalsPage() {
                   <td
                     style={{
                       ...compactCenterCellStyle,
-                      paddingLeft: 3,
-                      paddingRight: 3,
+                      padding: "5px 3px",
                       fontSize: 13,
                     }}
                   >
@@ -3998,8 +3954,7 @@ export default function RentalsPage() {
                   <td
                     style={{
                       ...compactCenterCellStyle,
-                      paddingLeft: 3,
-                      paddingRight: 3,
+                      padding: "5px 3px",
                       fontSize: 13,
                     }}
                   >
@@ -4008,8 +3963,7 @@ export default function RentalsPage() {
                   <td
                     style={{
                       ...compactCenterCellStyle,
-                      paddingLeft: 3,
-                      paddingRight: 3,
+                      padding: "5px 3px",
                     }}
                   >
                     ₹{Number(r.total_amount || calcTotal(r)).toFixed(0)}
@@ -4017,8 +3971,7 @@ export default function RentalsPage() {
                   <td
                     style={{
                       ...compactCenterCellStyle,
-                      paddingLeft: 3,
-                      paddingRight: 3,
+                      padding: "5px 3px",
                       fontSize: 13,
                       whiteSpace: "normal",
                       overflowWrap: "anywhere",
@@ -4029,8 +3982,7 @@ export default function RentalsPage() {
                   <td
                     style={{
                       ...compactCenterCellStyle,
-                      paddingLeft: 3,
-                      paddingRight: 3,
+                      padding: "5px 3px",
                     }}
                   >
                     <button
@@ -4136,6 +4088,26 @@ const premiumRentalStyles = `
 
   .rentals-premium-page tbody tr:hover td {
     background: #eef6ff !important;
+  }
+
+  .rentals-premium-page tbody tr.customer-group-row.customer-group-blue > td {
+    background: #dbeafe !important;
+  }
+
+  .rentals-premium-page tbody tr.customer-group-row.customer-group-red > td {
+    background: #fee2e2 !important;
+  }
+
+  .rentals-premium-page tbody tr.customer-group-row.customer-group-navy > td {
+    background: #e0e7ff !important;
+  }
+
+  .rentals-premium-page tbody tr.customer-group-row.customer-group-coral > td {
+    background: #ffedd5 !important;
+  }
+
+  .rentals-premium-page tbody tr.customer-group-row:hover > td {
+    filter: brightness(0.97);
   }
 
   .rentals-premium-page input,
