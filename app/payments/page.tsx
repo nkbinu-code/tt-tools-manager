@@ -15,9 +15,10 @@ import {
   moveCustomerBalanceToArrears,
   updatePaymentEntry,
 } from "./actions";
+import { returnRentalsBatch } from "../actions";
 import StatementPrintStyles from "../statements/StatementPrintStyles";
 import { useAppMessage } from "../contexts/AppMessageProvider";
-import { rowMobile, rowToolName } from "../calculations";
+import { countDays, rowMobile, rowToolName } from "../calculations";
 
 const shops = [
   "All Shops",
@@ -58,9 +59,75 @@ const shopAddresses = [
 
 const paymentModes = ["Cash", "UPI", "GPay", "Bank", "Card", "Other"];
 
+const customerReturnBoxStyle: CSSProperties = {
+  margin: "16px 0",
+  padding: 18,
+  border: "2px solid #93c5fd",
+  borderRadius: 20,
+  background: "linear-gradient(180deg, #eff6ff 0%, #ffffff 100%)",
+  boxShadow: "0 16px 34px rgba(37, 99, 235, 0.12)",
+};
+
+const customerReturnHeaderStyle: CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  gap: 14,
+  marginBottom: 14,
+  flexWrap: "wrap",
+  color: "#0f2a5f",
+};
+
+const customerReturnTableStyle: CSSProperties = {
+  width: "100%",
+  minWidth: 900,
+  borderCollapse: "collapse",
+  background: "#ffffff",
+  borderRadius: 14,
+  overflow: "hidden",
+};
+
+const customerReturnInputStyle: CSSProperties = {
+  width: "100%",
+  minWidth: 110,
+  minHeight: 38,
+  padding: "6px 8px",
+  border: "1px solid #bfdbfe",
+  borderRadius: 9,
+  background: "#ffffff",
+  fontWeight: 850,
+};
+
+const liveCustomerBadgeStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  minHeight: 26,
+  padding: "0 9px",
+  borderRadius: 999,
+  background: "#dcfce7",
+  color: "#166534",
+  fontSize: 12,
+  fontWeight: 950,
+};
+
+const customerReturnFooterStyle: CSSProperties = {
+  marginTop: 14,
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  gap: 12,
+  flexWrap: "wrap",
+};
+
 const today = () => new Date().toISOString().slice(0, 10);
 const thisMonth = () => new Date().toISOString().slice(0, 7);
 const monthStart = () => `${thisMonth()}-01`;
+const twoMonthStart = () => {
+  const date = new Date();
+  date.setDate(1);
+  date.setMonth(date.getMonth() - 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-01`;
+};
 
 const emptyPaymentRow = () => ({
   payment_date: today(),
@@ -131,10 +198,59 @@ export default function PaymentsPage() {
   const [shopCashStatementTo, setShopCashStatementTo] = useState(today());
   const paymentEntryRef = useRef<HTMLDivElement | null>(null);
   const statementRef = useRef<HTMLDivElement | null>(null);
+  const customerReturnRef = useRef<HTMLElement | null>(null);
+  const returnPayInitialized = useRef(false);
+  const [returnSelections, setReturnSelections] = useState<
+    Record<number, boolean>
+  >({});
+  const [customerReturnDates, setCustomerReturnDates] = useState<
+    Record<number, string>
+  >({});
+  const [customerReturnQty, setCustomerReturnQty] = useState<
+    Record<number, number>
+  >({});
+  const [returnSaving, setReturnSaving] = useState(false);
+  const [paymentSaving, setPaymentSaving] = useState(false);
+  const [paymentMutationSaving, setPaymentMutationSaving] = useState(false);
+  const [returnPayDirectMode, setReturnPayDirectMode] = useState(false);
 
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    if (returnPayInitialized.current || customers.length === 0) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("returnPay") !== "1") return;
+
+    const mobile = String(params.get("mobile") || "").trim();
+    const customerId = String(params.get("customerId") || "").trim();
+    const customer = customers.find(
+      (item: any) =>
+        (mobile && String(item.mobile || "").trim() === mobile) ||
+        (customerId && String(item.id || "") === customerId),
+    );
+    if (!customer) return;
+
+    returnPayInitialized.current = true;
+    setReturnPayDirectMode(true);
+    selectCustomerForPayments(customer);
+    setClosedSearchText(String(customer.mobile || ""));
+    setStatementOptions({
+      type: "combined",
+      period: "custom",
+      fromDate: twoMonthStart(),
+      toDate: today(),
+    });
+    setTimeout(
+      () =>
+        customerReturnRef.current?.scrollIntoView({
+          behavior: "auto",
+          block: "start",
+        }),
+      80,
+    );
+  }, [customers]);
 
   function showError(message: string) {
     setAppMessage({ type: "error", title: "Error", message });
@@ -310,6 +426,7 @@ export default function PaymentsPage() {
   }
 
   async function saveCustomerPayments() {
+    if (paymentSaving) return;
     const firstRow = paymentRows[0];
 
     if (!firstRow?.mobile) {
@@ -341,15 +458,18 @@ export default function PaymentsPage() {
       },
     ];
 
+    setPaymentSaving(true);
     const { error } = await supabase.from("payments").insert(insertRows);
 
     if (error) {
+      setPaymentSaving(false);
       showError(error.message);
       return;
     }
 
     setPaymentRows(Array.from({ length: 5 }, emptyPaymentRow));
     await loadData();
+    setPaymentSaving(false);
     showSuccess("Payment saved successfully");
   }
 
@@ -397,6 +517,7 @@ export default function PaymentsPage() {
   }
 
   async function saveEditedPayment() {
+    if (paymentMutationSaving) return;
     if (!editPaymentForm?.id) {
       showError("Payment id not found");
       return;
@@ -415,6 +536,7 @@ export default function PaymentsPage() {
       String(editPaymentForm.mobile || "").trim() !==
       String(editPaymentForm.original_mobile || "").trim();
 
+    setPaymentMutationSaving(true);
     const res: any = await updatePaymentEntry({
       id: editPaymentForm.id,
       payment_date: editPaymentForm.payment_date || today(),
@@ -439,30 +561,36 @@ export default function PaymentsPage() {
     });
 
     if (!res.success) {
+      setPaymentMutationSaving(false);
       showError(res.message || "Failed to update payment");
       return;
     }
 
     setEditPaymentForm(null);
     await loadData();
+    setPaymentMutationSaving(false);
     showSuccess("Payment updated successfully");
   }
 
   async function confirmDeletePayment() {
+    if (paymentMutationSaving) return;
     if (!deletePaymentPopup?.id) {
       showError("Payment id not found");
       return;
     }
 
+    setPaymentMutationSaving(true);
     const res: any = await deletePaymentEntry(deletePaymentPopup.id);
 
     if (!res.success) {
+      setPaymentMutationSaving(false);
       showError(res.message || "Failed to delete payment");
       return;
     }
 
     setDeletePaymentPopup(null);
     await loadData();
+    setPaymentMutationSaving(false);
     showSuccess("Payment deleted successfully");
   }
 
@@ -650,8 +778,120 @@ export default function PaymentsPage() {
   }, [payments, selectedMobile, selectedCustomerId]);
 
   const selectedActiveRentals = selectedCustomerRentals.filter(
-    (r: any) => !(r.end_date || r.return_date),
+    (r: any) =>
+      String(r.status || "Active").toLowerCase() !== "returned" &&
+      !r.return_date &&
+      !r.closed_date,
   );
+
+  function setAllCustomerReturns(selected: boolean) {
+    const selections: Record<number, boolean> = {};
+    const dates: Record<number, string> = { ...customerReturnDates };
+    const quantities: Record<number, number> = { ...customerReturnQty };
+    selectedActiveRentals.forEach((rental: any) => {
+      selections[Number(rental.id)] = selected;
+      dates[Number(rental.id)] ||= today();
+      quantities[Number(rental.id)] ||= Number(rental.qty || 1);
+    });
+    setReturnSelections(selections);
+    setCustomerReturnDates(dates);
+    setCustomerReturnQty(quantities);
+  }
+
+  async function closeSelectedCustomerRentals(closeAll = false) {
+    if (returnSaving) return;
+    const selected = selectedActiveRentals
+      .filter(
+        (rental: any) =>
+          closeAll || returnSelections[Number(rental.id)],
+      )
+      .map((rental: any) => ({
+        id: Number(rental.id),
+        returnDate: customerReturnDates[Number(rental.id)] || today(),
+        returnQty:
+          Number(customerReturnQty[Number(rental.id)]) ||
+          Number(rental.qty || 1),
+        rental,
+      }));
+
+    if (selected.length === 0) {
+      showWarning("Select at least one live rental to close");
+      return;
+    }
+
+    for (const item of selected) {
+      const startDate = String(item.rental.start_date || "").slice(0, 10);
+      if (!item.returnDate || item.returnDate < startDate) {
+        showWarning(
+          `Return date for ${rowToolName(item.rental) || "the selected item"} cannot be before ${startDate}.`,
+        );
+        return;
+      }
+      const liveQty = Number(item.rental.qty || 1);
+      if (
+        !Number.isInteger(item.returnQty) ||
+        item.returnQty < 1 ||
+        item.returnQty > liveQty
+      ) {
+        showWarning(`Return quantity must be between 1 and ${liveQty}`);
+        return;
+      }
+    }
+
+    const hasFutureDate = selected.some((item) => item.returnDate > today());
+    const dateSummary = Array.from(
+      new Set(selected.map((item) => item.returnDate)),
+    ).join(", ");
+    const previewAmount = selected.reduce((sum, item) => {
+      const days = countDays(
+        item.rental.start_date,
+        item.returnDate,
+        item.rental.avoid_sundays !== false,
+      );
+      return (
+        sum +
+        Math.max(
+          days *
+            item.returnQty *
+            Number(item.rental.daily_rate || 0) -
+            (item.returnQty === Number(item.rental.qty || 1)
+              ? Number(item.rental.discount || 0)
+              : 0),
+          0,
+        )
+      );
+    }, 0);
+
+    const confirmed = window.confirm(
+      `${hasFutureDate ? "Warning: a future return date is selected.\\n\\n" : ""}` +
+        `Close ${selected.length} selected item(s)?\\n` +
+        `Return date${dateSummary.includes(",") ? "s" : ""}: ${dateSummary}\\n` +
+        `Calculated rental amount: ₹${previewAmount.toFixed(0)}\\n\\n` +
+        "Payment will remain separate.",
+    );
+    if (!confirmed) return;
+
+    setReturnSaving(true);
+    const result: any = await returnRentalsBatch(
+      selected.map(({ id, returnDate, returnQty }) => ({
+        id,
+        returnDate,
+        returnQty,
+      })),
+    );
+    setReturnSaving(false);
+
+    if (!result.success) {
+      showError(result.message || "Could not close the selected rentals");
+      return;
+    }
+
+    setReturnSelections({});
+    setCustomerReturnDates({});
+    setCustomerReturnQty({});
+    await loadData();
+    showSuccess(result.message || "Selected rentals returned successfully");
+  }
 
   const selectedReturnedPendingRentals = selectedMobile
     ? pendingReturnedRentals.filter(
@@ -915,8 +1155,8 @@ export default function PaymentsPage() {
     updatePaymentRow(0, "mobile", mobile);
     setStatementOptions({
       type: "combined",
-      period: "thisMonth",
-      fromDate: monthStart(),
+      period: "custom",
+      fromDate: twoMonthStart(),
       toDate: today(),
     });
   }
@@ -1037,7 +1277,7 @@ export default function PaymentsPage() {
         status === "returned" ||
         status === "closed" ||
         status === "completed" ||
-        Boolean(row.end_date || row.return_date || row.closed_date)
+        Boolean(row.return_date || row.closed_date)
       );
     }
 
@@ -1108,7 +1348,7 @@ export default function PaymentsPage() {
 
     const liveRows = rentals
       .filter(
-        (row: any) => !(row.end_date || row.return_date || row.closed_date),
+        (row: any) => !isReturnedRow(row),
       )
       .map((row: any) => {
         const customer = customers.find(
@@ -1214,8 +1454,8 @@ export default function PaymentsPage() {
       updatePaymentRow(0, "mobile", mobile);
       setStatementOptions({
         type: "combined",
-        period: "thisMonth",
-        fromDate: monthStart(),
+        period: "custom",
+        fromDate: twoMonthStart(),
         toDate: today(),
       });
     }
@@ -1240,8 +1480,8 @@ export default function PaymentsPage() {
     updatePaymentRow(0, "mobile", mobile);
     setStatementOptions({
       type: "combined",
-      period: "thisMonth",
-      fromDate: monthStart(),
+      period: "custom",
+      fromDate: twoMonthStart(),
       toDate: today(),
     });
     setTimeout(
@@ -1517,47 +1757,6 @@ export default function PaymentsPage() {
         }
       `}</style>
 
-      {arrearsPopup && (
-        <div style={overlayStyle}>
-          <div style={popupStyle}>
-            <h2 style={{ marginTop: 0, fontSize: 26, color: "#0f172a" }}>
-              Move Balance to Arrears
-            </h2>
-            <div style={blueInfoStyle}>
-              <div>Customer: {arrearsPopup.customer_name}</div>
-              <div>Mobile: {arrearsPopup.mobile}</div>
-              <div>Shop: {arrearsPopup.shop || "-"}</div>
-              <div style={{ fontSize: 24, color: "#0057ff" }}>
-                Amount: ₹{Number(arrearsPopup.amount || 0).toFixed(0)}
-              </div>
-            </div>
-            <label style={{ fontWeight: 900 }}>Reason</label>
-            <input
-              value={arrearsReason}
-              onChange={(e) => setArrearsReason(e.target.value)}
-              placeholder="Long pending / customer not paying..."
-              style={{ width: "100%", marginBottom: 12 }}
-            />
-            <label style={{ fontWeight: 900 }}>Remarks</label>
-            <textarea
-              value={arrearsRemarks}
-              onChange={(e) => setArrearsRemarks(e.target.value)}
-              placeholder="Any notes..."
-              rows={3}
-              style={{ width: "100%", marginBottom: 18 }}
-            />
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 12 }}>
-              <button className="btn-gray" onClick={() => setArrearsPopup(null)}>
-                Cancel
-              </button>
-              <button className="btn-blue" onClick={confirmMoveToArrears}>
-                Move to Arrears
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {editPaymentForm && (
         <PaymentEditorPopup
           form={editPaymentForm}
@@ -1577,6 +1776,7 @@ export default function PaymentsPage() {
         />
       )}
 
+      {!returnPayDirectMode && (
       <section style={rentalPaymentSheetStyle}>
         <div style={rentalPaymentTopStyle}>
           <h1 style={rentalPaymentTitleStyle}>Rental Payments</h1>
@@ -1631,6 +1831,178 @@ export default function PaymentsPage() {
           onPay={selectRentalForPayment}
         />
       </section>
+      )}
+
+      {selectedMobile && (
+        <section ref={customerReturnRef} style={customerReturnBoxStyle}>
+          <div style={customerReturnHeaderStyle}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 900, opacity: 0.82 }}>
+                Return & Pay
+              </div>
+              <h2 style={{ margin: "3px 0 0" }}>
+                Live Rentals —{" "}
+                {selectedCustomer?.customer_name ||
+                  selectedCustomer?.name ||
+                  selectedPending?.customer_name ||
+                  selectedMobile}
+              </h2>
+              <div style={{ marginTop: 4, fontWeight: 850 }}>
+                {selectedMobile} · Only this customer’s live items
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                className="btn-gray"
+                onClick={() => setAllCustomerReturns(true)}
+                disabled={selectedActiveRentals.length === 0}
+              >
+                Select All
+              </button>
+              <button
+                type="button"
+                className="btn-gray"
+                onClick={() => setAllCustomerReturns(false)}
+              >
+                Clear Selection
+              </button>
+            </div>
+          </div>
+
+          <div style={{ overflowX: "auto" }}>
+            <table style={customerReturnTableStyle}>
+              <thead>
+                <tr>
+                  <th>Select</th>
+                  <th>Item</th>
+                  <th>Live Qty</th>
+                  <th>Return Qty</th>
+                  <th>Start Date</th>
+                  <th>Return Date</th>
+                  <th>Rate/Day</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {selectedActiveRentals.map((rental: any, index: number) => {
+                  const id = Number(rental.id);
+                  return (
+                    <tr
+                      key={id}
+                      style={{
+                        background: index % 2 ? "#f8fafc" : "#ffffff",
+                      }}
+                    >
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(returnSelections[id])}
+                          onChange={(event) => {
+                            setReturnSelections((current) => ({
+                              ...current,
+                              [id]: event.target.checked,
+                            }));
+                            setCustomerReturnDates((current) => ({
+                              ...current,
+                              [id]: current[id] || today(),
+                            }));
+                            setCustomerReturnQty((current) => ({
+                              ...current,
+                              [id]:
+                                current[id] || Number(rental.qty || 1),
+                            }));
+                          }}
+                          style={{ width: 20, height: 20 }}
+                        />
+                      </td>
+                      <td>
+                        <strong>{rowToolName(rental) || "Rental item"}</strong>
+                      </td>
+                      <td>{Number(rental.qty || 1)}</td>
+                      <td>
+                        <input
+                          type="number"
+                          min={1}
+                          max={Number(rental.qty || 1)}
+                          value={
+                            customerReturnQty[id] ??
+                            Number(rental.qty || 1)
+                          }
+                          onChange={(event) =>
+                            setCustomerReturnQty((current) => ({
+                              ...current,
+                              [id]: Number(event.target.value),
+                            }))
+                          }
+                          disabled={!returnSelections[id]}
+                          style={customerReturnInputStyle}
+                        />
+                      </td>
+                      <td>{formatDisplayDate(rental.start_date)}</td>
+                      <td>
+                        <input
+                          type="date"
+                          min={String(rental.start_date || "").slice(0, 10)}
+                          value={customerReturnDates[id] || today()}
+                          onChange={(event) =>
+                            setCustomerReturnDates((current) => ({
+                              ...current,
+                              [id]: event.target.value,
+                            }))
+                          }
+                          disabled={!returnSelections[id]}
+                          style={customerReturnInputStyle}
+                        />
+                      </td>
+                      <td>₹{Number(rental.daily_rate || 0).toFixed(0)}</td>
+                      <td>
+                        <span style={liveCustomerBadgeStyle}>Live</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {selectedActiveRentals.length === 0 && (
+                  <tr>
+                    <td colSpan={8} style={{ padding: 20, textAlign: "center" }}>
+                      This customer has no live rentals.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={customerReturnFooterStyle}>
+            <strong>
+              Selected:{" "}
+              {
+                selectedActiveRentals.filter(
+                  (rental: any) => returnSelections[Number(rental.id)],
+                ).length
+              }
+            </strong>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                className="btn-gray"
+                onClick={() => closeSelectedCustomerRentals(true)}
+                disabled={returnSaving || selectedActiveRentals.length === 0}
+              >
+                Close All Rentals
+              </button>
+              <button
+                type="button"
+                className="btn-blue"
+                onClick={() => closeSelectedCustomerRentals(false)}
+                disabled={returnSaving || selectedActiveRentals.length === 0}
+              >
+                {returnSaving ? "Closing..." : "Close Selected Rentals"}
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
 
       <section ref={paymentEntryRef} style={paymentBlueBoxStyle}>
         <div style={paymentBlueTopStyle}>
@@ -1696,11 +2068,14 @@ export default function PaymentsPage() {
               <option key={m}>{m}</option>
             ))}
           </select>
-          <button className="btn-blue" type="button" onClick={saveQuickPayment} style={paymentSaveButtonStyle}>
-            Save Payment
-          </button>
-          <button className="btn-gray" type="button" onClick={openArrearsPopup} disabled={selectedBalance <= 0} style={paymentArrearsButtonStyle}>
-            Move to Arrears
+          <button
+            className="btn-blue"
+            type="button"
+            onClick={saveQuickPayment}
+            style={paymentSaveButtonStyle}
+            disabled={paymentSaving}
+          >
+            {paymentSaving ? "Saving..." : "Save Payment"}
           </button>
         </div>
 
@@ -1738,7 +2113,7 @@ export default function PaymentsPage() {
               statementOptions || {
                 type: "combined",
                 period: "custom",
-                fromDate: monthStart(),
+                fromDate: twoMonthStart(),
                 toDate: today(),
               }
             }
@@ -2557,8 +2932,12 @@ function RentalPaymentsTable({ rows, onStatement, onPay }: any) {
 
 function StatementRentalDetailsTable({ rentals, tools }: any) {
   const rows = [...(rentals || [])].sort((a: any, b: any) => {
-    const aReturned = a.end_date || a.return_date || a.status === "Returned";
-    const bReturned = b.end_date || b.return_date || b.status === "Returned";
+    const aReturned =
+      String(a.status || "").toLowerCase() === "returned" ||
+      Boolean(a.return_date || a.closed_date);
+    const bReturned =
+      String(b.status || "").toLowerCase() === "returned" ||
+      Boolean(b.return_date || b.closed_date);
     if (aReturned && !bReturned) return -1;
     if (!aReturned && bReturned) return 1;
     return String(rentalDateForSort(a)).localeCompare(
@@ -2590,7 +2969,9 @@ function StatementRentalDetailsTable({ rentals, tools }: any) {
         <tbody>
           {rows.map((r: any, index: number) => {
             const isReturned = Boolean(
-              r.end_date || r.return_date || r.status === "Returned",
+              String(r.status || "").toLowerCase() === "returned" ||
+                r.return_date ||
+                r.closed_date,
             );
             const amount = paymentRentalAmount(r, tools);
             return (
@@ -2783,11 +3164,19 @@ function InlineCustomerStatement({
       item: displayToolName(r, tools),
       qty: Number(r.qty || r.quantity || 1),
       status:
-        r.end_date || r.return_date
+        String(r.status || "").toLowerCase() === "returned" ||
+        r.return_date ||
+        r.closed_date
           ? `Returned on ${dateShort(r.end_date || r.return_date)}`
           : "Live",
       days: paymentRentalDays(r),
-      rentalDates: `${dateShort(rentalStartDate(r))} - ${dateShort(r.end_date || r.return_date || today())}`,
+      rentalDates: `${dateShort(rentalStartDate(r))} - ${dateShort(
+        String(r.status || "").toLowerCase() === "returned" ||
+          r.return_date ||
+          r.closed_date
+          ? r.return_date || r.closed_date || r.end_date
+          : today(),
+      )}`,
       rent: paymentRentalRate(r, tools),
       amount: paymentRentalAmount(r, tools),
       payment: 0,
@@ -3746,7 +4135,7 @@ function InlineCustomerStatement({
       <div className="no-print" style={simpleStatementActionsStyle}>
         <button type="button" onClick={shareStatementDocument} style={simpleTextActionStyle}>Print</button>
         <button type="button" onClick={shareStatementDocument} style={simpleTextActionStyle}>Share PDF</button>
-
+        <button type="button" onClick={shareStatementAsJpg} style={simpleTextActionStyle}>Share JPG</button>
       </div>
     </div>
   );
@@ -4176,7 +4565,12 @@ function paymentRentalDays(row: any) {
   const start = row.start_date || row.date || row.rental_date;
   if (!start) return 0;
 
-  const end = row.end_date || row.return_date || row.closed_date || new Date();
+  const isReturned =
+    String(row.status || "").toLowerCase() === "returned" ||
+    Boolean(row.return_date || row.closed_date);
+  const end = isReturned
+    ? row.return_date || row.closed_date || row.end_date || new Date()
+    : new Date();
   const avoidSundays =
     row.avoid_sundays === false || row.avoid_sundays === "false" ? false : true;
 
@@ -4209,7 +4603,9 @@ function paymentRentalAmount(row: any, tools: any[] = []) {
 
   const storedReturnedTotal = Number(row.total_amount || row.amount || 0);
   if (
-    (row.status === "Returned" || row.end_date || row.return_date) &&
+    (String(row.status || "").toLowerCase() === "returned" ||
+      row.return_date ||
+      row.closed_date) &&
     storedReturnedTotal > 0
   ) {
     return storedReturnedTotal;

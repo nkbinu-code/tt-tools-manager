@@ -347,6 +347,7 @@ export async function updatePaymentEntry(input: {
 
   revalidatePath("/payments");
   revalidatePath("/reports");
+  revalidatePath("/customers");
 
   return { success: true, message: "Payment updated" };
 }
@@ -404,6 +405,7 @@ export async function moveCustomerBalanceToArrears(input: {
 
   revalidatePath("/payments");
   revalidatePath("/reports");
+  revalidatePath("/customers");
 
   return { success: true, message: "Balance moved to arrears" };
 }

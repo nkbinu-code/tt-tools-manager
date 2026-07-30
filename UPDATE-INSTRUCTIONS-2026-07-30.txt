@@ -1,0 +1,46 @@
+T&T TOOLS MANAGER — 30 JULY 2026 UPDATE
+
+Correct project:
+D:\Tried and True Tools App
+
+This is a complete source package, not a partial page replacement.
+
+IMPORTANT
+1. Keep a backup of the current Windows project before replacing it.
+2. Do not copy node_modules or .next from an older project.
+3. Apply the included additive Supabase migration before deploying:
+   supabase\migrations\20260730_add_expected_end_date.sql
+4. The migration only adds the optional expected_end_date column.
+   It does not update, delete, or rewrite existing business records.
+5. Preserve the existing .env.local file on the Windows computer.
+   It is intentionally not included in this ZIP.
+
+WINDOWS BUILD
+cd "D:\Tried and True Tools App"
+npm install
+npm run build
+
+CHANGES INCLUDED
+- Customer grouping and copy-to-next-line workflow in Rental Entry.
+- Per-line × removal and complete group clearing without deleting tool details.
+- Alternating rows, active-row highlighting and connected group outlines.
+- Optional expected due date, visible No due date and safe overdue handling.
+- Expected due date separated from the actual return date.
+- Existing Return dropdown retained and a separate Return & Pay button added
+  beside it.
+- Return & Pay opens Payments directly at only that customer's live rentals,
+  without first showing the general rental-payment customer list.
+- Customer-only live rental closing on Payments.
+- Individual, multiple, partial and Close All return workflows.
+- Return-date, quantity and calculated-amount confirmation.
+- Payment and shareable two-month statement immediately below returns.
+- Move to Arrears moved from Payments to Customers.
+- Arrears warning when selecting a customer for a new rental.
+- Correct Return labelling, return validation and double-submit protection.
+- Existing Transport Entry, payment workflow, statement format, Malayalam
+  labels, Sunday rules, Edit and Delete controls are retained.
+
+BUILD VERIFICATION
+- Next.js production compilation: passed.
+- TypeScript: passed.
+- Static page generation: passed.

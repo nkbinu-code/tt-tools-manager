@@ -1,11 +1,13 @@
 "use client";
 
-import { type CSSProperties, useEffect, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import {
   getRentalPageData,
   saveRentals,
   returnRental,
+  returnRentalsBatch,
   deleteRental,
   updateRentalWithAudit,
   saveCustomer,
@@ -351,10 +353,12 @@ const confirmActionButtonStyle: CSSProperties = {
 
 export default function RentalsPage() {
   const { setAppMessage } = useAppMessage();
+  const router = useRouter();
 
   const [customers, setCustomers] = useState<any[]>([]);
   const [tools, setTools] = useState<any[]>([]);
   const [rentals, setRentals] = useState<any[]>([]);
+  const [customerArrears, setCustomerArrears] = useState<any[]>([]);
   const [rows, setRows] = useState<any[]>(
     Array.from({ length: 10 }, () => ({ ...emptyRental })),
   );
@@ -405,6 +409,30 @@ export default function RentalsPage() {
   const [editReason, setEditReason] = useState("");
   const [editExplanation, setEditExplanation] = useState("");
   const [editSaving, setEditSaving] = useState(false);
+  const [activeEntryRow, setActiveEntryRow] = useState<number | null>(null);
+  const [rentalActionSaving, setRentalActionSaving] = useState(false);
+
+  useEffect(() => {
+    const hasUnsavedEntry =
+      rows.some(
+        (row) =>
+          row.customer_id ||
+          row.tool_id ||
+          row.mobile ||
+          row.outside_item_name,
+      ) ||
+      transportRows.some(
+        (row) => row.customer_id || Number(row.amount || 0) > 0,
+      );
+
+    if (!hasUnsavedEntry) return;
+    const warnBeforeLeaving = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeLeaving);
+    return () => window.removeEventListener("beforeunload", warnBeforeLeaving);
+  }, [rows, transportRows]);
 
   function showError(message: string) {
     setAppMessage({
@@ -633,6 +661,7 @@ export default function RentalsPage() {
       setCustomers(res.customers || []);
       setTools(res.tools || []);
       setRentals(res.rentals || []);
+      setCustomerArrears(res.arrears || []);
     } else {
       showError(res.message || "Failed to load rentals");
     }
@@ -786,41 +815,94 @@ export default function RentalsPage() {
     );
   }
 
-  function copyPreviousCustomerDetails(index: number) {
-    let sourceRow: any = null;
-
-    for (let i = index - 1; i >= 0; i--) {
-      const row = rows[i];
-
-      if (row?.customer_id || row?.mobile || row?.customer_name) {
-        sourceRow = row;
-        break;
-      }
-    }
-
-    if (!sourceRow) {
-      showWarning("No previous customer found to copy");
+  function copyCustomerToNextLine(sourceIndex: number) {
+    const sourceRow = rows[sourceIndex];
+    if (!sourceRow?.customer_id) {
+      showWarning("Enter or select a customer before copying");
       return;
     }
 
-    const updated = [...rows];
+    const groupId =
+      sourceRow._customer_group_id ||
+      `customer-group-${Date.now()}-${sourceIndex}`;
+    const groupedIndexes = rows
+      .map((row, index) =>
+        row._customer_group_id === groupId ? index : -1,
+      )
+      .filter((index) => index >= 0);
+    const lastGroupIndex =
+      groupedIndexes.length > 0
+        ? Math.max(...groupedIndexes)
+        : sourceIndex;
+    const targetIndex = lastGroupIndex + 1;
+    const targetRow = rows[targetIndex];
+    if (
+      targetRow?.customer_id &&
+      String(targetRow.customer_id) !== String(sourceRow.customer_id)
+    ) {
+      showWarning(
+        `Row ${targetIndex + 1} already belongs to another customer. Remove that customer first or use an empty line.`,
+      );
+      return;
+    }
 
-    updated[index] = {
-      ...updated[index],
-      customer_id: sourceRow.customer_id || "",
-      mobile: sourceRow.mobile || "",
-      customer_name: sourceRow.customer_name || "",
-      start_date: sourceRow.start_date || today,
-      end_date: sourceRow.end_date || "",
-      avoid_sundays: sourceRow.avoid_sundays !== false,
-    };
-
-    setRows(updated);
-    setMobileSuggestions({
-      ...mobileSuggestions,
-      [index]: [],
+    setRows((current) => {
+      const updated = [...current];
+      if (!updated[targetIndex]) {
+        updated.push({ ...emptyRental });
+      }
+      updated[sourceIndex] = {
+        ...updated[sourceIndex],
+        _customer_group_id: groupId,
+      };
+      updated[targetIndex] = {
+        ...updated[targetIndex],
+        customer_id: sourceRow.customer_id,
+        mobile: sourceRow.mobile,
+        customer_name: sourceRow.customer_name,
+        _customer_group_id: groupId,
+      };
+      return updated;
     });
+    setMobileSuggestions((current: any) => ({
+      ...current,
+      [targetIndex]: [],
+    }));
+    setActiveEntryRow(targetIndex);
   }
+
+  function removeRowFromCustomerGroup(index: number) {
+    setRows((current) =>
+      current.map((row, rowIndex) =>
+        rowIndex === index
+          ? { ...row, _customer_group_id: "" }
+          : row,
+      ),
+    );
+  }
+
+  function clearCustomerGroup(groupId: string) {
+    if (!groupId) return;
+    setRows((current) =>
+      current.map((row) =>
+        row._customer_group_id === groupId
+          ? { ...row, _customer_group_id: "" }
+          : row,
+      ),
+    );
+  }
+
+  const customerGroupColors = useMemo(() => {
+    const palette = ["#0057ff", "#b91c1c", "#0f2a5f", "#dc2626"];
+    const colors = new Map<string, string>();
+    rows.forEach((row) => {
+      const key = String(row._customer_group_id || "");
+      if (key && !colors.has(key)) {
+        colors.set(key, palette[colors.size % palette.length]);
+      }
+    });
+    return colors;
+  }, [rows]);
 
   function applyDateToAllRows() {
     if (!bulkDate) {
@@ -872,11 +954,7 @@ export default function RentalsPage() {
       setShowAddCustomer(false);
       setAddCustomerRowIndex(null);
 
-      if (normalizeCustomerRating(exact.rating) <= 3) {
-        showWarning(
-          `Proceed with caution. Customer Reliability: ${normalizeCustomerRating(exact.rating)}/10`,
-        );
-      }
+      warnForSelectedCustomer(exact);
     } else {
       updated[index] = {
         ...updated[index],
@@ -898,6 +976,39 @@ export default function RentalsPage() {
       } else {
         setShowAddCustomer(false);
       }
+    }
+  }
+
+  function arrearsForCustomer(customer: any) {
+    return customerArrears
+      .filter(
+        (entry: any) =>
+          (customer?.id &&
+            String(entry.customer_id || "") === String(customer.id)) ||
+          (customer?.mobile &&
+            String(entry.mobile || "").trim() ===
+              String(customer.mobile || "").trim()),
+      )
+      .reduce(
+        (sum: number, entry: any) =>
+          sum + Math.max(Number(entry.arrears_amount || entry.amount || 0), 0),
+        0,
+      );
+  }
+
+  function warnForSelectedCustomer(customer: any) {
+    const arrearsAmount = arrearsForCustomer(customer);
+    const rating = normalizeCustomerRating(customer?.rating);
+    if (arrearsAmount > 0) {
+      showWarning(
+        `Arrears warning: ${customer.customer_name || "This customer"} has ₹${arrearsAmount.toFixed(0)} in arrears.${rating <= 3 ? ` Reliability: ${rating}/10.` : ""}`,
+      );
+      return;
+    }
+    if (rating <= 3) {
+      showWarning(
+        `Proceed with caution. Customer Reliability: ${rating}/10`,
+      );
     }
   }
 
@@ -1177,7 +1288,8 @@ export default function RentalsPage() {
   }
 
   async function confirmRentalAction() {
-    if (!rentalConfirm) return;
+    if (!rentalConfirm || rentalActionSaving) return;
+    setRentalActionSaving(true);
 
     if (rentalConfirm.type === "return") {
       const res = await returnRental(
@@ -1186,6 +1298,7 @@ export default function RentalsPage() {
       );
 
       if (!res.success) {
+        setRentalActionSaving(false);
         showError(res.message || "Failed to return rental");
         return;
       }
@@ -1193,6 +1306,7 @@ export default function RentalsPage() {
       setReturnDates({ ...returnDates, [rentalConfirm.id]: "" });
       setRentalConfirm(null);
       await loadData();
+      setRentalActionSaving(false);
       return;
     }
 
@@ -1200,6 +1314,7 @@ export default function RentalsPage() {
       const res = await deleteRental(rentalConfirm.id);
 
       if (!res.success) {
+        setRentalActionSaving(false);
         showError(res.message || "Failed to delete rental");
         return;
       }
@@ -1207,6 +1322,7 @@ export default function RentalsPage() {
       showSuccess(res.message || "Rental deleted successfully");
       setRentalConfirm(null);
       await loadData();
+      setRentalActionSaving(false);
     }
   }
 
@@ -1373,6 +1489,18 @@ export default function RentalsPage() {
   }
 
   async function handleReturn(id: number, mode: string) {
+    if (mode === "Return & Pay") {
+      const rental = rentals.find((item: any) => Number(item.id) === Number(id));
+      const customer = rentalCustomerDetails(rental);
+      const params = new URLSearchParams({
+        returnPay: "1",
+        customerId: String(rental?.customer_id || ""),
+        mobile: String(customer.mobile || ""),
+      });
+      router.push(`/payments?${params.toString()}`);
+      return;
+    }
+
     if (!mode) return;
 
     if (mode === "Pick Date") {
@@ -1450,64 +1578,32 @@ export default function RentalsPage() {
       return;
     }
 
-    if (returnQty === liveQty) {
-      const res = await returnRental(rentalId, returnDate);
-
-      if (!res.success) {
-        showError(res.message || "Failed to return rental");
-        return;
-      }
-      setPartialReturn(null);
-      setReturnMode({ ...returnMode, [rentalId]: "" });
-      await loadData();
+    if (returnDate < String(rental.start_date || "").slice(0, 10)) {
+      showWarning("Return date cannot be before the rental start date");
       return;
     }
 
-    const remainingQty = liveQty - returnQty;
-    const returnedDays = calcDays(
-      rental.start_date,
-      returnDate,
-      "Returned",
-      rental.avoid_sundays !== false,
-    );
-
-    const returnedAmount = Math.max(
-      returnedDays * returnQty * Number(rental.daily_rate || 0),
-      0,
-    );
-
-    const { id, created_at, updated_at, total_amount, ...copySource } = rental;
-
-    const returnedRental: any = {
-      ...copySource,
-      qty: returnQty,
-      end_date: returnDate,
-      status: "Returned",
-    };
-
-    if ("total_amount" in rental) {
-      returnedRental.total_amount = returnedAmount;
-    }
-
-    const insertRes = await supabase.from("rentals").insert([returnedRental]);
-
-    if (insertRes.error) {
-      showError(insertRes.error.message);
+    if (
+      returnDate > today &&
+      !window.confirm(
+        "Warning: the selected return date is in the future. Continue?",
+      )
+    ) {
       return;
     }
 
-    const updateRes = await supabase
-      .from("rentals")
-      .update({ qty: remainingQty })
-      .eq("id", rentalId);
-
-    if (updateRes.error) {
-      showError(updateRes.error.message);
+    const result = await returnRentalsBatch([
+      { id: rentalId, returnDate, returnQty },
+    ]);
+    if (!result.success) {
+      showError(result.message || "Failed to return rental");
       return;
     }
+
     setPartialReturn(null);
     setReturnMode({ ...returnMode, [rentalId]: "" });
     await loadData();
+    showSuccess(result.message || "Rental returned successfully");
   }
 
   async function handleDelete(id: number) {
@@ -1525,6 +1621,11 @@ export default function RentalsPage() {
       transport_amount: String(rental.transport_amount ?? rental.total_amount ?? 0),
       start_date: String(rental.start_date || "").slice(0, 10),
       end_date: String(rental.end_date || "").slice(0, 10),
+      expected_end_date: String(
+        rental.expected_end_date ||
+          (isLiveRentalRecord(rental) ? rental.end_date : "") ||
+          "",
+      ).slice(0, 10),
       transport_date: String(rental.transport_date || rental.start_date || "").slice(0, 10),
     });
     setEditReason("");
@@ -1735,7 +1836,11 @@ export default function RentalsPage() {
                   <label>Round Off<input style={compactInputStyle} type="number" min="0" value={editRental.discount} onChange={(e)=>changeEditRental("discount",e.target.value)} /></label>
                   <label style={{ display:"flex", alignItems:"center", gap:8, paddingTop:22 }}><input type="checkbox" checked={editRental.avoid_sundays !== false} onChange={(e)=>changeEditRental("avoid_sundays",e.target.checked)} /> Avoid Sunday</label>
                   <label>Start Date<input style={compactInputStyle} type="date" value={editRental.start_date} onChange={(e)=>changeEditRental("start_date",e.target.value)} /></label>
-                  <label>Return Date<input style={compactInputStyle} type="date" value={editRental.end_date} onChange={(e)=>changeEditRental("end_date",e.target.value)} /></label>
+                  {editRental.status === "Returned" ? (
+                    <label>Return Date<input style={compactInputStyle} type="date" value={editRental.end_date} onChange={(e)=>changeEditRental("end_date",e.target.value)} /></label>
+                  ) : (
+                    <label>Expected End / Due (Optional)<input style={compactInputStyle} type="date" value={editRental.expected_end_date || ""} onChange={(e)=>changeEditRental("expected_end_date",e.target.value)} /></label>
+                  )}
                 </div>
               )}
               <div style={{ marginTop: 18, paddingTop: 16, borderTop: "1px solid #e2e8f0", display:"grid", gridTemplateColumns:"240px 1fr", gap:12 }}>
@@ -2251,6 +2356,23 @@ export default function RentalsPage() {
                       </div>
                     )}
 
+                    {rentalConfirm.type === "return" &&
+                      rentalConfirm.returnDate > today && (
+                        <div
+                          style={{
+                            marginTop: 18,
+                            background: "#fff7ed",
+                            border: "1px solid #fdba74",
+                            color: "#9a3412",
+                            borderRadius: 14,
+                            padding: "13px 15px",
+                            fontWeight: 950,
+                          }}
+                        >
+                          ⚠ The selected return date is in the future.
+                        </div>
+                      )}
+
                     <div style={confirmButtonRowStyle}>
                       <button
                         type="button"
@@ -2270,8 +2392,11 @@ export default function RentalsPage() {
                               : "linear-gradient(135deg, #dc2626, #991b1b)",
                         }}
                         onClick={confirmRentalAction}
+                        disabled={rentalActionSaving}
                       >
-                        {rentalConfirm.type === "return"
+                        {rentalActionSaving
+                          ? "Saving..."
+                          : rentalConfirm.type === "return"
                           ? "Return Rental"
                           : "Delete Rental"}
                       </button>
@@ -2811,15 +2936,117 @@ export default function RentalsPage() {
           </thead>
 
           <tbody>
-            {rows.map((row, index) => (
-              <tr key={index}>
-                <td style={compactCenterCellStyle}>{index + 1}</td>
+            {rows.map((row, index) => {
+              const groupKey = String(row._customer_group_id || "");
+              const groupColor = customerGroupColors.get(groupKey);
+              const groupIndexes = groupKey
+                ? rows
+                    .map((candidate, candidateIndex) =>
+                      candidate._customer_group_id === groupKey
+                        ? candidateIndex
+                        : -1,
+                    )
+                    .filter((candidateIndex) => candidateIndex >= 0)
+                : [];
+              const isFirstGroupRow =
+                groupIndexes.length > 1 && groupIndexes[0] === index;
+              const isGrouped = groupIndexes.length > 1;
+              return (
+              <tr
+                key={index}
+                onFocusCapture={() => setActiveEntryRow(index)}
+                style={{
+                  background:
+                    activeEntryRow === index
+                      ? "#eaf2ff"
+                      : index % 2 === 1
+                      ? "#f8fafc"
+                      : "#ffffff",
+                  boxShadow: groupColor
+                    ? [
+                        `inset 5px 0 0 ${groupColor}`,
+                        isGrouped && groupIndexes[0] === index
+                          ? `inset 0 2px 0 ${groupColor}`
+                          : "",
+                        isGrouped &&
+                        groupIndexes[groupIndexes.length - 1] === index
+                          ? `inset 0 -2px 0 ${groupColor}`
+                          : "",
+                        activeEntryRow === index
+                          ? `inset 0 0 0 2px ${groupColor}`
+                          : "",
+                      ]
+                        .filter(Boolean)
+                        .join(", ")
+                    : activeEntryRow === index
+                      ? "inset 0 0 0 2px #0057ff"
+                      : undefined,
+                }}
+              >
+                <td
+                  style={{
+                    ...compactCenterCellStyle,
+                    color: groupColor || "#0f172a",
+                    fontWeight: 1000,
+                  }}
+                >
+                  {index + 1}
+                </td>
 
-                <td style={compactCenterCellStyle}>
+                <td
+                  style={{
+                    ...compactCenterCellStyle,
+                    backgroundImage: isGrouped
+                      ? `linear-gradient(${groupColor}, ${groupColor})`
+                      : undefined,
+                    backgroundPosition: "50% 0",
+                    backgroundRepeat: "no-repeat",
+                    backgroundSize: "3px 100%",
+                  }}
+                >
+                  {isGrouped && (
+                    <div
+                      style={{
+                        width: 28,
+                        height: 20,
+                        margin: "0 auto 4px",
+                        position: "relative",
+                        borderLeft: `3px solid ${groupColor}`,
+                        borderBottom: `3px solid ${groupColor}`,
+                        borderBottomLeftRadius: 10,
+                      }}
+                    >
+                      <button
+                        type="button"
+                        title={
+                          "Make this line individual"
+                        }
+                        onClick={() => removeRowFromCustomerGroup(index)}
+                        style={{
+                          position: "absolute",
+                          right: -8,
+                          bottom: -9,
+                          width: 18,
+                          height: 18,
+                          padding: 0,
+                          border: "1px solid #ffffff",
+                          borderRadius: "50%",
+                          background: groupColor,
+                          color: "#ffffff",
+                          fontSize: 13,
+                          fontWeight: 1000,
+                          lineHeight: "16px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  )}
                   <button
                     type="button"
-                    title="Copy previous customer"
-                    onClick={() => copyPreviousCustomerDetails(index)}
+                    title="Copy this customer to the next line"
+                    onClick={() => copyCustomerToNextLine(index)}
                     style={{
                       width: 28,
                       height: 28,
@@ -2839,14 +3066,27 @@ export default function RentalsPage() {
                 </td>
 
                 <td style={compactCellStyle}>
-                  <div style={{ position: "relative" }}>
+                  <div
+                    style={{
+                      position: "relative",
+                      marginLeft: isGrouped && !isFirstGroupRow ? 12 : 0,
+                    }}
+                  >
                     <input
-                      style={compactInputStyle}
+                      style={{
+                        ...compactInputStyle,
+                        borderColor: groupColor || "#cbd5e1",
+                      }}
                       value={row.mobile}
                       onChange={(e) =>
                         handleMobileChange(index, e.target.value)
                       }
-                      placeholder="Mobile"
+                      placeholder={
+                        isGrouped && !isFirstGroupRow
+                          ? "Same customer"
+                          : "Mobile"
+                      }
+                      readOnly={isGrouped && !isFirstGroupRow}
                     />
 
                     {(mobileSuggestions[index] || []).length > 0 && (
@@ -2890,11 +3130,7 @@ export default function RentalsPage() {
 
                               setShowAddCustomer(false);
 
-                              if (normalizeCustomerRating(c.rating) <= 3) {
-                                showWarning(
-                                  `Proceed with caution. Customer Reliability: ${normalizeCustomerRating(c.rating)}/10`,
-                                );
-                              }
+                              warnForSelectedCustomer(c);
                             }}
                           >
                             <strong>{c.mobile}</strong>
@@ -2908,15 +3144,71 @@ export default function RentalsPage() {
                 </td>
 
                 <td style={compactCellStyle}>
-                  <input
-                    style={compactInputStyle}
-                    value={row.customer_name}
-                    readOnly
-                    placeholder="Name"
-                  />
+                  {isGrouped && !isFirstGroupRow ? (
+                    <div
+                      style={{
+                        marginLeft: 14,
+                        color: groupColor,
+                        fontWeight: 950,
+                        fontSize: 12,
+                      }}
+                    >
+                      ↳ {row.customer_name}
+                    </div>
+                  ) : (
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns:
+                          isGrouped && isFirstGroupRow
+                            ? "minmax(0, 1fr) 24px"
+                            : "1fr",
+                        gap: 4,
+                        alignItems: "center",
+                      }}
+                    >
+                      <input
+                        style={{
+                          ...compactInputStyle,
+                          marginLeft: groupColor ? 6 : 0,
+                          borderColor: groupColor || "#cbd5e1",
+                          fontWeight: 950,
+                        }}
+                        value={row.customer_name}
+                        readOnly
+                        placeholder="Name"
+                      />
+                      {isGrouped && isFirstGroupRow && (
+                        <button
+                          type="button"
+                          title="Clear the complete customer group"
+                          onClick={() => clearCustomerGroup(groupKey)}
+                          style={{
+                            width: 22,
+                            height: 22,
+                            padding: 0,
+                            border: 0,
+                            borderRadius: "50%",
+                            background: groupColor,
+                            color: "#ffffff",
+                            fontWeight: 1000,
+                            cursor: "pointer",
+                          }}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </td>
 
-                <td style={compactCellStyle}>
+                <td
+                  style={{
+                    ...compactCellStyle,
+                    paddingLeft:
+                      isGrouped && !isFirstGroupRow ? 18 : compactCellStyle.padding,
+                  }}
+                >
                   {row.is_outside_rent ? (
                     <div style={{ display: "grid", gap: 5 }}>
                       <input
@@ -3179,7 +3471,7 @@ export default function RentalsPage() {
                   />
                 </td>
               </tr>
-            ))}
+            )})}
           </tbody>
         </table>
 
@@ -3379,6 +3671,7 @@ export default function RentalsPage() {
             <col style={{ width: "5%" }} />
             <col style={{ width: "8%" }} />
             <col style={{ width: "8%" }} />
+            <col style={{ width: "8%" }} />
             <col style={{ width: "5%" }} />
             <col style={{ width: "9%" }} />
             <col style={{ width: "8%" }} />
@@ -3393,6 +3686,7 @@ export default function RentalsPage() {
               <th style={compactHeaderStyle}>Qty</th>
               <th style={compactHeaderStyle}>Daily Rate</th>
               <th style={compactHeaderStyle}>Start</th>
+              <th style={compactHeaderStyle}>End / Due</th>
               <th style={compactHeaderStyle}>Days</th>
               <th style={compactHeaderStyle}>Daily Total</th>
               <th style={compactHeaderStyle}>Shop</th>
@@ -3428,6 +3722,15 @@ export default function RentalsPage() {
                 <td style={compactCenterCellStyle}>₹{r.daily_rate}</td>
                 <td style={compactCenterCellStyle}>{r.start_date}</td>
                 <td style={compactCenterCellStyle}>
+                  {r.expected_end_date || r.end_date ? (
+                    r.expected_end_date || r.end_date
+                  ) : (
+                    <span style={{ color: "#64748b", fontWeight: 900 }}>
+                      No due date
+                    </span>
+                  )}
+                </td>
+                <td style={compactCenterCellStyle}>
                   {calcDays(
                     r.start_date,
                     r.end_date,
@@ -3437,20 +3740,48 @@ export default function RentalsPage() {
                 </td>
                 <td style={compactCenterCellStyle}>₹{(Number(r.qty || 1) * Number(r.daily_rate || 0)).toFixed(0)}</td>
                 <td style={compactCenterCellStyle}>{r.shop || "-"}</td>
-                <td style={compactCenterCellStyle}>{r.status}</td>
+                <td style={compactCenterCellStyle}>
+                  {(r.expected_end_date || r.end_date) &&
+                  (r.expected_end_date || r.end_date) < today
+                    ? "Overdue"
+                    : r.status}
+                </td>
 
                 <td style={compactCenterCellStyle}>
-                  <select
-                    style={compactSelectStyle}
-                    value={returnMode[r.id] || ""}
-                    onChange={(e) => handleReturn(r.id, e.target.value)}
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 6,
+                      flexWrap: "wrap",
+                    }}
                   >
-                    <option value="">Return</option>
-                    <option value="Same Day">Same Day</option>
-                    <option value="Today">Today</option>
-                    <option value="Pick Date">Pick a Date</option>
-                    <option value="Partial Return">Partial Return</option>
-                  </select>
+                    <select
+                      style={compactSelectStyle}
+                      value={returnMode[r.id] || ""}
+                      onChange={(e) => handleReturn(r.id, e.target.value)}
+                    >
+                      <option value="">Return</option>
+                      <option value="Same Day">Same Day</option>
+                      <option value="Today">Today</option>
+                      <option value="Pick Date">Pick a Date</option>
+                      <option value="Partial Return">Partial Return</option>
+                    </select>
+                    <button
+                      type="button"
+                      className="btn-blue"
+                      onClick={() => handleReturn(r.id, "Return & Pay")}
+                      disabled={rentalActionSaving}
+                      style={{
+                        minHeight: 38,
+                        padding: "6px 10px",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      Return & Pay
+                    </button>
+                  </div>
 
                   {returnMode[r.id] === "Pick Date" && (
                     <div style={{ marginTop: 6 }}>
@@ -3487,7 +3818,7 @@ export default function RentalsPage() {
 
             {filteredActiveRentals.length === 0 && (
               <tr>
-                <td colSpan={11} style={compactCenterCellStyle}>
+                <td colSpan={12} style={compactCenterCellStyle}>
                   No live rentals
                 </td>
               </tr>
@@ -3711,7 +4042,7 @@ export default function RentalsPage() {
                         fontSize: 13,
                       }}
                     >
-                      Edit
+                      Correct Return
                     </button>
                   </td>
                 </tr>

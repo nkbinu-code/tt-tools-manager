@@ -13,6 +13,7 @@ import {
   suggestCustomersForPage,
   updateCustomer,
 } from "./actions";
+import { moveCustomerBalanceToArrears } from "../payments/actions";
 import { useAppMessage } from "../contexts/AppMessageProvider";
 
 const branches = [
@@ -256,6 +257,7 @@ export default function CustomersPage() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editRow, setEditRow] = useState<any>({});
   const [loading, setLoading] = useState(false);
+  const [arrearsSavingId, setArrearsSavingId] = useState<number | null>(null);
 
   const [sortKey, setSortKey] =
     useState<SortKey>("last_transaction");
@@ -493,6 +495,53 @@ export default function CustomersPage() {
       result.message || "Customer deleted successfully"
     );
     clearSearch();
+  }
+
+  async function moveCustomerToArrears(row: any) {
+    const customerId = getCustomerId(row);
+    const amount = Number(row.balance || 0);
+    if (!customerId || amount <= 0 || arrearsSavingId) {
+      if (amount <= 0) showWarning("This customer has no pending balance");
+      return;
+    }
+
+    const reason = window.prompt(
+      `Move ${money(amount)} to arrears for ${row.customer_name}? Enter the reason:`,
+      "Long pending balance",
+    );
+    if (reason === null) return;
+    if (reason.trim().length < 3) {
+      showWarning("Please enter a proper reason");
+      return;
+    }
+    const remarks =
+      window.prompt("Optional arrears remarks:", "") || "";
+    if (
+      !window.confirm(
+        `Move ${money(amount)} to arrears for ${row.customer_name}?`,
+      )
+    ) {
+      return;
+    }
+
+    setArrearsSavingId(customerId);
+    const result: any = await moveCustomerBalanceToArrears({
+      customer_id: customerId,
+      customer_name: row.customer_name || "",
+      mobile: row.mobile || "",
+      shop: row.shop || "",
+      amount,
+      reason: reason.trim(),
+      remarks: remarks.trim(),
+    });
+    setArrearsSavingId(null);
+
+    if (!result.success) {
+      showError(result.message || "Failed to move balance to arrears");
+      return;
+    }
+    await loadCustomers(search, customerId);
+    showSuccess("Balance moved to arrears successfully");
   }
 
   const occupationOptions = useMemo(() => {
@@ -997,6 +1046,7 @@ export default function CustomersPage() {
               row.opening_balance || 0
             );
             const pendingBalance = Number(row.balance || 0);
+            const arrearsTotal = Number(row.arrears_total || 0);
 
             return (
               <article
@@ -1179,6 +1229,19 @@ export default function CustomersPage() {
 
                       <div className="customer-card-actions">
                         <button
+                          className="btn-gray"
+                          type="button"
+                          onClick={() => moveCustomerToArrears(row)}
+                          disabled={
+                            pendingBalance <= 0 ||
+                            arrearsSavingId === customerId
+                          }
+                        >
+                          {arrearsSavingId === customerId
+                            ? "Moving..."
+                            : "Move to Arrears"}
+                        </button>
+                        <button
                           className="btn-blue"
                           type="button"
                           onClick={() => startEdit(row)}
@@ -1246,6 +1309,24 @@ export default function CustomersPage() {
                             {pendingBalance > 0
                               ? "Payment still pending"
                               : "No pending balance"}
+                          </small>
+                        </div>
+
+                        <div
+                          className={`customer-account-card ${
+                            arrearsTotal > 0
+                              ? "customer-account-pending"
+                              : "customer-account-clear"
+                          }`}
+                        >
+                          <span className="customer-account-card-label">
+                            Arrears
+                          </span>
+                          <strong>{money(arrearsTotal)}</strong>
+                          <small>
+                            {arrearsTotal > 0
+                              ? "Moved from active pending balance"
+                              : "No arrears"}
                           </small>
                         </div>
                       </div>

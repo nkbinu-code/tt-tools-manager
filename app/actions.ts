@@ -564,17 +564,29 @@ export async function getDashboardStats(filters?: {
   const rentalOverdueAlerts: any[] = [];
 
   rentals
-    .filter((r: any) => isActiveRental(r))
+    .filter(
+      (r: any) =>
+        isActiveRental(r) &&
+        Boolean(r.expected_end_date || r.end_date),
+    )
     .forEach((r: any) => {
       const tool = tools.find((t: any) => Number(t.id) === Number(r.tool_id));
       if (!tool) return;
 
-      const overdueDays = Number(tool.rental_overdue_days || 0);
-      if (!overdueDays) return;
+      const dueDate = String(
+        r.expected_end_date || r.end_date || "",
+      ).slice(0, 10);
+      if (!dueDate || dueDate >= today) return;
+      const days = Math.max(
+        1,
+        Math.floor(
+          (new Date(`${today}T00:00:00`).getTime() -
+            new Date(`${dueDate}T00:00:00`).getTime()) /
+            86400000,
+        ),
+      );
 
-      const days = continuousCalendarDays(r.start_date);
-
-      if (days > overdueDays) {
+      if (days > 0) {
         const customer = customers.find(
           (c: any) => Number(c.id) === Number(r.customer_id)
         );
@@ -588,8 +600,8 @@ export async function getDashboardStats(filters?: {
             : "Unknown",
           shop: r.shop || "",
           days,
-          overdueDays,
-          message: `${tool.tool_name} is rented for ${days} day(s). Limit is ${overdueDays}.`,
+          overdueDays: days,
+          message: `${tool.tool_name} is overdue by ${days} day(s). Due date: ${dueDate}.`,
         });
       }
     });
@@ -1208,7 +1220,11 @@ export async function getDashboardStats(filters?: {
 
   // 1. Closest active rental to the 10-day overdue limit.
   const nearestOverdueRental = rentals
-    .filter((rental: any) => isActiveRental(rental))
+    .filter(
+      (rental: any) =>
+        isActiveRental(rental) &&
+        Boolean(rental.expected_end_date || rental.end_date),
+    )
     .map((rental: any) => {
       const days = continuousCalendarDays(
         rowDate(rental, "start_date", "date", "rental_date")
@@ -1563,11 +1579,11 @@ export async function getDashboardStats(filters?: {
 
   return {
     totalTools: tools.reduce((sum: number, tool: any) => sum + Math.max(Number(tool.total_qty || 1), 1), 0),
-    activeRentals: rentals.filter((r) => isActiveRental(r)).length,
+    activeRentals: rentals.filter((r: any) => isActiveRental(r)).length,
     toolsInService: tools.filter(
-      (t) => t.status === "Service" || t.status === "In Service"
+      (t: any) => t.status === "Service" || t.status === "In Service"
     ).length,
-    missingTools: tools.filter((t) => t.status === "Missing").length,
+    missingTools: tools.filter((t: any) => t.status === "Missing").length,
     pendingBalance,
     todayBusiness: rentals.reduce(
       (sum: number, rental: any) =>
@@ -2276,6 +2292,8 @@ export async function getRentalPageData() {
     .select("*")
     .order("created_at", { ascending: false });
 
+  const arrearsRes = await supabase.from("customer_arrears").select("*");
+
   if (customersRes.error) {
     return { success: false, message: customersRes.error.message };
   }
@@ -2288,11 +2306,16 @@ export async function getRentalPageData() {
     return { success: false, message: rentalsRes.error.message };
   }
 
+  if (arrearsRes.error) {
+    return { success: false, message: arrearsRes.error.message };
+  }
+
   return {
     success: true,
     customers: customersRes.data || [],
     tools: toolsRes.data || [],
     rentals: rentalsRes.data || [],
+    arrears: arrearsRes.data || [],
   };
 }
 
@@ -2417,7 +2440,9 @@ function cleanRentalRow(row: any) {
     daily_rate: dailyRate,
     discount,
     start_date: row.start_date,
-    end_date: row.end_date || null,
+    expected_end_date:
+      row.expected_end_date || row.end_date || null,
+    end_date: row.status === "Returned" ? row.end_date || null : null,
     status: row.status || "Active",
     total_amount: totalAmount,
     payment_status: row.payment_status || "Not Paid",
@@ -2516,6 +2541,17 @@ export async function returnRental(id: number, endDate: string) {
     .single();
 
   if (readError) return { success: false, message: readError.message };
+  const normalizedEndDate = String(endDate || "").slice(0, 10);
+  const normalizedStartDate = String(data.start_date || "").slice(0, 10);
+  if (!normalizedEndDate) {
+    return { success: false, message: "Return date is required" };
+  }
+  if (normalizedStartDate && normalizedEndDate < normalizedStartDate) {
+    return {
+      success: false,
+      message: `Return date cannot be before rental start date (${normalizedStartDate}).`,
+    };
+  }
 
   const qty = Number(data.qty || 1);
   const dailyRate = Number(data.daily_rate || 0);
@@ -2523,14 +2559,17 @@ export async function returnRental(id: number, endDate: string) {
   const avoidSundays = data.avoid_sundays !== false;
 
   const totalAmount = Math.max(
-    qty * dailyRate * calcDays(data.start_date, endDate, avoidSundays) - discount,
+    qty *
+      dailyRate *
+      calcDays(data.start_date, normalizedEndDate, avoidSundays) -
+      discount,
     0
   );
 
   const { error } = await supabase
     .from("rentals")
     .update({
-      end_date: endDate,
+      end_date: normalizedEndDate,
       status: "Returned",
       total_amount: totalAmount,
       payment_status: "Pending",
@@ -2544,6 +2583,164 @@ export async function returnRental(id: number, endDate: string) {
   revalidatePath("/collections");
   revalidatePath("/");
   return { success: true, message: "Rental returned successfully" };
+}
+
+export async function returnRentalsBatch(
+  selections: Array<{ id: number; returnDate: string; returnQty?: number }>,
+) {
+  const uniqueSelections = Array.from(
+    new Map(
+      (selections || []).map((item) => [
+        Number(item.id),
+        {
+          id: Number(item.id),
+          returnDate: String(item.returnDate || "").slice(0, 10),
+          returnQty: Number(item.returnQty || 0),
+        },
+      ]),
+    ).values(),
+  ).filter((item) => item.id && item.returnDate);
+
+  if (uniqueSelections.length === 0) {
+    return { success: false, message: "Select at least one live rental" };
+  }
+
+  const ids = uniqueSelections.map((item) => item.id);
+  const { data: existingRows, error: readError } = await supabase
+    .from("rentals")
+    .select("*")
+    .in("id", ids);
+
+  if (readError) return { success: false, message: readError.message };
+  if ((existingRows || []).length !== ids.length) {
+    return {
+      success: false,
+      message: "One or more selected rentals could not be found. Refresh and try again.",
+    };
+  }
+
+  const prepared: any[] = [];
+  for (const selection of uniqueSelections) {
+    const rental = (existingRows || []).find(
+      (row: any) => Number(row.id) === selection.id,
+    );
+    const startDate = String(rental?.start_date || "").slice(0, 10);
+    const liveQty = Math.max(Number(rental?.qty || 1), 1);
+    const returnQty = selection.returnQty
+      ? Number(selection.returnQty)
+      : liveQty;
+
+    if (
+      String(rental?.status || "").toLowerCase() === "returned" ||
+      rental?.return_date
+    ) {
+      return {
+        success: false,
+        message: `${rental?.outside_item_name || "A selected rental"} is already returned.`,
+      };
+    }
+    if (!startDate || selection.returnDate < startDate) {
+      return {
+        success: false,
+        message: `Return date cannot be before rental start date (${startDate || "missing"}).`,
+      };
+    }
+    if (!Number.isInteger(returnQty) || returnQty < 1 || returnQty > liveQty) {
+      return {
+        success: false,
+        message: `Return quantity must be between 1 and ${liveQty}.`,
+      };
+    }
+
+    const totalAmount = Math.max(
+      returnQty *
+        Number(rental.daily_rate || 0) *
+        calcDays(
+          startDate,
+          selection.returnDate,
+          rental.avoid_sundays !== false,
+        ) -
+        (returnQty === liveQty ? Number(rental.discount || 0) : 0),
+      0,
+    );
+
+    prepared.push({
+      rental,
+      returnDate: selection.returnDate,
+      returnQty,
+      liveQty,
+      totalAmount,
+    });
+  }
+
+  const restored: any[] = [];
+  const insertedIds: number[] = [];
+
+  try {
+    for (const item of prepared) {
+      restored.push(item.rental);
+
+      if (item.returnQty === item.liveQty) {
+        const { error } = await supabase
+          .from("rentals")
+          .update({
+            end_date: item.returnDate,
+            status: "Returned",
+            total_amount: item.totalAmount,
+            payment_status: "Pending",
+          })
+          .eq("id", item.rental.id);
+        if (error) throw error;
+        continue;
+      }
+
+      const { id, created_at, updated_at, ...copySource } = item.rental;
+      const { data: inserted, error: insertError } = await supabase
+        .from("rentals")
+        .insert({
+          ...copySource,
+          qty: item.returnQty,
+          end_date: item.returnDate,
+          status: "Returned",
+          total_amount: item.totalAmount,
+          payment_status: "Pending",
+        })
+        .select("id")
+        .single();
+      if (insertError) throw insertError;
+      if (inserted?.id) insertedIds.push(Number(inserted.id));
+
+      const { error: updateError } = await supabase
+        .from("rentals")
+        .update({ qty: item.liveQty - item.returnQty })
+        .eq("id", item.rental.id);
+      if (updateError) throw updateError;
+    }
+  } catch (error: any) {
+    if (insertedIds.length > 0) {
+      await supabase.from("rentals").delete().in("id", insertedIds);
+    }
+    for (const original of restored.reverse()) {
+      const { id, created_at, updated_at, ...values } = original;
+      await supabase.from("rentals").update(values).eq("id", id);
+    }
+    return {
+      success: false,
+      message:
+        error?.message ||
+        "No rentals were closed because the complete return could not be saved.",
+    };
+  }
+
+  revalidatePath("/rentals");
+  revalidatePath("/payments");
+  revalidatePath("/customers");
+  revalidatePath("/collections");
+  revalidatePath("/");
+  return {
+    success: true,
+    message: `${prepared.length} selected rental(s) returned successfully`,
+  };
 }
 
 
@@ -2609,6 +2806,10 @@ export async function updateRentalWithAudit(payload: any) {
     const discount = Math.max(Number(rental.discount || 0), 0);
     const startDate = rental.start_date;
     const endDate = status === "Returned" ? rental.end_date : null;
+    const expectedEndDate =
+      rental.expected_end_date ||
+      (status === "Active" ? rental.end_date : existing.expected_end_date) ||
+      null;
     const avoidSundays = rental.avoid_sundays !== false;
 
     if (!rental.customer_id || !startDate) {
@@ -2652,6 +2853,7 @@ export async function updateRentalWithAudit(payload: any) {
       daily_rate: dailyRate,
       discount,
       start_date: startDate,
+      expected_end_date: expectedEndDate,
       end_date: endDate || null,
       status,
       total_amount: totalAmount,

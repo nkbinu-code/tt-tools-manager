@@ -5,7 +5,6 @@ import * as XLSX from "xlsx";
 import {
   searchToolsForToolsPage,
   suggestToolsForToolsPage,
-  searchToolsForHistory,
   saveTools,
   updateTool,
   deleteTool,
@@ -26,6 +25,7 @@ const serviceCentres = [
 ];
 
 const statuses = ["Available", "Rented", "Service", "Missing"];
+const ALL_TOOLS_SEARCH_TOKEN = "__ALL_TOOLS__";
 
 const shortNames: any = {
   Karuvannur: "KVR",
@@ -66,27 +66,27 @@ const emptyTool = {
 };
 
 const cellStyle = {
-  padding: "12px 10px",
+  padding: "6px 4px",
   fontWeight: 750,
-  lineHeight: 1.3,
-  fontSize: 17,
+  lineHeight: 1.2,
+  fontSize: 13,
   textAlign: "center" as const,
   verticalAlign: "middle" as const,
 };
 
 const strongCellStyle = {
-  padding: "12px 10px",
+  padding: "6px 4px",
   fontWeight: 850,
-  lineHeight: 1.3,
-  fontSize: 17,
+  lineHeight: 1.2,
+  fontSize: 13,
   textAlign: "center" as const,
   verticalAlign: "middle" as const,
 };
 
 const compactLocationCellStyle = {
   ...strongCellStyle,
-  padding: "11px 8px",
-  fontSize: 16,
+  padding: "6px 3px",
+  fontSize: 12,
   whiteSpace: "normal" as const,
   overflow: "visible" as const,
   lineHeight: 1.35,
@@ -96,22 +96,22 @@ const compactLocationCellStyle = {
 const toolNameCellStyle = {
   ...strongCellStyle,
   textAlign: "left" as const,
-  fontSize: 21,
+  fontSize: 15,
   fontWeight: 950,
-  minWidth: 440,
-  maxWidth: 620,
+  minWidth: 0,
+  maxWidth: "none",
   whiteSpace: "normal" as const,
 };
 
 const tableHeadStyle = {
-  fontSize: 16,
+  fontSize: 12,
   fontWeight: 900,
   textAlign: "center" as const,
   whiteSpace: "nowrap" as const,
 };
 
 const inputStyle = {
-  fontSize: 16,
+  fontSize: 13,
   fontWeight: 800,
   textAlign: "center" as const,
 };
@@ -266,7 +266,12 @@ export default function ToolsPage() {
   const [rentals, setRentals] = useState<any[]>([]);
   const [serviceRows, setServiceRows] = useState<any[]>([]);
   const [search, setSearch] = useState("");
+  const [toolTypeFilter, setToolTypeFilter] = useState("All");
+  const [categoryFilter, setCategoryFilter] = useState("All");
+  const [homeBranchFilter, setHomeBranchFilter] = useState("All");
   const [locationFilter, setLocationFilter] = useState("All");
+  const [statusFilter, setStatusFilter] = useState("All");
+  const [quickFilter, setQuickFilter] = useState("All");
   const [sortKey, setSortKey] = useState("tool_name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [editingGroupKey, setEditingGroupKey] = useState<string | null>(null);
@@ -279,34 +284,23 @@ export default function ToolsPage() {
   const [importFileName, setImportFileName] = useState("");
 
   const [historyToolId, setHistoryToolId] = useState("");
-  const [historySearch, setHistorySearch] = useState("");
   const [historyOptions, setHistoryOptions] = useState<any[]>([]);
   const [toolHistory, setToolHistory] = useState<any[]>([]);
   const [historyTool, setHistoryTool] = useState<any>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyOptionsLoading, setHistoryOptionsLoading] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [resultLimited, setResultLimited] = useState(false);
-  const [showAddTools, setShowAddTools] = useState(false);
   const [toolSuggestions, setToolSuggestions] = useState<any[]>([]);
   const [suggestionLoading, setSuggestionLoading] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
-  const [suggestionLimited, setSuggestionLimited] = useState(false);
-  const [selectedExactToolName, setSelectedExactToolName] = useState<
-    string | null
-  >(null);
-  const skipNextSuggestionSearch = useRef(false);
+  const [showAddTools, setShowAddTools] = useState(false);
+  const categorySelectRef = useRef<HTMLSelectElement | null>(null);
+  const searchRequestIdRef = useRef(0);
+  const suggestionRequestIdRef = useRef(0);
 
-  async function loadTools(
-    value = search,
-    exactToolName: string | null = selectedExactToolName
-  ) {
+  async function loadTools(value = search) {
     const term = String(value || "").trim();
-    const useExactName = Boolean(
-      exactToolName &&
-        exactToolName.trim().toLowerCase() === term.toLowerCase()
-    );
 
     if (!term) {
       setTools([]);
@@ -317,17 +311,33 @@ export default function ToolsPage() {
       return;
     }
 
+    const requestId = ++searchRequestIdRef.current;
     setSearchLoading(true);
 
     try {
-      const res = await searchToolsForToolsPage(term, useExactName);
+      const res = await searchToolsForToolsPage(term, false);
+      if (requestId !== searchRequestIdRef.current) return;
+
       setHasSearched(true);
 
       if (res.success) {
-        setTools(res.data || []);
+        const matchingTools = res.data || [];
+        setTools(matchingTools);
         setRentals(res.rentals || []);
         setServiceRows(res.services || []);
+        setHistoryOptions(matchingTools);
         setResultLimited(Boolean(res.limited));
+
+        if (
+          historyToolId &&
+          !matchingTools.some(
+            (tool: any) => String(tool.id || "") === String(historyToolId)
+          )
+        ) {
+          setHistoryToolId("");
+          setToolHistory([]);
+          setHistoryTool(null);
+        }
       } else {
         setTools([]);
         setRentals([]);
@@ -336,85 +346,58 @@ export default function ToolsPage() {
         showError(res.message || "Failed to search tools");
       }
     } finally {
-      setSearchLoading(false);
+      if (requestId === searchRequestIdRef.current) {
+        setSearchLoading(false);
+      }
     }
   }
 
   useEffect(() => {
     const term = search.trim();
 
-    if (skipNextSuggestionSearch.current) {
-      skipNextSuggestionSearch.current = false;
-      return;
-    }
+    if (!term) return;
 
-    if (term.length < 2) {
+    const timer = window.setTimeout(() => {
+      void loadTools(term);
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
+    const term = search.trim();
+
+    if (!term) {
+      suggestionRequestIdRef.current += 1;
       setToolSuggestions([]);
       setSuggestionLoading(false);
-      setSuggestionLimited(false);
+      setShowSuggestions(false);
       return;
     }
 
-    let cancelled = false;
-
+    const requestId = ++suggestionRequestIdRef.current;
     const timer = window.setTimeout(async () => {
       setSuggestionLoading(true);
 
       try {
         const res = await suggestToolsForToolsPage(term);
-
-        if (cancelled) return;
+        if (requestId !== suggestionRequestIdRef.current) return;
 
         if (res.success) {
           setToolSuggestions(res.data || []);
-          setSuggestionLimited(Boolean(res.limited));
           setShowSuggestions(true);
         } else {
           setToolSuggestions([]);
-          setSuggestionLimited(false);
         }
       } finally {
-        if (!cancelled) setSuggestionLoading(false);
+        if (requestId === suggestionRequestIdRef.current) {
+          setSuggestionLoading(false);
+        }
       }
-    }, 280);
+    }, 180);
 
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
+    return () => window.clearTimeout(timer);
   }, [search]);
-
-  async function chooseLiveSuggestion(toolName: string) {
-    const exactName = String(toolName || "").trim();
-    if (!exactName) return;
-
-    skipNextSuggestionSearch.current = true;
-    setSearch(exactName);
-    setSelectedExactToolName(exactName);
-    setShowSuggestions(false);
-    setToolSuggestions([]);
-    await loadTools(exactName, exactName);
-  }
-
-  function functionTextWithMatch(textValue: string) {
-    const text = String(textValue || "");
-    const term = search.trim();
-
-    if (!term) return text;
-
-    const index = text.toLowerCase().indexOf(term.toLowerCase());
-    if (index < 0) return text;
-
-    return (
-      <>
-        {text.slice(0, index)}
-        <mark className="tool-suggestion-mark">
-          {text.slice(index, index + term.length)}
-        </mark>
-        {text.slice(index + term.length)}
-      </>
-    );
-  }
 
   function showMessage(text: string) {
     if (!text) return;
@@ -616,6 +599,12 @@ export default function ToolsPage() {
         oil_change_due_days: items[0]?.oil_change_due_days || 0,
         scheduled_service_due_days: items[0]?.scheduled_service_due_days || 0,
         rental_overdue_days: items[0]?.rental_overdue_days || 0,
+        tool_type: items.some((item: any) => Number(item.total_qty || 1) > 1)
+          ? "Quantity"
+          : "Individual",
+        service_due: items.some((item: any) =>
+          toolDueValues(item).some((value) => value < 0)
+        ),
       };
     });
   }, [tools, locationFilter, rentals, serviceRows]);
@@ -631,7 +620,7 @@ export default function ToolsPage() {
   }
 
   function sortArrow(key: string) {
-    if (sortKey !== key) return "";
+    if (sortKey !== key) return " ↕";
     return sortDirection === "asc" ? " ▲" : " ▼";
   }
 
@@ -679,19 +668,100 @@ export default function ToolsPage() {
     return "";
   }
 
-  const filteredTools = useMemo(() => {
-    const base = groupedTools.filter((tool: any) => {
-      if (locationFilter === "All") return true;
+  const categoryOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          groupedTools
+            .map((tool: any) => String(tool.category || "").trim())
+            .filter(Boolean)
+        )
+      ).sort((a, b) => String(a).localeCompare(String(b))),
+    [groupedTools]
+  );
 
-      return tool.grouped_items.some((item: any) => {
-        return (
-          item.home_branch === locationFilter ||
-          item.current_location === locationFilter ||
-          item.service_centre === locationFilter ||
-          item.physical_location === locationFilter ||
-          String(item.display_location || "").includes(locationFilter)
-        );
-      });
+  const filterCounts = useMemo(() => {
+    const matchesStatus = (tool: any, status: string) =>
+      (tool.grouped_items || []).some(
+        (item: any) =>
+          String(item.status || "Available").trim().toLowerCase() ===
+          status.toLowerCase()
+      );
+
+    return {
+      all: groupedTools.length,
+      available: groupedTools.filter((tool: any) =>
+        matchesStatus(tool, "Available")
+      ).length,
+      rented: groupedTools.filter((tool: any) => matchesStatus(tool, "Rented"))
+        .length,
+      service: groupedTools.filter((tool: any) =>
+        matchesStatus(tool, "Service")
+      ).length,
+      missing: groupedTools.filter((tool: any) =>
+        matchesStatus(tool, "Missing")
+      ).length,
+      serviceDue: groupedTools.filter((tool: any) => tool.service_due).length,
+      categories: categoryOptions.length,
+    };
+  }, [groupedTools, categoryOptions]);
+
+  const filteredTools = useMemo(() => {
+    const matchesStatus = (tool: any, status: string) =>
+      (tool.grouped_items || []).some(
+        (item: any) =>
+          String(item.status || "Available").trim().toLowerCase() ===
+          status.toLowerCase()
+      );
+
+    const base = groupedTools.filter((tool: any) => {
+      if (toolTypeFilter !== "All" && tool.tool_type !== toolTypeFilter) {
+        return false;
+      }
+
+      if (
+        categoryFilter !== "All" &&
+        String(tool.category || "").trim() !== categoryFilter
+      ) {
+        return false;
+      }
+
+      if (
+        homeBranchFilter !== "All" &&
+        !(tool.grouped_items || []).some(
+          (item: any) => item.home_branch === homeBranchFilter
+        )
+      ) {
+        return false;
+      }
+
+      if (
+        locationFilter !== "All" &&
+        !(tool.grouped_items || []).some((item: any) => {
+          return (
+            item.current_location === locationFilter ||
+            item.service_centre === locationFilter ||
+            item.physical_location === locationFilter ||
+            String(item.display_location || "").includes(locationFilter)
+          );
+        })
+      ) {
+        return false;
+      }
+
+      if (statusFilter !== "All" && !matchesStatus(tool, statusFilter)) {
+        return false;
+      }
+
+      if (quickFilter === "Service Due" && !tool.service_due) return false;
+      if (
+        ["Available", "Rented", "Service", "Missing"].includes(quickFilter) &&
+        !matchesStatus(tool, quickFilter)
+      ) {
+        return false;
+      }
+
+      return true;
     });
 
     return [...base].sort((a: any, b: any) => {
@@ -705,7 +775,17 @@ export default function ToolsPage() {
       const result = String(aValue).localeCompare(String(bValue));
       return sortDirection === "asc" ? result : -result;
     });
-  }, [groupedTools, locationFilter, sortKey, sortDirection]);
+  }, [
+    groupedTools,
+    toolTypeFilter,
+    categoryFilter,
+    homeBranchFilter,
+    locationFilter,
+    statusFilter,
+    quickFilter,
+    sortKey,
+    sortDirection,
+  ]);
 
   const toolSummary = useMemo(() => {
     const purchase = filteredTools.reduce((sum: number, tool: any) => sum + Number(tool.purchase_cost || 0), 0);
@@ -761,43 +841,44 @@ export default function ToolsPage() {
     const term = search.trim();
 
     if (!term) {
-      showWarning("Start typing a tool name");
+      showWarning("Start typing a tool name or click All Tools");
       return;
     }
 
-    const selectedName =
-      selectedExactToolName &&
-      selectedExactToolName.trim().toLowerCase() === term.toLowerCase()
-        ? selectedExactToolName
-        : null;
+    // The Search button always performs a broad search. Suggestions remain
+    // optional shortcuts for opening one exact saved tool name.
+    await loadTools(term);
+  }
 
-    if (selectedName) {
-      setShowSuggestions(false);
-      await loadTools(selectedName, selectedName);
-      return;
-    }
-
-    if (toolSuggestions.length === 1) {
-      await chooseLiveSuggestion(toolSuggestions[0].tool_name);
-      return;
-    }
-
-    setShowSuggestions(true);
-    showWarning("Click one tool from the live matches to continue");
+  async function showAllTools() {
+    setSearch("");
+    setToolTypeFilter("All");
+    setCategoryFilter("All");
+    setHomeBranchFilter("All");
+    setLocationFilter("All");
+    setStatusFilter("All");
+    setQuickFilter("All");
+    await loadTools(ALL_TOOLS_SEARCH_TOKEN);
   }
 
   function clearSearch() {
+    searchRequestIdRef.current += 1;
     setSearch("");
     setTools([]);
     setRentals([]);
     setServiceRows([]);
+    setHistoryOptions([]);
+    setHistoryToolId("");
+    setToolHistory([]);
+    setHistoryTool(null);
     setHasSearched(false);
     setResultLimited(false);
+    setToolTypeFilter("All");
+    setCategoryFilter("All");
+    setHomeBranchFilter("All");
     setLocationFilter("All");
-    setToolSuggestions([]);
-    setShowSuggestions(false);
-    setSuggestionLimited(false);
-    setSelectedExactToolName(null);
+    setStatusFilter("All");
+    setQuickFilter("All");
   }
 
   function startEditGroup(tool: any) {
@@ -1100,38 +1181,6 @@ export default function ToolsPage() {
     XLSX.writeFile(workbook, "T&T_Tools_List.xlsx");
   }
 
-  async function handleHistoryOptionSearch() {
-    const term = historySearch.trim();
-
-    setHistoryToolId("");
-    setToolHistory([]);
-    setHistoryTool(null);
-
-    if (!term) {
-      setHistoryOptions([]);
-      return;
-    }
-
-    setHistoryOptionsLoading(true);
-
-    try {
-      const res = await searchToolsForHistory(term);
-
-      if (res.success) {
-        setHistoryOptions(res.data || []);
-
-        if (res.limited) {
-          showMessage("Showing the first 50 matching tools. Make the search more specific if needed.");
-        }
-      } else {
-        setHistoryOptions([]);
-        showError(res.message || "Failed to search tools");
-      }
-    } finally {
-      setHistoryOptionsLoading(false);
-    }
-  }
-
   async function handleHistorySearch(toolId: string) {
     setHistoryToolId(toolId);
 
@@ -1157,7 +1206,9 @@ export default function ToolsPage() {
     <main>
       <style>{`
         .tools-results-shell {
-          overflow-x: auto;
+          width: 100%;
+          max-width: 100%;
+          overflow-x: hidden;
           border: 1px solid #cbd5e1;
           border-radius: 14px;
           background: #ffffff;
@@ -1165,8 +1216,110 @@ export default function ToolsPage() {
         }
 
         .tools-clean-table {
+          width: 100%;
+          max-width: 100%;
+          table-layout: fixed;
           border-collapse: separate;
           border-spacing: 0;
+        }
+
+        .tools-clean-table th,
+        .tools-clean-table td {
+          min-width: 0;
+          overflow-wrap: anywhere;
+          word-break: break-word;
+        }
+
+        .tools-main-table .tools-column-head th {
+          top: 0;
+          padding: 7px 3px;
+          font-size: 11px;
+          line-height: 1.15;
+          white-space: normal;
+        }
+
+        .tools-main-table th:nth-child(1) { width: 14%; }
+        .tools-main-table th:nth-child(2) { width: 3%; }
+        .tools-main-table th:nth-child(3) { width: 5%; }
+        .tools-main-table th:nth-child(4) { width: 5%; }
+        .tools-main-table th:nth-child(5) { width: 5%; }
+        .tools-main-table th:nth-child(6) { width: 4.5%; }
+        .tools-main-table th:nth-child(7) { width: 5%; }
+        .tools-main-table th:nth-child(8) { width: 5.5%; }
+        .tools-main-table th:nth-child(9) { width: 5%; }
+        .tools-main-table th:nth-child(10) { width: 4%; }
+        .tools-main-table th:nth-child(11) { width: 6%; }
+        .tools-main-table th:nth-child(12) { width: 6%; }
+        .tools-main-table th:nth-child(13) { width: 5%; }
+        .tools-main-table th:nth-child(14) { width: 4%; }
+        .tools-main-table th:nth-child(15) { width: 4%; }
+        .tools-main-table th:nth-child(16) { width: 4.5%; }
+        .tools-main-table th:nth-child(17) { width: 5%; }
+        .tools-main-table th:nth-child(18) { width: 9.5%; }
+
+        .tools-main-table td {
+          padding: 6px 3px !important;
+          font-size: 12px !important;
+          line-height: 1.18 !important;
+          white-space: normal !important;
+        }
+
+        .tools-main-table .tool-name-cell {
+          min-width: 0 !important;
+          max-width: none !important;
+          font-size: 14px !important;
+        }
+
+        .tools-main-table input,
+        .tools-main-table select,
+        .tools-detail-table input,
+        .tools-detail-table select {
+          width: 100% !important;
+          min-width: 0 !important;
+          min-height: 30px !important;
+          padding: 3px 2px !important;
+          font-size: 12px !important;
+        }
+
+        .tools-main-table .tool-status-pill {
+          width: 100%;
+          min-width: 0;
+          padding: 4px 2px;
+          font-size: 11px;
+          line-height: 1.1;
+          white-space: normal;
+        }
+
+        .tools-main-table .tools-action-row {
+          gap: 4px !important;
+        }
+
+        .tools-main-table .tools-action-row button,
+        .tools-detail-table button {
+          flex: 1 1 42px;
+          min-width: 0;
+          min-height: 29px;
+          padding: 4px 5px !important;
+          font-size: 11px;
+          white-space: normal;
+        }
+
+        .tools-detail-table,
+        .tools-history-table {
+          width: 100%;
+          max-width: 100%;
+          table-layout: fixed;
+        }
+
+        .tools-detail-table th,
+        .tools-detail-table td,
+        .tools-history-table th,
+        .tools-history-table td {
+          padding: 6px 4px !important;
+          font-size: 12px !important;
+          line-height: 1.2;
+          white-space: normal;
+          overflow-wrap: anywhere;
         }
 
         .tools-clean-table th,
@@ -1197,7 +1350,7 @@ export default function ToolsPage() {
 
         .tools-clean-table thead .tools-column-head th {
           position: sticky;
-          top: 37px;
+          top: 0;
           z-index: 4;
           padding: 12px 8px;
           background: #e8f1ff;
@@ -1229,8 +1382,20 @@ export default function ToolsPage() {
           text-align: center;
         }
 
+        .tools-sort-button {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 4px;
+        }
+
         .tools-sort-button:hover {
           color: #0057ff !important;
+        }
+
+        .tool-detail-row > td {
+          border-top: 2px solid #8fb5ed;
+          border-bottom: 2px solid #8fb5ed !important;
         }
 
         .tools-clean-table .location-summary-cell {
@@ -1353,349 +1518,6 @@ export default function ToolsPage() {
           to { opacity: 1; transform: scale(1.12); }
         }
 
-        .tool-live-suggestions {
-          position: absolute;
-          top: calc(100% + 7px);
-          left: 0;
-          right: 0;
-          z-index: 60;
-          max-height: 420px;
-          overflow-y: auto;
-          border: 1px solid #9db9df;
-          border-radius: 13px;
-          background: #ffffff;
-          box-shadow: 0 18px 42px rgba(15, 42, 95, 0.22);
-        }
-
-        .tool-live-suggestions-head {
-          position: sticky;
-          top: 0;
-          z-index: 2;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 10px;
-          padding: 10px 13px;
-          background: #eaf3ff;
-          border-bottom: 1px solid #c6d9f1;
-          color: #143b75;
-          font-size: 14px;
-          font-weight: 950;
-        }
-
-        .tool-live-suggestion {
-          display: grid;
-          grid-template-columns: minmax(210px, 1.6fr) minmax(90px, 0.5fr) minmax(180px, 1fr);
-          gap: 12px;
-          width: 100%;
-          padding: 12px 13px;
-          border: 0;
-          border-bottom: 1px solid #e3eaf4;
-          background: #ffffff;
-          color: #17233b;
-          text-align: left;
-          cursor: pointer;
-        }
-
-        .tool-live-suggestion:hover,
-        .tool-live-suggestion:focus-visible {
-          background: #eef6ff;
-          outline: none;
-        }
-
-        .tool-live-suggestion-name {
-          font-size: 17px;
-          font-weight: 950;
-          line-height: 1.25;
-        }
-
-        .tool-live-suggestion-qty {
-          align-self: center;
-          justify-self: center;
-          padding: 5px 9px;
-          border-radius: 999px;
-          background: #e7f7ed;
-          color: #08783e;
-          font-size: 14px;
-          font-weight: 950;
-          white-space: nowrap;
-        }
-
-        .tool-live-suggestion-meta {
-          font-size: 14px;
-          font-weight: 800;
-          line-height: 1.4;
-          color: #52647f;
-        }
-
-        .tool-suggestion-mark {
-          padding: 0 1px;
-          border-radius: 3px;
-          background: #ffe48a;
-          color: inherit;
-        }
-
-        .tool-card-list {
-          display: grid;
-          gap: 16px;
-          width: 100%;
-        }
-
-        .tool-result-card {
-          width: 100%;
-          overflow: hidden;
-          border: 1px solid #b9cde7;
-          border-radius: 16px;
-          background: #ffffff;
-          box-shadow: 0 10px 28px rgba(15, 42, 95, 0.08);
-        }
-
-        .tool-result-card:hover {
-          border-color: #7ba5dc;
-          box-shadow: 0 14px 34px rgba(15, 42, 95, 0.13);
-        }
-
-        .tool-card-header {
-          display: grid;
-          grid-template-columns: minmax(240px, 1fr) auto auto;
-          align-items: center;
-          gap: 14px;
-          padding: 15px 16px;
-          background: linear-gradient(90deg, #eaf3ff 0%, #f8fbff 64%, #ffffff 100%);
-          border-bottom: 1px solid #cfdef0;
-        }
-
-        .tool-card-name {
-          margin: 0;
-          color: #102f67;
-          font-size: 22px;
-          font-weight: 1000;
-          line-height: 1.22;
-          overflow-wrap: anywhere;
-        }
-
-        .tool-card-header-meta {
-          display: flex;
-          flex-wrap: wrap;
-          align-items: center;
-          justify-content: flex-end;
-          gap: 9px;
-        }
-
-        .tool-qty-pill {
-          display: inline-flex;
-          min-width: 70px;
-          align-items: center;
-          justify-content: center;
-          padding: 7px 11px;
-          border: 1px solid #9fc0e9;
-          border-radius: 999px;
-          background: #ffffff;
-          color: #173e79;
-          font-size: 16px;
-          font-weight: 950;
-        }
-
-        .tool-card-actions {
-          display: flex;
-          flex-wrap: wrap;
-          justify-content: flex-end;
-          gap: 8px;
-        }
-
-        .tool-card-actions button {
-          min-height: 40px;
-          padding: 8px 13px !important;
-          font-size: 15px;
-          font-weight: 900 !important;
-        }
-
-        .tool-card-body {
-          display: grid;
-          grid-template-columns:
-            minmax(330px, 1.35fr)
-            minmax(220px, 0.9fr)
-            minmax(240px, 1fr)
-            minmax(300px, 1.15fr);
-          gap: 12px;
-          padding: 14px;
-        }
-
-        .tool-info-section {
-          min-width: 0;
-          overflow: hidden;
-          border: 1px solid #d6e2f0;
-          border-radius: 12px;
-          background: #fbfdff;
-        }
-
-        .tool-info-title {
-          padding: 8px 11px;
-          background: #143f82;
-          color: #ffffff;
-          font-size: 14px;
-          font-weight: 950;
-          letter-spacing: 0.45px;
-          text-transform: uppercase;
-        }
-
-        .tool-info-grid {
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-
-        .tool-info-item {
-          min-width: 0;
-          padding: 10px 11px;
-          border-right: 1px solid #e1e9f3;
-          border-bottom: 1px solid #e1e9f3;
-        }
-
-        .tool-info-item:nth-child(2n) {
-          border-right: 0;
-        }
-
-        .tool-info-item:nth-last-child(-n + 2) {
-          border-bottom: 0;
-        }
-
-        .tool-info-label {
-          display: block;
-          margin-bottom: 4px;
-          color: #60718a;
-          font-size: 12px;
-          font-weight: 900;
-          letter-spacing: 0.25px;
-          text-transform: uppercase;
-        }
-
-        .tool-info-value {
-          display: block;
-          color: #14213a;
-          font-size: 17px;
-          font-weight: 900;
-          line-height: 1.28;
-          overflow-wrap: anywhere;
-        }
-
-        .tool-money-earned .tool-info-value,
-        .tool-money-profit-positive .tool-info-value {
-          color: #0b8848;
-        }
-
-        .tool-money-spent .tool-info-value,
-        .tool-money-profit-negative .tool-info-value {
-          color: #b42318;
-        }
-
-        .tool-card-edit {
-          padding: 15px;
-        }
-
-        .tool-card-edit-grid {
-          display: grid;
-          grid-template-columns: repeat(4, minmax(180px, 1fr));
-          gap: 12px;
-        }
-
-        .tool-card-edit-field {
-          min-width: 0;
-        }
-
-        .tool-card-edit-field label {
-          display: block;
-          margin-bottom: 5px;
-          color: #4b5f7e;
-          font-size: 13px;
-          font-weight: 950;
-          text-transform: uppercase;
-        }
-
-        .tool-card-edit-field input,
-        .tool-card-edit-field select {
-          width: 100%;
-          min-height: 42px;
-          padding: 8px 10px;
-          font-size: 16px;
-          font-weight: 800;
-        }
-
-        .tool-details-panel {
-          padding: 14px;
-          border-top: 1px solid #c9d9ec;
-          background: #f5f9ff;
-        }
-
-        .tool-details-title {
-          margin: 0 0 12px;
-          color: #173d75;
-          font-size: 18px;
-          font-weight: 950;
-        }
-
-        .tool-details-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
-          gap: 12px;
-        }
-
-        .tool-detail-card {
-          overflow: hidden;
-          border: 1px solid #cbd9ea;
-          border-radius: 12px;
-          background: #ffffff;
-        }
-
-        .tool-detail-card-head {
-          display: flex;
-          flex-wrap: wrap;
-          align-items: center;
-          justify-content: space-between;
-          gap: 8px;
-          padding: 10px 11px;
-          background: #e9f2ff;
-          border-bottom: 1px solid #d1dfef;
-        }
-
-        .tool-detail-card-head strong {
-          color: #173d75;
-          font-size: 16px;
-          font-weight: 950;
-          overflow-wrap: anywhere;
-        }
-
-        .tool-detail-values {
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-
-        .tool-detail-actions {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 7px;
-          padding: 10px 11px;
-          border-top: 1px solid #e0e8f2;
-          background: #fafcff;
-        }
-
-        .tool-detail-actions button {
-          min-height: 38px;
-          padding: 7px 12px !important;
-          font-size: 14px;
-          font-weight: 900 !important;
-        }
-
-        .tool-empty-card {
-          padding: 34px 18px;
-          border: 1px dashed #9db5d3;
-          border-radius: 14px;
-          background: #f7fbff;
-          color: #52647f;
-          text-align: center;
-          font-size: 18px;
-          font-weight: 900;
-        }
-
         @media (max-width: 1450px) {
           .tool-card-body {
             grid-template-columns: repeat(2, minmax(280px, 1fr));
@@ -1745,179 +1567,518 @@ export default function ToolsPage() {
           }
         }
 
-        @media (max-width: 900px) {
-          .tools-search-controls {
-            align-items: stretch !important;
+        .tools-search-panel {
+          margin-bottom: 18px;
+          padding: 18px;
+          border: 2px solid #8eb9ea;
+          border-radius: 16px;
+          background: linear-gradient(180deg, #eaf4ff 0%, #dcecff 100%);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.8);
+        }
+
+        .tools-search-title-row {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 14px;
+          margin-bottom: 14px;
+        }
+
+        .tools-search-title-row h2 {
+          margin: 0;
+          color: #123a73;
+          font-size: 24px;
+          font-weight: 1000;
+        }
+
+        .tools-search-version {
+          margin-top: 4px;
+          color: #315b8f;
+          font-size: 13px;
+          font-weight: 950;
+          letter-spacing: 0.35px;
+        }
+
+        .tools-filter-cards {
+          display: grid;
+          grid-template-columns: repeat(7, minmax(110px, 1fr));
+          gap: 9px;
+          margin-bottom: 14px;
+        }
+
+        .tools-filter-card {
+          min-height: 70px;
+          padding: 9px 10px;
+          border: 1px solid #8fb5df;
+          border-radius: 11px;
+          background: #ffffff;
+          color: #173d75;
+          cursor: pointer;
+          text-align: left;
+        }
+
+        .tools-filter-card.active {
+          border-color: #1d5db5;
+          background: #e8f2ff;
+          box-shadow: inset 0 0 0 1px #1d5db5;
+        }
+
+        .tools-filter-card-label {
+          display: block;
+          font-size: 13px;
+          font-weight: 950;
+          text-transform: uppercase;
+        }
+
+        .tools-filter-card-value {
+          display: block;
+          margin-top: 4px;
+          font-size: 24px;
+          font-weight: 1000;
+          line-height: 1;
+        }
+
+        .tools-search-main-row {
+          display: grid;
+          grid-template-columns: minmax(320px, 1fr) auto;
+          gap: 12px;
+          align-items: start;
+          margin-bottom: 12px;
+        }
+
+        .tools-search-actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          align-items: center;
+        }
+
+        .tools-search-actions button {
+          min-height: 46px;
+          padding: 9px 14px !important;
+          font-weight: 950 !important;
+          white-space: nowrap;
+        }
+
+        .tool-live-search-wrap {
+          width: 100%;
+        }
+
+        .tool-live-search-wrap > input,
+        .tools-unified-filter-grid select {
+          border: 2px solid #8aaed8 !important;
+          background: #ffffff !important;
+          color: #102f67 !important;
+          box-shadow: 0 2px 6px rgba(15, 47, 103, 0.06);
+        }
+
+        .tool-live-suggestions {
+          position: absolute;
+          top: 52px;
+          left: 0;
+          right: 0;
+          z-index: 80;
+          max-height: 430px;
+          overflow-y: auto;
+          border: 2px solid #4f83c5;
+          border-radius: 12px;
+          background: #ffffff;
+          box-shadow: 0 18px 42px rgba(15, 42, 95, 0.22);
+        }
+
+        .tool-live-suggestions-head {
+          position: sticky;
+          top: 0;
+          z-index: 2;
+          display: grid;
+          grid-template-columns: minmax(220px, 1.7fr) 90px 150px minmax(170px, 1fr);
+          gap: 10px;
+          padding: 10px 12px;
+          border-bottom: 1px solid #b8cce6;
+          background: #dcecff;
+          color: #123a73;
+          font-size: 13px;
+          font-weight: 1000;
+          text-transform: uppercase;
+        }
+
+        .tool-live-suggestion-row {
+          display: grid;
+          grid-template-columns: minmax(220px, 1.7fr) 90px 150px minmax(170px, 1fr);
+          gap: 10px;
+          width: 100%;
+          padding: 10px 12px;
+          border: 0;
+          border-bottom: 1px solid #e1eaf5;
+          background: #ffffff;
+          color: #17233b;
+          text-align: left;
+          cursor: pointer;
+        }
+
+        .tool-live-suggestion-row:hover,
+        .tool-live-suggestion-row:focus-visible {
+          background: #edf6ff;
+          outline: none;
+        }
+
+        .tool-live-suggestion-row strong {
+          color: #123a73;
+          font-size: 16px;
+          font-weight: 1000;
+        }
+
+        .tool-live-suggestion-row span {
+          align-self: center;
+          font-size: 14px;
+          font-weight: 800;
+        }
+
+        .tool-live-suggestions-empty {
+          padding: 16px;
+          color: #52647f;
+          font-weight: 850;
+        }
+
+        .tools-summary-strip {
+          display: grid;
+          grid-template-columns: repeat(6, minmax(120px, 1fr));
+          overflow: hidden;
+          margin-top: 12px;
+          border: 1px solid #9dbce0;
+          border-radius: 11px;
+          background: #ffffff;
+        }
+
+        .tools-summary-item {
+          padding: 10px 12px;
+          border-right: 1px solid #cbdcf0;
+        }
+
+        .tools-summary-item:last-child {
+          border-right: 0;
+        }
+
+        .tools-summary-label {
+          display: block;
+          color: #60718a;
+          font-size: 12px;
+          font-weight: 950;
+          text-transform: uppercase;
+        }
+
+        .tools-summary-value {
+          display: block;
+          margin-top: 3px;
+          color: #0d3670;
+          font-size: 21px;
+          font-weight: 1000;
+        }
+
+        .tools-summary-value.positive { color: #0b8848; }
+        .tools-summary-value.negative { color: #b42318; }
+
+        .tools-unified-filter-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+          gap: 10px;
+          width: 100%;
+          margin-top: 12px;
+        }
+
+        .tools-unified-filter-grid select {
+          width: 100%;
+          min-height: 44px;
+          font-size: 15px;
+          font-weight: 800;
+        }
+
+        .tools-history-section {
+          margin-top: 20px;
+          padding-top: 18px;
+          border-top: 2px solid #cbd5e1;
+        }
+
+        .tools-history-table-wrap {
+          width: 100%;
+          max-width: 100%;
+          overflow-x: hidden;
+        }
+
+        @media (max-width: 1200px) {
+          .tools-filter-cards {
+            grid-template-columns: repeat(4, minmax(120px, 1fr));
           }
 
-          .tools-search-controls > input,
-          .tools-search-controls > select {
-            width: 100% !important;
+          .tools-search-main-row {
+            grid-template-columns: 1fr;
           }
+        }
+
+        @media (max-width: 700px) {
+          .tools-search-panel { padding: 12px; }
+          .tools-filter-cards { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+          .tools-search-actions button { flex: 1 1 140px; }
+          .tools-summary-strip { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+          .tools-summary-item { border-bottom: 1px solid #cbdcf0; }
+          .tool-live-suggestions-head,
+          .tool-live-suggestion-row {
+            grid-template-columns: minmax(180px, 1fr) 70px;
+          }
+          .tool-live-suggestions-head span:nth-child(n+3),
+          .tool-live-suggestion-row span:nth-child(n+3) { display: none; }
         }
       `}</style>
       <h1>Tools</h1>
 
       <div className="panel">
-        <h2>Tools List</h2>
+        <div className="tools-search-panel">
+          <div className="tools-search-title-row">
+            <div>
+              <h2>Tools Search, Filters & Full Movement History</h2>
+              <div className="tools-search-version">FIT-WIDTH TABLE • NO HORIZONTAL SCROLL • UNLIMITED LIVE MATCHES</div>
+            </div>
+          </div>
 
-        <div
-          className="tools-search-controls"
-          style={{
-            display: "flex",
-            flexWrap: "wrap",
-            gap: 12,
-            marginBottom: 16,
-            alignItems: "center",
-          }}
-        >
+        <div className="tools-filter-cards">
+          <ToolFilterCard
+            title="All Tools"
+            value={filterCounts.all}
+            active={quickFilter === "All"}
+            onClick={() => void showAllTools()}
+          />
+          <ToolFilterCard
+            title="Available"
+            value={filterCounts.available}
+            active={quickFilter === "Available"}
+            onClick={() => setQuickFilter("Available")}
+          />
+          <ToolFilterCard
+            title="Currently Rented"
+            value={filterCounts.rented}
+            active={quickFilter === "Rented"}
+            onClick={() => setQuickFilter("Rented")}
+          />
+          <ToolFilterCard
+            title="In Service"
+            value={filterCounts.service}
+            active={quickFilter === "Service"}
+            onClick={() => setQuickFilter("Service")}
+          />
+          <ToolFilterCard
+            title="Missing"
+            value={filterCounts.missing}
+            active={quickFilter === "Missing"}
+            onClick={() => setQuickFilter("Missing")}
+          />
+          <ToolFilterCard
+            title="Service Due"
+            value={filterCounts.serviceDue}
+            active={quickFilter === "Service Due"}
+            onClick={() => setQuickFilter("Service Due")}
+          />
+          <ToolFilterCard
+            title="Categories"
+            value={filterCounts.categories}
+            active={categoryFilter !== "All"}
+            onClick={() => categorySelectRef.current?.focus()}
+          />
+        </div>
+
+        <div className="tools-search-main-row">
           <div className="tool-live-search-wrap">
             <input
-              placeholder="Start typing tool name, brand, category, shop or status..."
+              placeholder="Start typing tool name, number, brand, category, shop or status..."
               value={search}
               autoComplete="off"
               onFocus={() => {
-                if (search.trim().length >= 2) setShowSuggestions(true);
+                if (search.trim()) setShowSuggestions(true);
               }}
               onBlur={() => {
                 window.setTimeout(() => setShowSuggestions(false), 180);
               }}
               onChange={(e) => {
                 setSearch(e.target.value);
-                setSelectedExactToolName(null);
                 setShowSuggestions(true);
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
+                  setShowSuggestions(false);
                   void handleSearch();
                 }
-
-                if (e.key === "Escape") {
-                  setShowSuggestions(false);
-                }
+                if (e.key === "Escape") setShowSuggestions(false);
               }}
-              style={{ minHeight: 46, fontSize: 17, fontWeight: 800 }}
+              style={{ minHeight: 48, fontSize: 17, fontWeight: 850 }}
             />
 
-            {search.trim().length > 0 && (
-              <div className="tool-live-indicator" style={{ marginTop: 8 }}>
-                <span
-                  className={`tool-live-dot ${
-                    suggestionLoading ? "loading" : ""
-                  }`}
-                />
-                {search.trim().length < 2
-                  ? "Type one more letter for live matches"
-                  : suggestionLoading
-                  ? "Finding matching spellings..."
-                  : `${toolSuggestions.length} live spelling match(es)`}
+            {showSuggestions && search.trim() && (
+              <div className="tool-live-suggestions">
+                <div className="tool-live-suggestions-head">
+                  <span>Tool name</span>
+                  <span>Qty</span>
+                  <span>Category</span>
+                  <span>Location / status</span>
+                </div>
+
+                {suggestionLoading ? (
+                  <div className="tool-live-suggestions-empty">Loading all matching tool names...</div>
+                ) : toolSuggestions.length === 0 ? (
+                  <div className="tool-live-suggestions-empty">No matching tool names found.</div>
+                ) : (
+                  toolSuggestions.map((suggestion: any) => (
+                    <button
+                      key={String(suggestion.tool_name)}
+                      type="button"
+                      className="tool-live-suggestion-row"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => {
+                        const name = String(suggestion.tool_name || "");
+                        setSearch(name);
+                        setShowSuggestions(false);
+                        void loadTools(name);
+                      }}
+                    >
+                      <strong>{suggestion.tool_name}</strong>
+                      <span>{Number(suggestion.qty || 0)}</span>
+                      <span>{suggestion.category || "-"}</span>
+                      <span>
+                        {[(suggestion.locations || []).join(", "), (suggestion.statuses || []).join(", ")]
+                          .filter(Boolean)
+                          .join(" · ") || "-"}
+                      </span>
+                    </button>
+                  ))
+                )}
               </div>
             )}
 
-            {showSuggestions &&
-              search.trim().length >= 2 &&
-              (suggestionLoading ||
-                toolSuggestions.length > 0 ||
-                !suggestionLoading) && (
-                <div className="tool-live-suggestions">
-                  <div className="tool-live-suggestions-head">
-                    <span>LIVE TOOL MATCHES</span>
-                    <span>
-                      Click one tool to open only that selected tool
-                    </span>
-                  </div>
-
-                  {suggestionLoading && toolSuggestions.length === 0 ? (
-                    <div style={{ padding: 18, fontWeight: 850 }}>
-                      Searching matching tool names...
-                    </div>
-                  ) : toolSuggestions.length === 0 ? (
-                    <div style={{ padding: 18, fontWeight: 850 }}>
-                      No matching tool spelling found.
-                    </div>
-                  ) : (
-                    toolSuggestions.map((suggestion: any) => (
-                      <button
-                        type="button"
-                        className="tool-live-suggestion"
-                        key={String(suggestion.tool_name || "").toLowerCase()}
-                        onMouseDown={(event) => event.preventDefault()}
-                        onClick={() =>
-                          void chooseLiveSuggestion(suggestion.tool_name)
-                        }
-                      >
-                        <span className="tool-live-suggestion-name">
-                          {functionTextWithMatch(suggestion.tool_name)}
-                        </span>
-
-                        <span className="tool-live-suggestion-qty">
-                          Qty {Number(suggestion.qty || 0)}
-                        </span>
-
-                        <span className="tool-live-suggestion-meta">
-                          {[
-                            (suggestion.brands || []).join(", "),
-                            suggestion.category,
-                            (suggestion.locations || []).join(", "),
-                          ]
-                            .filter(Boolean)
-                            .join(" · ") || "Tool details available"}
-                        </span>
-                      </button>
-                    ))
-                  )}
-
-                </div>
-              )}
+            <div className="tool-live-indicator" style={{ marginTop: 8 }}>
+              <span className={`tool-live-dot ${searchLoading || suggestionLoading ? "loading" : ""}`} />
+              {suggestionLoading
+                ? "Loading every matching name..."
+                : search.trim()
+                ? `${toolSuggestions.length} matching tool name(s) • ${tools.length} saved row(s) in table`
+                : "Type to see every matching tool name and update the table automatically"}
+            </div>
           </div>
 
-          <button
-            className="btn-blue"
-            type="button"
-            onClick={() => void handleSearch()}
-            disabled={searchLoading || !search.trim()}
-          >
-            {searchLoading ? "Searching..." : "Search"}
-          </button>
+          <div className="tools-search-actions">
+            <button
+              className="btn-blue"
+              type="button"
+              onClick={() => {
+                setShowSuggestions(false);
+                void handleSearch();
+              }}
+              disabled={searchLoading || !search.trim()}
+            >
+              {searchLoading ? "Searching..." : "Search All Matches"}
+            </button>
 
-          <button
-            type="button"
-            onClick={clearSearch}
-            disabled={!search && !hasSearched}
-          >
-            Clear
-          </button>
+            <button className="btn-gray" type="button" onClick={() => void showAllTools()}>
+              Show All Tools
+            </button>
 
-          <button
-            className="btn-blue"
-            type="button"
-            onClick={downloadToolsExcel}
-            disabled={filteredTools.length === 0}
-            style={{
-              opacity: filteredTools.length === 0 ? 0.55 : 1,
-              cursor: filteredTools.length === 0 ? "not-allowed" : "pointer",
-            }}
+            <button type="button" onClick={clearSearch} disabled={!search && !hasSearched}>
+              Clear
+            </button>
+
+            <button
+              className="btn-blue"
+              type="button"
+              onClick={downloadToolsExcel}
+              disabled={filteredTools.length === 0}
+              style={{
+                opacity: filteredTools.length === 0 ? 0.55 : 1,
+                cursor: filteredTools.length === 0 ? "not-allowed" : "pointer",
+              }}
+            >
+              Download Results
+            </button>
+          </div>
+        </div>
+
+        <div className="tools-unified-filter-grid">
+          <select
+            value={toolTypeFilter}
+            onChange={(e) => setToolTypeFilter(e.target.value)}
           >
-            Download Results
-          </button>
+            <option value="All">All Tool Types</option>
+            <option value="Individual">Individual Tools</option>
+            <option value="Quantity">Quantity Equipment</option>
+          </select>
+
+          <select
+            ref={categorySelectRef}
+            value={categoryFilter}
+            onChange={(e) => setCategoryFilter(e.target.value)}
+          >
+            <option value="All">All Categories</option>
+            {categoryOptions.map((category) => (
+              <option key={String(category)} value={String(category)}>
+                {String(category)}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={homeBranchFilter}
+            onChange={(e) => setHomeBranchFilter(e.target.value)}
+          >
+            <option value="All">All Home Shops</option>
+            {branches.map((branch) => (
+              <option key={branch} value={branch}>
+                {branch}
+              </option>
+            ))}
+          </select>
 
           <select
             value={locationFilter}
             onChange={(e) => setLocationFilter(e.target.value)}
-            style={{ width: 300, minHeight: 44, fontSize: 16, fontWeight: 800 }}
           >
-            <option value="All">All Locations</option>
-
-            {branches.map((b) => (
-              <option key={b} value={b}>
-                {b}
+            <option value="All">All Current Locations</option>
+            {branches.map((branch) => (
+              <option key={branch} value={branch}>
+                {branch}
               </option>
             ))}
+            {serviceCentres.map((centre) => (
+              <option key={centre} value={centre}>
+                {centre}
+              </option>
+            ))}
+          </select>
 
-            {serviceCentres.map((s) => (
-              <option key={s} value={s}>
-                {s}
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+          >
+            <option value="All">All Statuses</option>
+            {statuses.map((status) => (
+              <option key={status} value={status}>
+                {status}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={historyToolId}
+            onChange={(e) => void handleHistorySearch(e.target.value)}
+            disabled={historyOptions.length === 0}
+          >
+            <option value="">
+              {historyOptions.length === 0
+                ? "Search first for movement history"
+                : "Select Tool for Full Movement History"}
+            </option>
+            {historyOptions.map((tool: any) => (
+              <option key={tool.id} value={tool.id}>
+                {tool.tool_name}
+                {tool.brand ? ` · ${tool.brand}` : ""}
+                {tool.current_location ? ` · ${tool.current_location}` : ""}
+                {tool.status ? ` · ${tool.status}` : ""}
               </option>
             ))}
           </select>
@@ -1936,855 +2097,244 @@ export default function ToolsPage() {
           }}
         >
           {!hasSearched
-            ? "Tools are not loaded automatically. Enter a search and click Search."
+            ? "Enter a search or click Show All Tools."
             : searchLoading
-            ? "Searching Supabase..."
-            : resultLimited
-            ? `Showing the first 50 matching rows. Make the search more specific if the required tool is not visible.`
-            : `${filteredTools.length} matching tool item(s) found.`}
+            ? "Searching all saved tool rows..."
+            : `${filteredTools.length} grouped tool item(s) shown from ${tools.length} matching saved row(s).`}
         </div>
 
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
-            gap: 14,
-            marginBottom: 18,
-          }}
-        >
-          <ToolSummaryCard title="Tool Items" value={toolSummary.tools} />
-          <ToolSummaryCard title="Qty" value={toolSummary.qty} />
-          <ToolSummaryCard title="Purchase" value={`₹${toolSummary.purchase.toFixed(0)}`} />
-          <ToolSummaryCard title="Earned" value={`₹${toolSummary.earned.toFixed(0)}`} />
-          <ToolSummaryCard title="Spent" value={`₹${toolSummary.spent.toFixed(0)}`} />
-          <ToolSummaryCard title="Profit" value={`₹${toolSummary.profit.toFixed(0)}`} danger={toolSummary.profit < 0} success={toolSummary.profit >= 0} />
+        <div className="tools-summary-strip">
+          <div className="tools-summary-item"><span className="tools-summary-label">Tool Items</span><span className="tools-summary-value">{toolSummary.tools}</span></div>
+          <div className="tools-summary-item"><span className="tools-summary-label">Qty</span><span className="tools-summary-value">{toolSummary.qty}</span></div>
+          <div className="tools-summary-item"><span className="tools-summary-label">Purchase</span><span className="tools-summary-value">₹{toolSummary.purchase.toFixed(0)}</span></div>
+          <div className="tools-summary-item"><span className="tools-summary-label">Earned</span><span className="tools-summary-value positive">₹{toolSummary.earned.toFixed(0)}</span></div>
+          <div className="tools-summary-item"><span className="tools-summary-label">Spent</span><span className="tools-summary-value negative">₹{toolSummary.spent.toFixed(0)}</span></div>
+          <div className="tools-summary-item"><span className="tools-summary-label">Profit</span><span className={`tools-summary-value ${toolSummary.profit < 0 ? "negative" : "positive"}`}>₹{toolSummary.profit.toFixed(0)}</span></div>
+        </div>
         </div>
 
+        <div className="tools-results-shell">
+          <table className="tools-clean-table tools-main-table">
+            <thead>
+              <tr className="tools-column-head">
+                <th>{sortableHeader("Tool Name", "tool_name", { textAlign: "left" })}</th>
+                <th>{sortableHeader("Qty", "total_qty", {})}</th>
+                <th>{sortableHeader("Daily Rent", "daily_rent", {})}</th>
+                <th>{sortableHeader("Purchase", "purchase_cost", {})}</th>
+                <th>{sortableHeader("Earned", "earned_total", {})}</th>
+                <th>{sortableHeader("Spent", "spent_total", {})}</th>
+                <th>{sortableHeader("Profit", "profit_total", {})}</th>
+                <th>{sortableHeader("Category", "category", {})}</th>
+                <th>{sortableHeader("Brand", "brand", {})}</th>
+                <th>{sortableHeader("Color", "color", {})}</th>
+                <th>{sortableHeader("Home", "home_branch", {})}</th>
+                <th>{sortableHeader("Current", "current_location", {})}</th>
+                <th>{sortableHeader("Status", "status", {})}</th>
+                <th>{sortableHeader("Grease", "greasing_due_days", {})}</th>
+                <th>{sortableHeader("Oil", "oil_change_due_days", {})}</th>
+                <th>{sortableHeader("Service", "scheduled_service_due_days", {})}</th>
+                <th>{sortableHeader("Rental Overdue", "rental_overdue_days", {})}</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
 
-        <div className="tool-card-list">
-          {filteredTools.map((tool: any) => {
-            const statusClass = String(tool.status || "Available")
-              .trim()
-              .toLowerCase()
-              .replace(/\s+/g, "-");
+            <tbody>
+              {filteredTools.map((tool: any) => {
+                const statusClass = String(tool.status || "Available")
+                  .trim()
+                  .toLowerCase()
+                  .replace(/\s+/g, "-");
+                const profitValue = Number(tool.profit_total || 0);
+                const isEditing = editingGroupKey === tool.group_key;
 
-            const profitValue = Number(tool.profit_total || 0);
-
-            return (
-              <article className="tool-result-card" key={tool.group_key}>
-                {editingGroupKey === tool.group_key ? (
-                  <>
-                    <div className="tool-card-header">
-                      <h3 className="tool-card-name">Edit {tool.tool_name}</h3>
-
-                      <div className="tool-card-header-meta">
-                        <span className="tool-qty-pill">
-                          Qty {Number(tool.total_qty || 0)}
-                        </span>
-                      </div>
-
-                      <div className="tool-card-actions">
-                        <button
-                          className="btn-green"
-                          type="button"
-                          onClick={() => saveEditGroup(tool)}
-                        >
-                          Save Changes
-                        </button>
-
-                        <button
-                          className="btn-gray"
-                          type="button"
-                          onClick={() => {
-                            setEditingGroupKey(null);
-                            setEditRow({});
-                          }}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="tool-card-edit">
-                      <div className="tool-card-edit-grid">
-                        <div className="tool-card-edit-field">
-                          <label>Tool Name</label>
-                          <input
-                            value={editRow.tool_name ?? ""}
-                            onChange={(event) =>
-                              setEditRow({
-                                ...editRow,
-                                tool_name: event.target.value,
-                              })
-                            }
-                          />
-                        </div>
-
-                        <div className="tool-card-edit-field">
-                          <label>Daily Rent</label>
-                          <input
-                            type="number"
-                            value={editRow.daily_rent ?? ""}
-                            onChange={(event) =>
-                              setEditRow({
-                                ...editRow,
-                                daily_rent: event.target.value,
-                              })
-                            }
-                          />
-                        </div>
-
-                        <div className="tool-card-edit-field">
-                          <label>Purchase Cost</label>
-                          <input
-                            type="number"
-                            value={editRow.purchase_cost ?? ""}
-                            onChange={(event) =>
-                              setEditRow({
-                                ...editRow,
-                                purchase_cost: event.target.value,
-                              })
-                            }
-                          />
-                        </div>
-
-                        <div className="tool-card-edit-field">
-                          <label>Category</label>
-                          <input
-                            value={editRow.category ?? ""}
-                            onChange={(event) =>
-                              setEditRow({
-                                ...editRow,
-                                category: event.target.value,
-                              })
-                            }
-                          />
-                        </div>
-
-                        <div className="tool-card-edit-field">
-                          <label>Brand</label>
-                          <input
-                            value={editRow.brand ?? ""}
-                            onChange={(event) =>
-                              setEditRow({
-                                ...editRow,
-                                brand: event.target.value,
-                              })
-                            }
-                          />
-                        </div>
-
-                        <div className="tool-card-edit-field">
-                          <label>Color</label>
-                          <input
-                            value={editRow.color ?? ""}
-                            onChange={(event) =>
-                              setEditRow({
-                                ...editRow,
-                                color: event.target.value,
-                              })
-                            }
-                          />
-                        </div>
-
-                        <div className="tool-card-edit-field">
-                          <label>Home Branch</label>
-                          <select
-                            value={editRow.home_branch || ""}
-                            onChange={(event) =>
-                              setEditRow({
-                                ...editRow,
-                                home_branch: event.target.value,
-                              })
-                            }
-                          >
-                            <option value="">Keep Same</option>
-                            {branches.map((branch) => (
-                              <option key={branch}>{branch}</option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div className="tool-card-edit-field">
-                          <label>Current Location</label>
-                          <select
-                            value={editRow.current_location || ""}
-                            onChange={(event) =>
-                              setEditRow({
-                                ...editRow,
-                                current_location: event.target.value,
-                              })
-                            }
-                          >
-                            <option value="">Keep Same</option>
-                            {[...branches, ...serviceCentres].map((location) => (
-                              <option key={location}>{location}</option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div className="tool-card-edit-field">
-                          <label>Status</label>
-                          <select
-                            value={editRow.status || "Available"}
-                            onChange={(event) =>
-                              setEditRow({
-                                ...editRow,
-                                status: event.target.value,
-                              })
-                            }
-                          >
-                            {statuses.map((status) => (
-                              <option key={status}>{status}</option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div className="tool-card-edit-field">
-                          <label>Grease Due</label>
-                          <input
-                            type="number"
-                            value={editRow.greasing_due_days ?? 0}
-                            onChange={(event) =>
-                              setEditRow({
-                                ...editRow,
-                                greasing_due_days: event.target.value,
-                              })
-                            }
-                          />
-                        </div>
-
-                        <div className="tool-card-edit-field">
-                          <label>Oil Due</label>
-                          <input
-                            type="number"
-                            value={editRow.oil_change_due_days ?? 0}
-                            onChange={(event) =>
-                              setEditRow({
-                                ...editRow,
-                                oil_change_due_days: event.target.value,
-                              })
-                            }
-                          />
-                        </div>
-
-                        <div className="tool-card-edit-field">
-                          <label>Service Due</label>
-                          <input
-                            type="number"
-                            value={editRow.scheduled_service_due_days ?? 0}
-                            onChange={(event) =>
-                              setEditRow({
-                                ...editRow,
-                                scheduled_service_due_days: event.target.value,
-                              })
-                            }
-                          />
-                        </div>
-
-                        <div className="tool-card-edit-field">
-                          <label>Rental Overdue</label>
-                          <input
-                            type="number"
-                            value={editRow.rental_overdue_days ?? 0}
-                            onChange={(event) =>
-                              setEditRow({
-                                ...editRow,
-                                rental_overdue_days: event.target.value,
-                              })
-                            }
-                          />
-                        </div>
-                      </div>
-
-                      <div
+                return (
+                  <React.Fragment key={tool.group_key}>
+                    <tr className="tool-result-row">
+                      <td
+                        className="tool-name-cell"
                         style={{
-                          display: "grid",
-                          gridTemplateColumns:
-                            "repeat(auto-fit, minmax(150px, 1fr))",
-                          gap: 10,
-                          marginTop: 14,
+                          ...toolNameDueStyle(tool),
+                          minWidth: 0,
+                          maxWidth: "none",
+                          fontSize: 14,
                         }}
                       >
-                        <ToolSummaryCard
-                          title="Earned"
-                          value={`₹${Number(tool.earned_total || 0).toFixed(0)}`}
-                        />
-                        <ToolSummaryCard
-                          title="Spent"
-                          value={`₹${Number(tool.spent_total || 0).toFixed(0)}`}
-                        />
-                        <ToolSummaryCard
-                          title="Profit"
-                          value={`₹${profitValue.toFixed(0)}`}
-                          danger={profitValue < 0}
-                          success={profitValue >= 0}
-                        />
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="tool-card-header">
-                      <h3 className="tool-card-name">{tool.tool_name}</h3>
-
-                      <div className="tool-card-header-meta">
-                        <span className="tool-qty-pill">
-                          Qty {Number(tool.total_qty || 0)}
-                        </span>
-
-                        <span
-                          className={`tool-status-pill tool-status-${statusClass}`}
-                        >
-                          {tool.status || "Available"}
-                        </span>
-                      </div>
-
-                      <div className="tool-card-actions">
-                        <button
-                          className="btn-gray"
-                          type="button"
-                          onClick={() =>
-                            setOpenDetailsKey(
-                              openDetailsKey === tool.group_key
-                                ? null
-                                : tool.group_key
-                            )
-                          }
-                        >
-                          {openDetailsKey === tool.group_key
-                            ? "Close Details"
-                            : "Details"}
-                        </button>
-
-                        <button
-                          className="btn-blue"
-                          type="button"
-                          onClick={() => startEditGroup(tool)}
-                        >
-                          Edit
-                        </button>
-
-                        <button
-                          className="btn-red"
-                          type="button"
-                          onClick={() => handleDeleteGroup(tool)}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="tool-card-body">
-                      <section className="tool-info-section">
-                        <div className="tool-info-title">Financial</div>
-                        <div className="tool-info-grid">
-                          <div className="tool-info-item">
-                            <span className="tool-info-label">Daily Rent</span>
-                            <span className="tool-info-value">
-                              ₹{Number(tool.daily_rent || 0).toFixed(0)}
-                            </span>
-                          </div>
-
-                          <div className="tool-info-item">
-                            <span className="tool-info-label">Purchase</span>
-                            <span className="tool-info-value">
-                              ₹{Number(tool.purchase_cost || 0).toFixed(0)}
-                            </span>
-                          </div>
-
-                          <div className="tool-info-item tool-money-earned">
-                            <span className="tool-info-label">Earned</span>
-                            <span className="tool-info-value">
-                              ₹{Number(tool.earned_total || 0).toFixed(0)}
-                            </span>
-                          </div>
-
-                          <div className="tool-info-item tool-money-spent">
-                            <span className="tool-info-label">Spent</span>
-                            <span className="tool-info-value">
-                              ₹{Number(tool.spent_total || 0).toFixed(0)}
-                            </span>
-                          </div>
-
-                          <div
-                            className={`tool-info-item ${
-                              profitValue >= 0
-                                ? "tool-money-profit-positive"
-                                : "tool-money-profit-negative"
-                            }`}
-                            style={{ gridColumn: "1 / -1" }}
-                          >
-                            <span className="tool-info-label">Profit</span>
-                            <span className="tool-info-value">
-                              ₹{profitValue.toFixed(0)}
-                            </span>
-                          </div>
-                        </div>
-                      </section>
-
-                      <section className="tool-info-section">
-                        <div className="tool-info-title">Description</div>
-                        <div className="tool-info-grid">
-                          <div className="tool-info-item">
-                            <span className="tool-info-label">Category</span>
-                            <span className="tool-info-value">
-                              {tool.category || "-"}
-                            </span>
-                          </div>
-
-                          <div className="tool-info-item">
-                            <span className="tool-info-label">Brand</span>
-                            <span className="tool-info-value">
-                              {tool.brand || "-"}
-                            </span>
-                          </div>
-
-                          <div
-                            className="tool-info-item"
-                            style={{ gridColumn: "1 / -1" }}
-                          >
-                            <span className="tool-info-label">Color</span>
-                            <span className="tool-info-value">
-                              {tool.color || "-"}
-                            </span>
-                          </div>
-                        </div>
-                      </section>
-
-                      <section className="tool-info-section">
-                        <div className="tool-info-title">Placement</div>
-                        <div className="tool-info-grid">
-                          <div className="tool-info-item">
-                            <span className="tool-info-label">Home</span>
-                            <span className="tool-info-value">
-                              {renderLocationSummary(
-                                tool.home_branch_summary
-                              )}
-                            </span>
-                          </div>
-
-                          <div className="tool-info-item">
-                            <span className="tool-info-label">Location</span>
-                            <span className="tool-info-value">
-                              {renderLocationSummary(
-                                tool.current_location_summary
-                              )}
-                            </span>
-                          </div>
-                        </div>
-                      </section>
-
-                      <section className="tool-info-section">
-                        <div className="tool-info-title">Maintenance</div>
-                        <div className="tool-info-grid">
-                          <div className="tool-info-item">
-                            <span className="tool-info-label">Grease</span>
-                            <span className="tool-info-value">
-                              {formatDueCell(tool.greasing_due_days)}
-                            </span>
-                          </div>
-
-                          <div className="tool-info-item">
-                            <span className="tool-info-label">Oil</span>
-                            <span className="tool-info-value">
-                              {formatDueCell(tool.oil_change_due_days)}
-                            </span>
-                          </div>
-
-                          <div className="tool-info-item">
-                            <span className="tool-info-label">Service</span>
-                            <span className="tool-info-value">
-                              {formatDueCell(
-                                tool.scheduled_service_due_days
-                              )}
-                            </span>
-                          </div>
-
-                          <div className="tool-info-item">
-                            <span className="tool-info-label">Overdue</span>
-                            <span className="tool-info-value">
-                              {formatDueCell(tool.rental_overdue_days)}
-                            </span>
-                          </div>
-                        </div>
-                      </section>
-                    </div>
-                  </>
-                )}
-
-                {openDetailsKey === tool.group_key && (
-                  <div className="tool-details-panel">
-                    <h4 className="tool-details-title">
-                      Branch-wise Details: {tool.tool_name}
-                    </h4>
-
-                    <div className="tool-details-grid">
-                      {(tool.grouped_items || []).map((item: any) => (
-                        <div className="tool-detail-card" key={item.id}>
-                          <div className="tool-detail-card-head">
-                            <strong>{item.tool_name}</strong>
-                            <span className="tool-qty-pill">
-                              Qty {Number(item.total_qty || 0)}
-                            </span>
-                          </div>
-
-                          {detailEditingId === item.id ? (
+                        {isEditing ? (
+                          <input
+                            value={editRow.tool_name ?? ""}
+                            onChange={(e) => setEditRow({ ...editRow, tool_name: e.target.value })}
+                            style={{ width: "100%", textAlign: "left" }}
+                          />
+                        ) : (
+                          tool.tool_name
+                        )}
+                      </td>
+                      <td style={strongCellStyle}>{Number(tool.total_qty || 0)}</td>
+                      <td style={cellStyle}>
+                        {isEditing ? (
+                          <input type="number" value={editRow.daily_rent ?? 0} onChange={(e) => setEditRow({ ...editRow, daily_rent: e.target.value })} style={{ width: 90 }} />
+                        ) : `₹${Number(tool.daily_rent || 0).toFixed(0)}`}
+                      </td>
+                      <td style={cellStyle}>
+                        {isEditing ? (
+                          <input type="number" value={editRow.purchase_cost ?? 0} onChange={(e) => setEditRow({ ...editRow, purchase_cost: e.target.value })} style={{ width: 100 }} />
+                        ) : `₹${Number(tool.purchase_cost || 0).toFixed(0)}`}
+                      </td>
+                      <td style={strongCellStyle}>₹{Number(tool.earned_total || 0).toFixed(0)}</td>
+                      <td style={strongCellStyle}>₹{Number(tool.spent_total || 0).toFixed(0)}</td>
+                      <td style={{ ...strongCellStyle, color: profitValue < 0 ? "#b42318" : "#08783e" }}>
+                        ₹{profitValue.toFixed(0)}
+                      </td>
+                      <td style={cellStyle}>
+                        {isEditing ? (
+                          <input value={editRow.category ?? ""} onChange={(e) => setEditRow({ ...editRow, category: e.target.value })} style={{ width: 125 }} />
+                        ) : tool.category || "-"}
+                      </td>
+                      <td style={cellStyle}>
+                        {isEditing ? (
+                          <input value={editRow.brand ?? ""} onChange={(e) => setEditRow({ ...editRow, brand: e.target.value })} style={{ width: 115 }} />
+                        ) : tool.brand || "-"}
+                      </td>
+                      <td style={cellStyle}>
+                        {isEditing ? (
+                          <input value={editRow.color ?? ""} onChange={(e) => setEditRow({ ...editRow, color: e.target.value })} style={{ width: 90 }} />
+                        ) : tool.color || "-"}
+                      </td>
+                      <td className="location-summary-cell" style={compactLocationCellStyle}>
+                        {isEditing ? (
+                          <select value={editRow.home_branch || ""} onChange={(e) => setEditRow({ ...editRow, home_branch: e.target.value })} style={{ width: 145 }}>
+                            <option value="">Keep Same</option>
+                            {branches.map((branch) => <option key={branch}>{branch}</option>)}
+                          </select>
+                        ) : renderLocationSummary(tool.home_branch_summary)}
+                      </td>
+                      <td className="location-summary-cell" style={compactLocationCellStyle}>
+                        {isEditing ? (
+                          <select value={editRow.current_location || ""} onChange={(e) => setEditRow({ ...editRow, current_location: e.target.value })} style={{ width: 170 }}>
+                            <option value="">Keep Same</option>
+                            {[...branches, ...serviceCentres].map((location) => <option key={location}>{location}</option>)}
+                          </select>
+                        ) : renderLocationSummary(tool.current_location_summary)}
+                      </td>
+                      <td style={cellStyle}>
+                        {isEditing ? (
+                          <select value={editRow.status || "Available"} onChange={(e) => setEditRow({ ...editRow, status: e.target.value })} style={{ width: 110 }}>
+                            {statuses.map((status) => <option key={status}>{status}</option>)}
+                          </select>
+                        ) : (
+                          <span className={`tool-status-pill tool-status-${statusClass}`}>{tool.status || "Available"}</span>
+                        )}
+                      </td>
+                      <td style={cellStyle}>
+                        {isEditing ? <input type="number" value={editRow.greasing_due_days ?? 0} onChange={(e) => setEditRow({ ...editRow, greasing_due_days: e.target.value })} style={{ width: 75 }} /> : formatDueCell(tool.greasing_due_days)}
+                      </td>
+                      <td style={cellStyle}>
+                        {isEditing ? <input type="number" value={editRow.oil_change_due_days ?? 0} onChange={(e) => setEditRow({ ...editRow, oil_change_due_days: e.target.value })} style={{ width: 75 }} /> : formatDueCell(tool.oil_change_due_days)}
+                      </td>
+                      <td style={cellStyle}>
+                        {isEditing ? <input type="number" value={editRow.scheduled_service_due_days ?? 0} onChange={(e) => setEditRow({ ...editRow, scheduled_service_due_days: e.target.value })} style={{ width: 80 }} /> : formatDueCell(tool.scheduled_service_due_days)}
+                      </td>
+                      <td style={cellStyle}>
+                        {isEditing ? <input type="number" value={editRow.rental_overdue_days ?? 0} onChange={(e) => setEditRow({ ...editRow, rental_overdue_days: e.target.value })} style={{ width: 85 }} /> : formatDueCell(tool.rental_overdue_days)}
+                      </td>
+                      <td style={cellStyle}>
+                        <div className="tools-action-row" style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 6 }}>
+                          {isEditing ? (
                             <>
-                              <div className="tool-card-edit">
-                                <div className="tool-card-edit-grid">
-                                  <div className="tool-card-edit-field">
-                                    <label>Qty</label>
-                                    <input
-                                      type="number"
-                                      value={detailEditRow.total_qty ?? ""}
-                                      onChange={(event) =>
-                                        setDetailEditRow({
-                                          ...detailEditRow,
-                                          total_qty: event.target.value,
-                                        })
-                                      }
-                                    />
-                                  </div>
-
-                                  <div className="tool-card-edit-field">
-                                    <label>Purchase</label>
-                                    <input
-                                      type="number"
-                                      value={detailEditRow.purchase_cost ?? 0}
-                                      onChange={(event) =>
-                                        setDetailEditRow({
-                                          ...detailEditRow,
-                                          purchase_cost: event.target.value,
-                                        })
-                                      }
-                                    />
-                                  </div>
-
-                                  <div className="tool-card-edit-field">
-                                    <label>Home Branch</label>
-                                    <select
-                                      value={detailEditRow.home_branch || ""}
-                                      onChange={(event) =>
-                                        setDetailEditRow({
-                                          ...detailEditRow,
-                                          home_branch: event.target.value,
-                                        })
-                                      }
-                                    >
-                                      <option value="">Select</option>
-                                      {branches.map((branch) => (
-                                        <option key={branch}>{branch}</option>
-                                      ))}
-                                    </select>
-                                  </div>
-
-                                  <div className="tool-card-edit-field">
-                                    <label>Current Location</label>
-                                    <select
-                                      value={
-                                        detailEditRow.current_location || ""
-                                      }
-                                      onChange={(event) =>
-                                        setDetailEditRow({
-                                          ...detailEditRow,
-                                          current_location:
-                                            event.target.value,
-                                        })
-                                      }
-                                    >
-                                      <option value="">Select</option>
-                                      {[...branches, ...serviceCentres].map(
-                                        (location) => (
-                                          <option key={location}>
-                                            {location}
-                                          </option>
-                                        )
-                                      )}
-                                    </select>
-                                  </div>
-
-                                  <div className="tool-card-edit-field">
-                                    <label>Status</label>
-                                    <select
-                                      value={detailEditRow.status || ""}
-                                      onChange={(event) =>
-                                        setDetailEditRow({
-                                          ...detailEditRow,
-                                          status: event.target.value,
-                                        })
-                                      }
-                                    >
-                                      {statuses.map((status) => (
-                                        <option key={status}>{status}</option>
-                                      ))}
-                                    </select>
-                                  </div>
-
-                                  <div className="tool-card-edit-field">
-                                    <label>Grease</label>
-                                    <input
-                                      type="number"
-                                      value={
-                                        detailEditRow.greasing_due_days ?? 0
-                                      }
-                                      onChange={(event) =>
-                                        setDetailEditRow({
-                                          ...detailEditRow,
-                                          greasing_due_days:
-                                            event.target.value,
-                                        })
-                                      }
-                                    />
-                                  </div>
-
-                                  <div className="tool-card-edit-field">
-                                    <label>Oil</label>
-                                    <input
-                                      type="number"
-                                      value={
-                                        detailEditRow.oil_change_due_days ?? 0
-                                      }
-                                      onChange={(event) =>
-                                        setDetailEditRow({
-                                          ...detailEditRow,
-                                          oil_change_due_days:
-                                            event.target.value,
-                                        })
-                                      }
-                                    />
-                                  </div>
-
-                                  <div className="tool-card-edit-field">
-                                    <label>Service</label>
-                                    <input
-                                      type="number"
-                                      value={
-                                        detailEditRow.scheduled_service_due_days ??
-                                        0
-                                      }
-                                      onChange={(event) =>
-                                        setDetailEditRow({
-                                          ...detailEditRow,
-                                          scheduled_service_due_days:
-                                            event.target.value,
-                                        })
-                                      }
-                                    />
-                                  </div>
-
-                                  <div className="tool-card-edit-field">
-                                    <label>Rental Overdue</label>
-                                    <input
-                                      type="number"
-                                      value={
-                                        detailEditRow.rental_overdue_days ?? 0
-                                      }
-                                      onChange={(event) =>
-                                        setDetailEditRow({
-                                          ...detailEditRow,
-                                          rental_overdue_days:
-                                            event.target.value,
-                                        })
-                                      }
-                                    />
-                                  </div>
-                                </div>
-                              </div>
-
-                              <div className="tool-detail-actions">
-                                <button
-                                  className="btn-green"
-                                  type="button"
-                                  onClick={saveDetailEdit}
-                                >
-                                  Save
-                                </button>
-
-                                <button
-                                  className="btn-gray"
-                                  type="button"
-                                  onClick={() => {
-                                    setDetailEditingId(null);
-                                    setDetailEditRow({});
-                                  }}
-                                >
-                                  Cancel
-                                </button>
-                              </div>
+                              <button className="btn-green" type="button" onClick={() => saveEditGroup(tool)}>Save</button>
+                              <button className="btn-gray" type="button" onClick={() => { setEditingGroupKey(null); setEditRow({}); }}>Cancel</button>
                             </>
                           ) : (
                             <>
-                              <div className="tool-detail-values">
-                                <div className="tool-info-item">
-                                  <span className="tool-info-label">
-                                    Purchase
-                                  </span>
-                                  <span className="tool-info-value">
-                                    ₹
-                                    {Number(
-                                      item.purchase_cost || 0
-                                    ).toFixed(0)}
-                                  </span>
-                                </div>
-
-                                <div className="tool-info-item">
-                                  <span className="tool-info-label">
-                                    Status
-                                  </span>
-                                  <span className="tool-info-value">
-                                    {item.status || "-"}
-                                  </span>
-                                </div>
-
-                                <div className="tool-info-item">
-                                  <span className="tool-info-label">Home</span>
-                                  <span className="tool-info-value">
-                                    {item.home_branch || "-"}
-                                  </span>
-                                </div>
-
-                                <div className="tool-info-item">
-                                  <span className="tool-info-label">
-                                    Location
-                                  </span>
-                                  <span className="tool-info-value">
-                                    {item.current_location || "-"}
-                                  </span>
-                                </div>
-
-                                <div className="tool-info-item">
-                                  <span className="tool-info-label">
-                                    Grease
-                                  </span>
-                                  <span className="tool-info-value">
-                                    {formatDueCell(
-                                      item.greasing_due_days
-                                    )}
-                                  </span>
-                                </div>
-
-                                <div className="tool-info-item">
-                                  <span className="tool-info-label">Oil</span>
-                                  <span className="tool-info-value">
-                                    {formatDueCell(
-                                      item.oil_change_due_days
-                                    )}
-                                  </span>
-                                </div>
-
-                                <div className="tool-info-item">
-                                  <span className="tool-info-label">
-                                    Service
-                                  </span>
-                                  <span className="tool-info-value">
-                                    {formatDueCell(
-                                      item.scheduled_service_due_days
-                                    )}
-                                  </span>
-                                </div>
-
-                                <div className="tool-info-item">
-                                  <span className="tool-info-label">
-                                    Overdue
-                                  </span>
-                                  <span className="tool-info-value">
-                                    {formatDueCell(
-                                      item.rental_overdue_days
-                                    )}
-                                  </span>
-                                </div>
-                              </div>
-
-                              <div className="tool-detail-actions">
-                                <button
-                                  className="btn-blue"
-                                  type="button"
-                                  onClick={() => startDetailEdit(item)}
-                                >
-                                  Edit
-                                </button>
-
-                                <button
-                                  className="btn-red"
-                                  type="button"
-                                  onClick={() =>
-                                    handleDetailDelete(item.id)
-                                  }
-                                >
-                                  Delete
-                                </button>
-                              </div>
+                              <button className="btn-gray" type="button" onClick={() => setOpenDetailsKey(openDetailsKey === tool.group_key ? null : tool.group_key)}>
+                                {openDetailsKey === tool.group_key ? "Close" : "Details"}
+                              </button>
+                              <button className="btn-blue" type="button" onClick={() => startEditGroup(tool)}>Edit</button>
+                              <button className="btn-red" type="button" onClick={() => handleDeleteGroup(tool)}>Delete</button>
                             </>
                           )}
                         </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </article>
-            );
-          })}
+                      </td>
+                    </tr>
 
-          {filteredTools.length === 0 && (
-            <div className="tool-empty-card">
-              {!hasSearched
-                ? "Enter a search above. No tools are loaded automatically."
-                : searchLoading
-                ? "Searching..."
-                : "No matching tools found"}
-            </div>
-          )}
+                    {openDetailsKey === tool.group_key && (
+                      <tr className="tool-detail-row">
+                        <td colSpan={18} style={{ padding: 14, background: "#eef6ff" }}>
+                          <div style={{ marginBottom: 10, textAlign: "left", fontSize: 17, fontWeight: 950, color: "#173d75" }}>
+                            Branch-wise Details: {tool.tool_name}
+                          </div>
+                          <div className="tools-results-shell" style={{ boxShadow: "none" }}>
+                            <table className="tools-clean-table tools-detail-table">
+                              <thead>
+                                <tr className="tools-column-head">
+                                  <th>Tool Row</th><th>Qty</th><th>Purchase</th><th>Home</th><th>Current</th><th>Status</th><th>Grease</th><th>Oil</th><th>Service</th><th>Overdue</th><th>Actions</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {(tool.grouped_items || []).map((item: any) => {
+                                  const editingDetail = detailEditingId === item.id;
+                                  return (
+                                    <tr key={item.id}>
+                                      <td style={{ ...cellStyle, textAlign: "left", fontWeight: 900 }}>{item.tool_name}</td>
+                                      <td style={cellStyle}>{editingDetail ? <input type="number" value={detailEditRow.total_qty ?? 0} onChange={(e) => setDetailEditRow({ ...detailEditRow, total_qty: e.target.value })} style={{ width: 70 }} /> : Number(item.total_qty || 0)}</td>
+                                      <td style={cellStyle}>{editingDetail ? <input type="number" value={detailEditRow.purchase_cost ?? 0} onChange={(e) => setDetailEditRow({ ...detailEditRow, purchase_cost: e.target.value })} style={{ width: 90 }} /> : `₹${Number(item.purchase_cost || 0).toFixed(0)}`}</td>
+                                      <td style={cellStyle}>{editingDetail ? <select value={detailEditRow.home_branch || ""} onChange={(e) => setDetailEditRow({ ...detailEditRow, home_branch: e.target.value })}>{branches.map((branch) => <option key={branch}>{branch}</option>)}</select> : item.home_branch || "-"}</td>
+                                      <td style={cellStyle}>{editingDetail ? <select value={detailEditRow.current_location || ""} onChange={(e) => setDetailEditRow({ ...detailEditRow, current_location: e.target.value })}>{[...branches, ...serviceCentres].map((location) => <option key={location}>{location}</option>)}</select> : item.current_location || "-"}</td>
+                                      <td style={cellStyle}>{editingDetail ? <select value={detailEditRow.status || "Available"} onChange={(e) => setDetailEditRow({ ...detailEditRow, status: e.target.value })}>{statuses.map((status) => <option key={status}>{status}</option>)}</select> : item.status || "-"}</td>
+                                      <td style={cellStyle}>{editingDetail ? <input type="number" value={detailEditRow.greasing_due_days ?? 0} onChange={(e) => setDetailEditRow({ ...detailEditRow, greasing_due_days: e.target.value })} style={{ width: 70 }} /> : formatDueCell(item.greasing_due_days)}</td>
+                                      <td style={cellStyle}>{editingDetail ? <input type="number" value={detailEditRow.oil_change_due_days ?? 0} onChange={(e) => setDetailEditRow({ ...detailEditRow, oil_change_due_days: e.target.value })} style={{ width: 70 }} /> : formatDueCell(item.oil_change_due_days)}</td>
+                                      <td style={cellStyle}>{editingDetail ? <input type="number" value={detailEditRow.scheduled_service_due_days ?? 0} onChange={(e) => setDetailEditRow({ ...detailEditRow, scheduled_service_due_days: e.target.value })} style={{ width: 70 }} /> : formatDueCell(item.scheduled_service_due_days)}</td>
+                                      <td style={cellStyle}>{editingDetail ? <input type="number" value={detailEditRow.rental_overdue_days ?? 0} onChange={(e) => setDetailEditRow({ ...detailEditRow, rental_overdue_days: e.target.value })} style={{ width: 70 }} /> : formatDueCell(item.rental_overdue_days)}</td>
+                                      <td style={cellStyle}>
+                                        <div style={{ display: "flex", justifyContent: "center", gap: 6 }}>
+                                          {editingDetail ? (
+                                            <>
+                                              <button className="btn-green" type="button" onClick={saveDetailEdit}>Save</button>
+                                              <button className="btn-gray" type="button" onClick={() => { setDetailEditingId(null); setDetailEditRow({}); }}>Cancel</button>
+                                            </>
+                                          ) : (
+                                            <>
+                                              <button className="btn-blue" type="button" onClick={() => startDetailEdit(item)}>Edit</button>
+                                              <button className="btn-red" type="button" onClick={() => handleDetailDelete(item.id)}>Delete</button>
+                                            </>
+                                          )}
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+
+              {filteredTools.length === 0 && (
+                <tr className="tools-empty-row">
+                  <td colSpan={18}>
+                    {!hasSearched
+                      ? "Start typing in the search box or click Show All Tools."
+                      : searchLoading
+                      ? "Searching every saved tool..."
+                      : "No tools match the selected search and filters"}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
-      </div>
 
-      <div className="panel">
-        <h2>Tool Search & Full Movement History</h2>
+        <div className="tools-history-section">
+          <h2 style={{ marginTop: 0 }}>Full Movement History</h2>
+          <p style={{ marginTop: -4, color: "#64748b", fontWeight: 750 }}>
+            Use the movement-history dropdown above. It contains every individual tool row from the same search results.
+          </p>
 
-        <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-          <input
-            placeholder="Search tool for movement history..."
-            value={historySearch}
-            onChange={(e) => setHistorySearch(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void handleHistoryOptionSearch();
-              }
-            }}
-            style={{ width: 420 }}
-          />
-
-          <button
-            className="btn-blue"
-            type="button"
-            onClick={() => void handleHistoryOptionSearch()}
-            disabled={historyOptionsLoading || !historySearch.trim()}
-          >
-            {historyOptionsLoading ? "Searching..." : "Find Tool"}
-          </button>
-
-          <select
-            value={historyToolId}
-            onChange={(e) => handleHistorySearch(e.target.value)}
-            style={{ width: 420 }}
-            disabled={historyOptions.length === 0}
-          >
-            <option value="">
-              {historyOptions.length === 0
-                ? "Search first, then select tool"
-                : "Select Tool"}
-            </option>
-            {historyOptions.map((tool) => (
-              <option key={tool.id} value={tool.id}>
-                {tool.tool_name}
-                {tool.current_location ? ` - ${tool.current_location}` : ""}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {historyLoading && <strong>Loading history...</strong>}
+          {historyLoading && <strong>Loading history...</strong>}
 
         {historyTool && (
           <div
@@ -2807,7 +2357,8 @@ export default function ToolsPage() {
           </div>
         )}
 
-        <table>
+        <div className="tools-history-table-wrap">
+          <table className="tools-history-table">
           <thead>
             <tr>
               <th>Date</th>
@@ -2849,7 +2400,9 @@ export default function ToolsPage() {
               </tr>
             )}
           </tbody>
-        </table>
+          </table>
+        </div>
+        </div>
       </div>
 
       <div className="panel">
@@ -3128,43 +2681,15 @@ export default function ToolsPage() {
   );
 }
 
-function ToolSummaryCard({ title, value, danger = false, success = false }: any) {
+function ToolFilterCard({ title, value, active = false, onClick }: any) {
   return (
-    <div
-      style={{
-        border: "2px solid #bfdbfe",
-        background: danger ? "#fef2f2" : success ? "#f0fdf4" : "#eff6ff",
-        borderRadius: 18,
-        padding: "24px 22px",
-        minHeight: 145,
-        fontWeight: 1000,
-        display: "flex",
-        flexDirection: "column",
-        justifyContent: "center",
-        boxShadow: "0 10px 24px rgba(15, 23, 42, 0.08)",
-      }}
+    <button
+      type="button"
+      className={`tools-filter-card${active ? " active" : ""}`}
+      onClick={onClick}
     >
-      <div
-        style={{
-          fontSize: 24,
-          lineHeight: 1.05,
-          color: "#475569",
-          textTransform: "uppercase",
-          letterSpacing: 0.4,
-        }}
-      >
-        {title}
-      </div>
-      <div
-        style={{
-          fontSize: 50,
-          lineHeight: 1.05,
-          marginTop: 8,
-          color: danger ? "#dc2626" : success ? "#16a34a" : "#0f2a5f",
-        }}
-      >
-        {value}
-      </div>
-    </div>
+      <span className="tools-filter-card-label">{title}</span>
+      <span className="tools-filter-card-value">{value}</span>
+    </button>
   );
 }

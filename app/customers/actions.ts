@@ -356,13 +356,17 @@ async function loadCustomerFinancialRows(customers: any[]) {
     };
   }
 
-  const [rentalsRes, paymentsRes] = await Promise.all([
+  const [rentalsRes, paymentsRes, arrearsRes] = await Promise.all([
     supabase
       .from("rentals")
       .select("*")
       .in("customer_id", customerIds),
     supabase
       .from("payments")
+      .select("*")
+      .in("customer_id", customerIds),
+    supabase
+      .from("customer_arrears")
       .select("*")
       .in("customer_id", customerIds),
   ]);
@@ -383,16 +387,43 @@ async function loadCustomerFinancialRows(customers: any[]) {
     };
   }
 
+  if (arrearsRes.error) {
+    return {
+      success: false,
+      message: arrearsRes.error.message,
+      data: [],
+    };
+  }
+
   return {
     success: true,
     message: "Customer details loaded",
-    data: customers.map((customer: any) =>
-      buildCustomerActualBalance(
+    data: customers.map((customer: any) => {
+      const financial = buildCustomerActualBalance(
         customer,
         rentalsRes.data || [],
         paymentsRes.data || []
-      )
-    ),
+      );
+      const arrearsTotal = (arrearsRes.data || [])
+        .filter(
+          (row: any) =>
+            String(row.customer_id || "") === String(customer.id || "") ||
+            (customer.mobile &&
+              String(row.mobile || "").trim() ===
+                String(customer.mobile || "").trim()),
+        )
+        .reduce(
+          (sum: number, row: any) =>
+            sum + Number(row.arrears_amount || 0),
+          0,
+        );
+
+      return {
+        ...financial,
+        arrears_total: arrearsTotal,
+        balance: Number(financial.balance || 0) - arrearsTotal,
+      };
+    }),
   };
 }
 
