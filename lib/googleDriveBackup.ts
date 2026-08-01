@@ -19,9 +19,6 @@ const TOKEN_SETTING_KEY =
   "google_drive_refresh_token";
 const FILE_MIME =
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-const TRACKER_FILE_MIME = "application/octet-stream";
-const TRACKER_LATEST_FILE_NAME =
-  "T&T-Tools-Tracker-Latest.ttbackup";
 
 interface GoogleTokenResponse {
   access_token?: string;
@@ -270,15 +267,8 @@ function escapeDriveQuery(value: string): string {
 async function findRecoveryFile(
   token: string,
 ): Promise<DriveFile | null> {
-  return findDriveFileByName(token, RECOVERY_FILE_NAME);
-}
-
-async function findDriveFileByName(
-  token: string,
-  fileName: string,
-): Promise<DriveFile | null> {
   const q = [
-    `name = '${escapeDriveQuery(fileName)}'`,
+    `name = '${escapeDriveQuery(RECOVERY_FILE_NAME)}'`,
     "trashed = false",
   ].join(" and ");
 
@@ -314,176 +304,6 @@ async function findDriveFileByName(
   }
 
   return payload.files?.[0] || null;
-}
-
-async function createNamedDriveFile(
-  token: string,
-  fileName: string,
-  mimeType: string,
-  bytes: Uint8Array,
-): Promise<DriveFile> {
-  const boundary = `tt_tracker_${randomBytes(12).toString("hex")}`;
-  const metadata = JSON.stringify({ name: fileName, mimeType });
-  const body = Buffer.concat([
-    Buffer.from(
-      `--${boundary}\r\n` +
-        "Content-Type: application/json; charset=UTF-8\r\n\r\n" +
-        metadata +
-        "\r\n" +
-        `--${boundary}\r\n` +
-        `Content-Type: ${mimeType}\r\n\r\n`,
-      "utf8",
-    ),
-    Buffer.from(bytes),
-    Buffer.from(`\r\n--${boundary}--`, "utf8"),
-  ]);
-
-  const response = await fetch(
-    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,modifiedTime,webViewLink",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": `multipart/related; boundary=${boundary}`,
-      },
-      body: toArrayBuffer(new Uint8Array(body)),
-      cache: "no-store",
-    },
-  );
-  const payload = (await response.json()) as DriveFile & {
-    error?: { message?: string };
-  };
-
-  if (!response.ok || !payload.id) {
-    throw new Error(
-      payload.error?.message || "Google Drive file creation failed.",
-    );
-  }
-
-  return payload;
-}
-
-async function updateNamedDriveFile(
-  token: string,
-  fileId: string,
-  mimeType: string,
-  bytes: Uint8Array,
-): Promise<DriveFile> {
-  const response = await fetch(
-    `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(
-      fileId,
-    )}?uploadType=media&fields=id,name,modifiedTime,webViewLink`,
-    {
-      method: "PATCH",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": mimeType,
-      },
-      body: toArrayBuffer(bytes),
-      cache: "no-store",
-    },
-  );
-  const payload = (await response.json()) as DriveFile & {
-    error?: { message?: string };
-  };
-
-  if (!response.ok || !payload.id) {
-    throw new Error(
-      payload.error?.message || "Google Drive file update failed.",
-    );
-  }
-
-  return payload;
-}
-
-async function putNamedDriveFile(
-  token: string,
-  fileName: string,
-  mimeType: string,
-  bytes: Uint8Array,
-): Promise<DriveFile> {
-  const existing = await findDriveFileByName(token, fileName);
-  return existing
-    ? updateNamedDriveFile(token, existing.id, mimeType, bytes)
-    : createNamedDriveFile(token, fileName, mimeType, bytes);
-}
-
-function trackerArchiveMonth(
-  fileName: string,
-  modifiedAt: string,
-): string {
-  const fromName = fileName.match(/(20\d{2})[-_](0[1-9]|1[0-2])/);
-  if (fromName) return `${fromName[1]}-${fromName[2]}`;
-
-  const date = new Date(modifiedAt);
-  const valid = Number.isNaN(date.getTime()) ? new Date() : date;
-  return `${valid.getUTCFullYear()}-${String(
-    valid.getUTCMonth() + 1,
-  ).padStart(2, "0")}`;
-}
-
-export async function getTrackerBackupStatus(): Promise<{
-  connected: boolean;
-  latest: DriveFile | null;
-  message: string;
-}> {
-  try {
-    const token = await accessToken();
-    const latest = await findDriveFileByName(
-      token,
-      TRACKER_LATEST_FILE_NAME,
-    );
-    return {
-      connected: true,
-      latest,
-      message: latest
-        ? "Tracker Google Drive backup is connected."
-        : "Google Drive is connected. Upload the first Tracker backup.",
-    };
-  } catch (error) {
-    return {
-      connected: false,
-      latest: null,
-      message:
-        error instanceof Error
-          ? error.message
-          : "Google Drive is not connected.",
-    };
-  }
-}
-
-export async function uploadTrackerBackupToDrive(input: {
-  bytes: Uint8Array;
-  sourceFileName: string;
-  backupKind: string;
-  modifiedAt: string;
-}): Promise<{
-  latest: DriveFile;
-  archive: DriveFile | null;
-}> {
-  const token = await accessToken();
-  const latest = await putNamedDriveFile(
-    token,
-    TRACKER_LATEST_FILE_NAME,
-    TRACKER_FILE_MIME,
-    input.bytes,
-  );
-  let archive: DriveFile | null = null;
-
-  if (input.backupKind === "monthly") {
-    const month = trackerArchiveMonth(
-      input.sourceFileName,
-      input.modifiedAt,
-    );
-    archive = await putNamedDriveFile(
-      token,
-      `T&T-Tools-Tracker-Monthly-${month}.ttbackup`,
-      TRACKER_FILE_MIME,
-      input.bytes,
-    );
-  }
-
-  return { latest, archive };
 }
 
 function toArrayBuffer(value: Uint8Array): ArrayBuffer {
