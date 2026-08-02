@@ -544,6 +544,17 @@ export default function ToolsPage() {
     );
   }
 
+  function shopStockForTool(tool: any, branch: string) {
+    const items = tool?.grouped_items || [];
+    const home = items
+      .filter((item: any) => locationMatchesShop(item.home_branch, branch))
+      .reduce((sum: number, item: any) => sum + Math.max(Number(item.total_qty || 1), 1), 0);
+    const current = items
+      .filter((item: any) => locationMatchesShop(locationName(item), branch))
+      .reduce((sum: number, item: any) => sum + Math.max(Number(item.total_qty || 1), 1), 0);
+    return { home, current };
+  }
+
   const groupedTools = useMemo(() => {
     const groups: any = {};
 
@@ -1304,23 +1315,16 @@ export default function ToolsPage() {
         }
 
         .tools-main-table th:nth-child(1) { width: 14%; }
-        .tools-main-table th:nth-child(2) { width: 3%; }
-        .tools-main-table th:nth-child(3) { width: 5%; }
-        .tools-main-table th:nth-child(4) { width: 5%; }
-        .tools-main-table th:nth-child(5) { width: 5%; }
-        .tools-main-table th:nth-child(6) { width: 4.5%; }
-        .tools-main-table th:nth-child(7) { width: 5%; }
-        .tools-main-table th:nth-child(8) { width: 5.5%; }
-        .tools-main-table th:nth-child(9) { width: 5%; }
-        .tools-main-table th:nth-child(10) { width: 4%; }
-        .tools-main-table th:nth-child(11) { width: 6%; }
-        .tools-main-table th:nth-child(12) { width: 6%; }
-        .tools-main-table th:nth-child(13) { width: 5%; }
-        .tools-main-table th:nth-child(14) { width: 4%; }
-        .tools-main-table th:nth-child(15) { width: 4%; }
-        .tools-main-table th:nth-child(16) { width: 4.5%; }
-        .tools-main-table th:nth-child(17) { width: 5%; }
-        .tools-main-table th:nth-child(18) { width: 9.5%; }
+        .tools-main-table th:nth-child(2) { width: 6%; }
+        .tools-main-table th:nth-child(3),
+        .tools-main-table th:nth-child(4),
+        .tools-main-table th:nth-child(5),
+        .tools-main-table th:nth-child(6),
+        .tools-main-table th:nth-child(7) { width: 6%; }
+        .tools-main-table th:nth-child(8) { width: 11%; }
+        .tools-main-table th:nth-child(9) { width: 7%; }
+        .tools-main-table th:nth-child(10) { width: 10%; }
+        .tools-main-table th:nth-child(11) { width: 22%; }
 
         .tools-main-table td {
           padding: 6px 3px !important;
@@ -1333,7 +1337,17 @@ export default function ToolsPage() {
           min-width: 0 !important;
           max-width: none !important;
           font-size: 14px !important;
+          color: #ffffff !important;
+          text-shadow: 0 1px 1px rgba(0,0,0,.18) !important;
         }
+
+        .tools-main-table .tool-color-0 { background:#4f6bed !important; }
+        .tools-main-table .tool-color-1 { background:#2ea7d7 !important; }
+        .tools-main-table .tool-color-2 { background:#42c174 !important; }
+        .tools-main-table .tool-color-3 { background:#f5c338 !important; color:#28323f !important; text-shadow:none !important; }
+        .tools-main-table .tool-color-4 { background:#f68a2e !important; }
+        .tools-main-table .tool-color-5 { background:#e84b55 !important; }
+        .tools-main-table .tool-name-cell .tool-compact-meta { color:inherit !important; opacity:.86; }
 
         .tools-main-table input,
         .tools-main-table select,
@@ -1368,6 +1382,32 @@ export default function ToolsPage() {
           font-size: 11px;
           white-space: normal;
         }
+
+        .tool-stack {
+          display: grid;
+          gap: 5px;
+          text-align: left;
+        }
+
+        .tool-stack-line {
+          display: flex;
+          justify-content: space-between;
+          gap: 7px;
+          padding-bottom: 3px;
+          border-bottom: 1px dashed #dbe5f2;
+        }
+
+        .tool-stack-line:last-child { border-bottom: 0; padding-bottom: 0; }
+        .tool-stack-label { color: #64748b; font-size: 10px; font-weight: 850; }
+        .tool-stack-value { color: #102f67; font-weight: 950; text-align: right; }
+        .tool-stack.compact-grid { grid-template-columns: repeat(2,minmax(0,1fr)); gap:4px; }
+        .tool-stack.compact-grid .tool-stack-line { display:grid; gap:1px; padding:3px; border:0; border-radius:5px; background:#f8fafc; }
+        .tool-stack.compact-grid .tool-stack-value { text-align:left; }
+
+        .shop-matrix-cell { padding: 5px 2px !important; }
+        .shop-current { display:block; font-size:16px; font-weight:1000; color:#0b4aa2; }
+        .shop-home { display:block; margin-top:2px; font-size:10px; font-weight:850; color:#64748b; }
+        .tool-compact-meta { margin-top:4px; color:#52647f; font-size:11px; font-weight:800; }
 
         .tools-detail-table,
         .tools-history-table {
@@ -1422,6 +1462,20 @@ export default function ToolsPage() {
           color: #102f67;
           box-shadow: inset 0 -2px 0 #8fb5ed;
         }
+
+        .tools-main-table .tools-column-head th { color:#ffffff !important; box-shadow:none !important; }
+        .tools-main-table .tools-column-head th:nth-child(1) { background:#4f6bed !important; }
+        .tools-main-table .tools-column-head th:nth-child(2) { background:#2ea7d7 !important; }
+        .tools-main-table .tools-column-head th:nth-child(3) { background:#4f6bed !important; }
+        .tools-main-table .tools-column-head th:nth-child(4) { background:#2ea7d7 !important; }
+        .tools-main-table .tools-column-head th:nth-child(5) { background:#42c174 !important; }
+        .tools-main-table .tools-column-head th:nth-child(6) { background:#f5c338 !important; color:#28323f !important; }
+        .tools-main-table .tools-column-head th:nth-child(7) { background:#f68a2e !important; }
+        .tools-main-table .tools-column-head th:nth-child(8) { background:#7c5ce5 !important; }
+        .tools-main-table .tools-column-head th:nth-child(9) { background:#42c174 !important; }
+        .tools-main-table .tools-column-head th:nth-child(10) { background:#f5c338 !important; color:#28323f !important; }
+        .tools-main-table .tools-column-head th:nth-child(11) { background:#e84b55 !important; }
+        .tools-main-table .tools-column-head .tools-sort-button { color:inherit !important; }
 
         .tools-clean-table .tool-result-row:nth-of-type(4n + 1) > td {
           background-color: #ffffff;
@@ -2002,28 +2056,21 @@ export default function ToolsPage() {
             <thead>
               <tr className="tools-column-head">
                 <th>{sortableHeader("Tool Name", "tool_name", { textAlign: "left" })}</th>
-                <th>{sortableHeader("Qty", "total_qty", {})}</th>
-                <th>{sortableHeader("Daily Rent", "daily_rent", {})}</th>
-                <th>{sortableHeader("Purchase", "purchase_cost", {})}</th>
-                <th>{sortableHeader("Earned", "earned_total", {})}</th>
-                <th>{sortableHeader("Spent", "spent_total", {})}</th>
-                <th>{sortableHeader("Profit", "profit_total", {})}</th>
-                <th>{sortableHeader("Category", "category", {})}</th>
-                <th>{sortableHeader("Brand", "brand", {})}</th>
-                <th>{sortableHeader("Color", "color", {})}</th>
-                <th>{sortableHeader("Home", "home_branch", {})}</th>
-                <th>{sortableHeader("Current", "current_location", {})}</th>
+                <th>{sortableHeader("Stock & Rent", "total_qty", {})}</th>
+                <th>Karuvannur</th>
+                <th>Ollur</th>
+                <th>Kachery</th>
+                <th>Mulayam Rd</th>
+                <th>Pattikkad</th>
+                <th>{sortableHeader("Money", "profit_total", {})}</th>
                 <th>{sortableHeader("Status", "status", {})}</th>
-                <th>{sortableHeader("Grease", "greasing_due_days", {})}</th>
-                <th>{sortableHeader("Oil", "oil_change_due_days", {})}</th>
-                <th>{sortableHeader("Service", "scheduled_service_due_days", {})}</th>
-                <th>{sortableHeader("Rental Overdue", "rental_overdue_days", {})}</th>
+                <th>{sortableHeader("Maintenance", "scheduled_service_due_days", {})}</th>
                 <th>Actions</th>
               </tr>
             </thead>
 
             <tbody>
-              {filteredTools.map((tool: any) => {
+              {filteredTools.map((tool: any, toolIndex: number) => {
                 const statusClass = String(tool.status || "Available")
                   .trim()
                   .toLowerCase()
@@ -2035,7 +2082,7 @@ export default function ToolsPage() {
                   <React.Fragment key={tool.group_key}>
                     <tr className="tool-result-row">
                       <td
-                        className="tool-name-cell"
+                        className={`tool-name-cell tool-color-${toolIndex % 6}`}
                         style={{
                           ...toolNameDueStyle(tool),
                           minWidth: 0,
@@ -2044,66 +2091,52 @@ export default function ToolsPage() {
                         }}
                       >
                         {isEditing ? (
-                          <input
-                            value={editRow.tool_name ?? ""}
-                            onChange={(e) => setEditRow({ ...editRow, tool_name: e.target.value })}
-                            style={{ width: "100%", textAlign: "left" }}
-                          />
+                          <div className="tool-stack">
+                            <input value={editRow.tool_name ?? ""} onChange={(e) => setEditRow({ ...editRow, tool_name: e.target.value })} style={{ width: "100%", textAlign: "left" }} />
+                            <input value={editRow.category ?? ""} placeholder="Category" onChange={(e) => setEditRow({ ...editRow, category: e.target.value })} />
+                            <input value={editRow.brand ?? ""} placeholder="Brand" onChange={(e) => setEditRow({ ...editRow, brand: e.target.value })} />
+                            <input value={editRow.color ?? ""} placeholder="Color" onChange={(e) => setEditRow({ ...editRow, color: e.target.value })} />
+                          </div>
                         ) : (
-                          tool.tool_name
+                          <>
+                            <div>{tool.tool_name}</div>
+                            <div className="tool-compact-meta">{tool.category || "-"} · {tool.brand || "-"} · {tool.color || "-"}</div>
+                          </>
                         )}
                       </td>
-                      <td style={strongCellStyle}>{Number(tool.total_qty || 0)}</td>
                       <td style={cellStyle}>
-                        {isEditing ? (
-                          <input type="number" value={editRow.daily_rent ?? 0} onChange={(e) => setEditRow({ ...editRow, daily_rent: e.target.value })} style={{ width: 90 }} />
-                        ) : `₹${Number(tool.daily_rent || 0).toFixed(0)}`}
+                        <div className="tool-stack compact-grid">
+                          <div className="tool-stack-line"><span className="tool-stack-label">QTY</span><span className="tool-stack-value">{Number(tool.total_qty || 0)}</span></div>
+                          <div className="tool-stack-line"><span className="tool-stack-label">RENT</span><span className="tool-stack-value">{isEditing ? <input type="number" value={editRow.daily_rent ?? 0} onChange={(e) => setEditRow({ ...editRow, daily_rent: e.target.value })} /> : `₹${Number(tool.daily_rent || 0).toFixed(0)}`}</span></div>
+                        </div>
                       </td>
+                      {branches.map((branch) => {
+                        const stock = shopStockForTool(tool, branch);
+                        return (
+                          <td key={branch} className="shop-matrix-cell">
+                            <span className="shop-current">{stock.current}</span>
+                            <span className="shop-home">Home {stock.home}</span>
+                          </td>
+                        );
+                      })}
                       <td style={cellStyle}>
-                        {isEditing ? (
-                          <input type="number" value={editRow.purchase_cost ?? 0} onChange={(e) => setEditRow({ ...editRow, purchase_cost: e.target.value })} style={{ width: 100 }} />
-                        ) : `₹${Number(tool.purchase_cost || 0).toFixed(0)}`}
-                      </td>
-                      <td style={strongCellStyle}>₹{Number(tool.earned_total || 0).toFixed(0)}</td>
-                      <td style={strongCellStyle}>₹{Number(tool.spent_total || 0).toFixed(0)}</td>
-                      <td style={{ ...strongCellStyle, color: profitValue < 0 ? "#b42318" : "#08783e" }}>
-                        ₹{profitValue.toFixed(0)}
-                      </td>
-                      <td style={cellStyle}>
-                        {isEditing ? (
-                          <input value={editRow.category ?? ""} onChange={(e) => setEditRow({ ...editRow, category: e.target.value })} style={{ width: 125 }} />
-                        ) : tool.category || "-"}
-                      </td>
-                      <td style={cellStyle}>
-                        {isEditing ? (
-                          <input value={editRow.brand ?? ""} onChange={(e) => setEditRow({ ...editRow, brand: e.target.value })} style={{ width: 115 }} />
-                        ) : tool.brand || "-"}
-                      </td>
-                      <td style={cellStyle}>
-                        {isEditing ? (
-                          <input value={editRow.color ?? ""} onChange={(e) => setEditRow({ ...editRow, color: e.target.value })} style={{ width: 90 }} />
-                        ) : tool.color || "-"}
-                      </td>
-                      <td className="location-summary-cell" style={compactLocationCellStyle}>
-                        {renderLocationSummary(tool.home_branch_summary)}
-                      </td>
-                      <td className="location-summary-cell" style={compactLocationCellStyle}>
-                        {renderLocationSummary(tool.current_location_summary)}
+                        <div className="tool-stack compact-grid">
+                          <div className="tool-stack-line"><span className="tool-stack-label">PURCHASE</span><span className="tool-stack-value">{isEditing ? <input type="number" value={editRow.purchase_cost ?? 0} onChange={(e) => setEditRow({ ...editRow, purchase_cost: e.target.value })} /> : `₹${Number(tool.purchase_cost || 0).toFixed(0)}`}</span></div>
+                          <div className="tool-stack-line"><span className="tool-stack-label">EARNED</span><span className="tool-stack-value" style={{ color: "#08783e" }}>₹{Number(tool.earned_total || 0).toFixed(0)}</span></div>
+                          <div className="tool-stack-line"><span className="tool-stack-label">SPENT</span><span className="tool-stack-value" style={{ color: "#b42318" }}>₹{Number(tool.spent_total || 0).toFixed(0)}</span></div>
+                          <div className="tool-stack-line"><span className="tool-stack-label">PROFIT</span><span className="tool-stack-value" style={{ color: profitValue < 0 ? "#b42318" : "#08783e" }}>₹{profitValue.toFixed(0)}</span></div>
+                        </div>
                       </td>
                       <td style={cellStyle}>
                         <span className={`tool-status-pill tool-status-${statusClass}`}>{tool.status || "Available"}</span>
                       </td>
                       <td style={cellStyle}>
-                        {isEditing ? <input type="number" value={editRow.greasing_due_days ?? 0} onChange={(e) => setEditRow({ ...editRow, greasing_due_days: e.target.value })} style={{ width: 75 }} /> : formatDueCell(tool.greasing_due_days)}
-                      </td>
-                      <td style={cellStyle}>
-                        {isEditing ? <input type="number" value={editRow.oil_change_due_days ?? 0} onChange={(e) => setEditRow({ ...editRow, oil_change_due_days: e.target.value })} style={{ width: 75 }} /> : formatDueCell(tool.oil_change_due_days)}
-                      </td>
-                      <td style={cellStyle}>
-                        {isEditing ? <input type="number" value={editRow.scheduled_service_due_days ?? 0} onChange={(e) => setEditRow({ ...editRow, scheduled_service_due_days: e.target.value })} style={{ width: 80 }} /> : formatDueCell(tool.scheduled_service_due_days)}
-                      </td>
-                      <td style={cellStyle}>
-                        {isEditing ? <input type="number" value={editRow.rental_overdue_days ?? 0} onChange={(e) => setEditRow({ ...editRow, rental_overdue_days: e.target.value })} style={{ width: 85 }} /> : formatDueCell(tool.rental_overdue_days)}
+                        <div className="tool-stack">
+                          <div className="tool-stack-line"><span className="tool-stack-label">GREASE</span><span className="tool-stack-value">{isEditing ? <input type="number" value={editRow.greasing_due_days ?? 0} onChange={(e) => setEditRow({ ...editRow, greasing_due_days: e.target.value })} /> : formatDueCell(tool.greasing_due_days)}</span></div>
+                          <div className="tool-stack-line"><span className="tool-stack-label">OIL</span><span className="tool-stack-value">{isEditing ? <input type="number" value={editRow.oil_change_due_days ?? 0} onChange={(e) => setEditRow({ ...editRow, oil_change_due_days: e.target.value })} /> : formatDueCell(tool.oil_change_due_days)}</span></div>
+                          <div className="tool-stack-line"><span className="tool-stack-label">SERVICE</span><span className="tool-stack-value">{isEditing ? <input type="number" value={editRow.scheduled_service_due_days ?? 0} onChange={(e) => setEditRow({ ...editRow, scheduled_service_due_days: e.target.value })} /> : formatDueCell(tool.scheduled_service_due_days)}</span></div>
+                          <div className="tool-stack-line"><span className="tool-stack-label">OVERDUE</span><span className="tool-stack-value">{isEditing ? <input type="number" value={editRow.rental_overdue_days ?? 0} onChange={(e) => setEditRow({ ...editRow, rental_overdue_days: e.target.value })} /> : formatDueCell(tool.rental_overdue_days)}</span></div>
+                        </div>
                       </td>
                       <td style={cellStyle}>
                         <div className="tools-action-row" style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 6 }}>
@@ -2118,13 +2151,13 @@ export default function ToolsPage() {
                                 {openDetailsKey === tool.group_key
                                   ? "Close"
                                   : tool.tool_type === "Quantity"
-                                  ? "Edit Quantity & Locations"
+                                  ? "▦ Qty & Locations"
                                   : (tool.grouped_items || []).length > 1
-                                  ? "Edit Tool Numbers & Locations"
-                                  : "Details"}
+                                  ? "▦ Numbers & Locations"
+                                  : "▦ Details"}
                               </button>
-                              <button className="btn-blue" type="button" onClick={() => startEditGroup(tool)}>Edit</button>
-                              <button className="btn-green" type="button" onClick={() => openTransfer(tool)}>Move</button>
+                              <button className="btn-blue" type="button" onClick={() => startEditGroup(tool)}>✎ Edit</button>
+                              <button className="btn-green" type="button" onClick={() => openTransfer(tool)}>⇄ Move</button>
                               <button
                                 className="btn-gray"
                                 type="button"
@@ -2134,9 +2167,9 @@ export default function ToolsPage() {
                                   window.setTimeout(() => document.querySelector(".tools-history-section")?.scrollIntoView({ behavior: "smooth" }), 100);
                                 }}
                               >
-                                History
+                                ◷ History
                               </button>
-                              <button className="btn-red" type="button" onClick={() => handleDeleteGroup(tool)}>Delete</button>
+                              <button className="btn-red" type="button" onClick={() => handleDeleteGroup(tool)}>⌫ Delete</button>
                             </>
                           )}
                         </div>
@@ -2145,7 +2178,7 @@ export default function ToolsPage() {
 
                     {openDetailsKey === tool.group_key && (
                       <tr className="tool-detail-row">
-                        <td colSpan={18} style={{ padding: 14, background: "#eef6ff" }}>
+                        <td colSpan={11} style={{ padding: 14, background: "#eef6ff" }}>
                           <div style={{ marginBottom: 10, textAlign: "left", fontSize: 17, fontWeight: 950, color: "#173d75" }}>
                             Branch-wise Details: {tool.tool_name}
                           </div>
@@ -2204,7 +2237,7 @@ export default function ToolsPage() {
 
               {filteredTools.length === 0 && (
                 <tr className="tools-empty-row">
-                  <td colSpan={18}>
+                  <td colSpan={11}>
                     {!hasSearched
                       ? "Start typing in the search box or click Show All Tools."
                       : searchLoading
