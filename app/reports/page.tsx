@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Fragment,
   useMemo,
   useState,
   type ChangeEvent,
@@ -102,9 +103,13 @@ function monthRange(month: string) {
   const [year, monthNumber] = safeMonth.split("-").map(Number);
   const lastDay = new Date(year, monthNumber, 0).getDate();
 
+  const from = `${safeMonth}-01`;
+  const monthEnd = `${safeMonth}-${String(lastDay).padStart(2, "0")}`;
+  const today = todayISO();
   return {
-    from: `${safeMonth}-01`,
-    to: `${safeMonth}-${String(lastDay).padStart(2, "0")}`,
+    from,
+    // Never calculate business for dates that have not happened yet.
+    to: monthEnd < today ? monthEnd : today,
   };
 }
 
@@ -280,6 +285,20 @@ function paymentRoundOff(row: any) {
   return Number(row?.discount || 0);
 }
 
+function isGpayPayment(row: any) {
+  const mode = normalize(row?.mode || row?.payment_mode || "").replace(/\s+/g, "");
+  return mode === "gpay" || mode === "googlepay";
+}
+
+function rentalRoundOffWithinRange(row: any, from: string, to: string) {
+  const amount = Number(row?.discount || 0);
+  if (!amount) return 0;
+  const effectiveDate = cleanDate(
+    row?.end_date || row?.return_date || row?.closed_date || row?.start_date
+  );
+  return dateInRange(effectiveDate, from, to) ? amount : 0;
+}
+
 function openingBalanceAmount(row: any) {
   const type = paymentEntryType(row);
   const amount = Math.abs(Number(row?.amount || 0));
@@ -372,6 +391,11 @@ type ReportResult = {
     value: string | number;
     tone?: "normal" | "green" | "red";
   }>;
+  details?: Record<string, Array<{
+    title: string;
+    headers: string[];
+    rows: any[][];
+  }>>;
 };
 
 const emptyResult: ReportResult = {
@@ -390,6 +414,9 @@ export default function ReportsPage() {
   );
   const [month, setMonth] = useState(thisMonth());
   const [selectedDate, setSelectedDate] = useState(todayISO());
+  const [expandedShop, setExpandedShop] = useState("");
+  const [shopDetailCache, setShopDetailCache] = useState<Record<string, any[]>>({});
+  const [shopDetailLoading, setShopDetailLoading] = useState("");
   const [shop, setShop] = useState("All Shops");
   const [searchText, setSearchText] = useState("");
   const [result, setResult] =
@@ -1246,11 +1273,24 @@ export default function ReportsPage() {
           sum + paymentCollection(row),
         0
       );
-      const roundOff = shopPayments.reduce(
+      const gpay = shopPayments
+        .filter((row: any) => isGpayPayment(row))
+        .reduce(
+          (sum: number, row: any) => sum + paymentCollection(row),
+          0
+        );
+      const paymentDiscount = shopPayments.reduce(
         (sum: number, row: any) =>
           sum + paymentRoundOff(row),
         0
       );
+      const rentalDiscount = shopRentals.reduce(
+        (sum: number, row: any) =>
+          sum + rentalRoundOffWithinRange(row, range.from, range.to),
+        0
+      );
+      const totalDiscount = paymentDiscount + rentalDiscount;
+      const balance = business - collections - totalDiscount;
       const expenseTotal = shopExpenses.reduce(
         (sum: number, row: any) =>
           sum + Number(row.amount || 0),
@@ -1273,13 +1313,15 @@ export default function ReportsPage() {
         business -
         expenseTotal -
         serviceCost -
-        roundOff;
+        totalDiscount;
 
       return {
         shop: shopName,
         business,
+        gpay,
         collections,
-        roundOff,
+        totalDiscount,
+        balance,
         expenseTotal,
         serviceCost,
         net,
@@ -1290,12 +1332,14 @@ export default function ReportsPage() {
 
     return {
       title: "Shop Performance",
-      subtitle: `${month}`,
+      subtitle: `${month} · Through ${range.to}`,
       headers: [
         "Shop",
         "Business",
-        "Collections",
-        "Round Off",
+        "GPay",
+        "Total Paid",
+        "Balance",
+        "Total Discount",
         "Expenses",
         "Service Cost",
         "Net",
@@ -1305,8 +1349,10 @@ export default function ReportsPage() {
       rows: rows.map((row) => [
         row.shop,
         rupee(row.business),
+        rupee(row.gpay),
         rupee(row.collections),
-        rupee(row.roundOff),
+        rupee(row.balance),
+        rupee(row.totalDiscount),
         rupee(row.expenseTotal),
         rupee(row.serviceCost),
         rupee(row.net),
@@ -1321,7 +1367,12 @@ export default function ReportsPage() {
           ),
         },
         {
-          label: "Collections",
+          label: "GPay",
+          value: rupee(rows.reduce((sum, row) => sum + row.gpay, 0)),
+          tone: "green",
+        },
+        {
+          label: "Total Paid",
           value: rupee(
             rows.reduce(
               (sum, row) => sum + row.collections,
@@ -1329,6 +1380,15 @@ export default function ReportsPage() {
             )
           ),
           tone: "green",
+        },
+        {
+          label: "Balance",
+          value: rupee(rows.reduce((sum, row) => sum + row.balance, 0)),
+          tone: "red",
+        },
+        {
+          label: "Total Discount",
+          value: rupee(rows.reduce((sum, row) => sum + row.totalDiscount, 0)),
         },
         {
           label: "Net",
@@ -1344,9 +1404,102 @@ export default function ReportsPage() {
     };
   }
 
+  async function loadShopPerformanceDetails(shopName: string) {
+    const range = monthRange(month);
+    const cacheKey = `${month}|${shopName}`;
+    if (shopDetailCache[cacheKey]) {
+      setExpandedShop(expandedShop === shopName ? "" : shopName);
+      return;
+    }
+
+    setShopDetailLoading(shopName);
+    try {
+      const [rentalsRes, paymentsRes, expensesRes, servicesRes, customersRes, toolsRes] = await Promise.all([
+        supabase.from("rentals").select("*").eq("shop", shopName).lte("start_date", range.to),
+        supabase.from("payments").select("*").eq("shop", shopName).gte("payment_date", range.from).lte("payment_date", range.to),
+        supabase.from("expenses").select("*").eq("shop", shopName).gte("expense_date", range.from).lte("expense_date", range.to),
+        supabase.from("services").select("*"),
+        supabase.from("customers").select("id,customer_name,mobile"),
+        supabase.from("tools").select("id,tool_name"),
+      ]);
+      const firstError = [rentalsRes, paymentsRes, expensesRes, servicesRes, customersRes, toolsRes].find((item: any) => item.error)?.error;
+      if (firstError) throw new Error(firstError.message);
+
+      const rentals = (rentalsRes.data || []).filter((row: any) => rentalOverlapsRange(row, range.from, range.to));
+      const payments = paymentsRes.data || [];
+      const expenses = expensesRes.data || [];
+      const services = (servicesRes.data || []).filter((row: any) => dateInRange(serviceDate(row), range.from, range.to) && (rowShop(row) === shopName || String(row.from_branch || "") === shopName));
+      const customersById = new Map((customersRes.data || []).map((row: any) => [String(row.id), row]));
+      const toolsById = new Map((toolsRes.data || []).map((row: any) => [String(row.id), row]));
+      const customerLabel = (row: any) => {
+        const customer: any = customersById.get(String(row.customer_id || ""));
+        return customer ? `${customer.customer_name} · ${customer.mobile}` : row.customer_name || row.mobile || "-";
+      };
+      const toolLabel = (row: any) => row.is_outside_rent
+        ? row.outside_item_name || "Outside Item"
+        : (toolsById.get(String(row.tool_id || "")) as any)?.tool_name || row.tool_name || "-";
+
+      const dates: string[] = [];
+      const cursor = new Date(`${range.from}T00:00:00`);
+      const finish = new Date(`${range.to}T00:00:00`);
+      while (cursor <= finish) {
+        dates.push(cursor.toISOString().slice(0, 10));
+        cursor.setDate(cursor.getDate() + 1);
+      }
+      const dailyRows = dates.map((date) => {
+        // `status` describes the rental now. A rental returned today still
+        // earned business on its earlier active dates, so do not use
+        // isActiveRentalOnDate() here because it rejects every row whose
+        // current status is returned/closed. The date boundaries are enough
+        // for historical daily business.
+        const dayRentals = rentals.filter((row: any) => {
+          if (row.is_transport_charge) {
+            return cleanDate(row.transport_date || row.start_date) === date;
+          }
+
+          const start = cleanDate(row.start_date || row.date || row.rental_date);
+          const end = cleanDate(row.end_date || row.return_date || row.closed_date);
+          return Boolean(start && start <= date && (!end || end >= date));
+        });
+        const dayPayments = payments.filter((row: any) => cleanDate(row.payment_date) === date);
+        const business = dayRentals.reduce((sum: number, row: any) => sum + dailyRentalBusiness(row, date), 0);
+        const paid = dayPayments.reduce((sum: number, row: any) => sum + paymentCollection(row), 0);
+        const gpay = dayPayments.filter((row: any) => isGpayPayment(row)).reduce((sum: number, row: any) => sum + paymentCollection(row), 0);
+        const discount = dayPayments.reduce((sum: number, row: any) => sum + paymentRoundOff(row), 0) + rentals.reduce((sum: number, row: any) => sum + (rentalRoundOffWithinRange(row, date, date)), 0);
+        return [date, rupee(business), rupee(gpay), rupee(paid), rupee(discount), rupee(business - paid - discount)];
+      });
+
+      const paymentRows = payments.map((row: any) => [cleanDate(row.payment_date), customerLabel(row), row.mode || row.payment_mode || "-", rupee(paymentCollection(row)), rupee(paymentRoundOff(row))]);
+      const discountRows = [
+        ...payments.filter((row: any) => paymentRoundOff(row) > 0).map((row: any) => [cleanDate(row.payment_date), customerLabel(row), "Payment discount", rupee(paymentRoundOff(row))]),
+        ...rentals.filter((row: any) => Number(row.discount || 0) > 0 && rentalRoundOffWithinRange(row, range.from, range.to) > 0).map((row: any) => [cleanDate(row.end_date || row.return_date || row.start_date), customerLabel(row), toolLabel(row), rupee(row.discount)]),
+      ];
+      const expenseRows = expenses.map((row: any) => [cleanDate(row.expense_date), row.category || "-", row.description || "-", row.payment_mode || "-", rupee(row.amount)]);
+      const serviceRows = services.map((row: any) => [serviceDate(row), toolLabel(row), row.service_centre || "-", row.work_done || row.complaint || "-", rupee(row.cost || row.amount)]);
+      const liveRows = rentals.filter((row: any) => isActiveRentalOnDate(row, range.to) && !row.is_transport_charge).map((row: any) => [customerLabel(row), toolLabel(row), Number(row.qty || 1), cleanDate(row.start_date), rupee(row.daily_rate)]);
+
+      const sections = [
+        { title: "Daily Business & Balance", headers: ["Date", "Business", "GPay", "Total Paid", "Discount", "Balance"], rows: dailyRows },
+        { title: "Payment Details", headers: ["Date", "Customer", "Mode", "Paid", "Discount"], rows: paymentRows },
+        { title: "Discount Details", headers: ["Date", "Customer", "Details", "Discount"], rows: discountRows },
+        { title: "Expense Details", headers: ["Date", "Category", "Description", "Mode", "Amount"], rows: expenseRows },
+        { title: "Service Cost Details", headers: ["Date", "Tool", "Service Centre", "Work / Complaint", "Cost"], rows: serviceRows },
+        { title: "Live Rental Details", headers: ["Customer", "Tool", "Qty", "Start", "Daily Rate"], rows: liveRows },
+      ];
+      setShopDetailCache((current) => ({ ...current, [cacheKey]: sections }));
+      setExpandedShop(shopName);
+    } catch (error: any) {
+      showError(error?.message || "Failed to load shop details");
+    } finally {
+      setShopDetailLoading("");
+    }
+  }
+
   async function searchReport() {
     setLoading(true);
     setHasSearched(false);
+    setExpandedShop("");
+    setShopDetailCache({});
 
     try {
       let nextResult: ReportResult;
@@ -1397,6 +1550,8 @@ export default function ReportsPage() {
     setResult(emptyResult);
     setHasSearched(false);
     setSearchText("");
+    setExpandedShop("");
+    setShopDetailCache({});
   }
 
   function downloadCsv() {
@@ -1592,34 +1747,62 @@ export default function ReportsPage() {
                     {result.headers.map((header: string) => (
                       <th key={header}>{header}</th>
                     ))}
+                    {reportType === "shop_performance" && <th>Details</th>}
                   </tr>
                 </thead>
 
                 <tbody>
-                  {result.rows.map((row: any[], rowIndex: number) => (
-                    <tr key={rowIndex}>
-                      {row.map((cell: any, cellIndex: number) => (
-                        <td
-                          key={cellIndex}
-                          className={
-                            String(cell).includes("₹")
-                              ? "strong"
-                              : ""
-                          }
-                        >
-                          {cell === "" || cell === null
-                            ? "-"
-                            : cell}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
+                  {result.rows.map((row: any[], rowIndex: number) => {
+                    const shopName = String(row[0] || "");
+                    const cacheKey = `${month}|${shopName}`;
+                    const sections = shopDetailCache[cacheKey] || [];
+                    return (
+                      <Fragment key={rowIndex}>
+                        <tr>
+                          {row.map((cell: any, cellIndex: number) => (
+                            <td key={cellIndex} className={String(cell).includes("₹") ? "strong" : ""}>
+                              {cell === "" || cell === null ? "-" : cell}
+                            </td>
+                          ))}
+                          {reportType === "shop_performance" && (
+                            <td>
+                              <button className="btn-blue" type="button" disabled={shopDetailLoading === shopName} onClick={() => void loadShopPerformanceDetails(shopName)}>
+                                {shopDetailLoading === shopName ? "Loading..." : expandedShop === shopName ? "Close" : "Details"}
+                              </button>
+                            </td>
+                          )}
+                        </tr>
+                        {reportType === "shop_performance" && expandedShop === shopName && (
+                          <tr className="report-detail-expanded-row">
+                            <td colSpan={result.headers.length + 1}>
+                              <div className="report-detail-sections">
+                                {sections.map((section: any) => (
+                                  <section key={section.title} className="report-detail-section">
+                                    <h3>{section.title}</h3>
+                                    <div className="table-wrap">
+                                      <table>
+                                        <thead><tr>{section.headers.map((header: string) => <th key={header}>{header}</th>)}</tr></thead>
+                                        <tbody>
+                                          {section.rows.map((detailRow: any[], detailIndex: number) => <tr key={detailIndex}>{detailRow.map((cell: any, cellIndex: number) => <td key={cellIndex} className={String(cell).includes("₹") ? "strong" : ""}>{cell === "" || cell === null ? "-" : cell}</td>)}</tr>)}
+                                          {section.rows.length === 0 && <tr><td colSpan={section.headers.length} className="reports-no-data">No entries</td></tr>}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </section>
+                                ))}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
 
                   {result.rows.length === 0 && (
                     <tr>
                       <td
                         colSpan={Math.max(
-                          result.headers.length,
+                          result.headers.length + (reportType === "shop_performance" ? 1 : 0),
                           1
                         )}
                         className="reports-no-data"
@@ -1835,6 +2018,29 @@ const reportsStyles = `
     text-align: center;
     font-size: 17px;
     font-weight: 900 !important;
+  }
+
+  .report-detail-expanded-row > td {
+    padding: 16px !important;
+    background: #eef6ff !important;
+  }
+
+  .report-detail-sections {
+    display: grid;
+    gap: 16px;
+  }
+
+  .report-detail-section {
+    padding: 12px;
+    border: 1px solid #bfd1e8;
+    border-radius: 12px;
+    background: #ffffff;
+  }
+
+  .report-detail-section h3 {
+    margin: 0 0 10px;
+    color: #143f82;
+    font-size: 18px;
   }
 
   @media (max-width: 1100px) {
