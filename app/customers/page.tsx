@@ -11,6 +11,7 @@ import {
   saveCustomer,
   searchCustomersForPage,
   suggestCustomersForPage,
+  loadCustomersByShopForPage,
   updateCustomer,
 } from "./actions";
 import { moveCustomerBalanceToArrears } from "../payments/actions";
@@ -26,6 +27,7 @@ const branches = [
 
 const allShopsLabel = "All Shops";
 const allOccupationsLabel = "All Occupations";
+const allBalancesLabel = "All Balances";
 
 function money(value: any) {
   return `₹${Number(value || 0).toFixed(0)}`;
@@ -253,6 +255,7 @@ export default function CustomersPage() {
   const [occupationFilter, setOccupationFilter] = useState(
     allOccupationsLabel
   );
+  const [balanceFilter, setBalanceFilter] = useState(allBalancesLabel);
 
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editRow, setEditRow] = useState<any>({});
@@ -263,6 +266,23 @@ export default function CustomersPage() {
     useState<SortKey>("last_transaction");
   const [sortDirection, setSortDirection] =
     useState<SortDirection>("desc");
+
+  function toggleCustomerSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDirection((current) => current === "asc" ? "desc" : "asc");
+    } else {
+      setSortKey(key);
+      setSortDirection(key === "balance" || key === "received_total" || key === "opening_balance" ? "desc" : "asc");
+    }
+  }
+
+  function customerSortHeading(label: string, key: SortKey) {
+    return (
+      <button type="button" onClick={() => toggleCustomerSort(key)} style={{ border: 0, background: "transparent", color: "inherit", fontWeight: 950, cursor: "pointer", padding: 8 }}>
+        {label} {sortKey === key ? (sortDirection === "asc" ? "▲" : "▼") : "↕"}
+      </button>
+    );
+  }
 
   function showError(message: string) {
     setAppMessage({
@@ -412,6 +432,26 @@ export default function CustomersPage() {
     await loadCustomers(search, null);
   }
 
+  async function showSelectedCustomers() {
+    setSearchLoading(true);
+    try {
+      const result = await loadCustomersByShopForPage(shopFilter);
+      if (!result.success) {
+        showError(result.message || "Failed to load customers");
+        return;
+      }
+      setCustomers(result.data || []);
+      setHasSearched(true);
+      setResultLimited(Boolean(result.limited));
+      if (balanceFilter === "Payment Pending") {
+        setSortKey("balance");
+        setSortDirection("desc");
+      }
+    } finally {
+      setSearchLoading(false);
+    }
+  }
+
   async function chooseSuggestion(row: any) {
     const customerId = Number(row.id || 0);
     const displayText =
@@ -442,6 +482,7 @@ export default function CustomersPage() {
     setSuggestionLimited(false);
     setShopFilter(allShopsLabel);
     setOccupationFilter(allOccupationsLabel);
+    setBalanceFilter(allBalancesLabel);
     setEditingId(null);
     setEditRow({});
   }
@@ -563,8 +604,14 @@ export default function CustomersPage() {
       const occupationMatches =
         occupationFilter === allOccupationsLabel ||
         String(row.occupation || "").trim() === occupationFilter;
+      const balance = Number(row.balance || 0);
+      const balanceMatches =
+        balanceFilter === allBalancesLabel ||
+        (balanceFilter === "Payment Pending" && balance > 0) ||
+        (balanceFilter === "Advance Paid" && balance < 0) ||
+        (balanceFilter === "No Balance" && balance === 0);
 
-      return shopMatches && occupationMatches;
+      return shopMatches && occupationMatches && balanceMatches;
     });
 
     return [...filtered].sort((a, b) => {
@@ -575,6 +622,7 @@ export default function CustomersPage() {
     customers,
     shopFilter,
     occupationFilter,
+    balanceFilter,
     sortKey,
     sortDirection,
   ]);
@@ -946,6 +994,15 @@ export default function CustomersPage() {
           </button>
 
           <button
+            className="btn-green"
+            type="button"
+            onClick={() => void showSelectedCustomers()}
+            disabled={searchLoading}
+          >
+            Show Customers
+          </button>
+
+          <button
             className="btn-gray"
             type="button"
             onClick={clearSearch}
@@ -985,6 +1042,24 @@ export default function CustomersPage() {
             {occupationOptions.map((occupation) => (
               <option key={occupation}>{occupation}</option>
             ))}
+          </select>
+
+          <select
+            value={balanceFilter}
+            onChange={(event) => {
+              const value = event.target.value;
+              setBalanceFilter(value);
+              if (value === "Payment Pending") {
+                setSortKey("balance");
+                setSortDirection("desc");
+              }
+            }}
+            title="Show payment-pending or advance-paid customers"
+          >
+            <option>{allBalancesLabel}</option>
+            <option>Payment Pending</option>
+            <option>Advance Paid</option>
+            <option>No Balance</option>
           </select>
         </div>
 
@@ -1039,7 +1114,59 @@ export default function CustomersPage() {
         </div>
 
 
-        <div className="customer-card-list">
+        <div style={{ overflowX: "auto", marginTop: 16 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", background: "#fff", fontSize: 14 }}>
+            <thead>
+              <tr style={{ background: "#dcecff", color: "#123b73" }}>
+                <th style={{ padding: 10, textAlign: "left" }}>{customerSortHeading("Customer", "customer_name")}</th>
+                <th>{customerSortHeading("Mobile", "mobile")}</th>
+                <th>{customerSortHeading("Shop", "shop")}</th>
+                <th>{customerSortHeading("Occupation", "occupation")}</th>
+                <th>{customerSortHeading("Opening", "opening_balance")}</th>
+                <th>{customerSortHeading("Received", "received_total")}</th>
+                <th>{customerSortHeading("Balance", "balance")}</th>
+                <th>{customerSortHeading("Rating", "rating")}</th>
+                <th>{customerSortHeading("Last Transaction", "last_transaction")}</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredCustomers.map((row: any) => {
+                const customerId = getCustomerId(row);
+                const editing = editingId === customerId;
+                const balance = Number(row.balance || 0);
+                return (
+                  <tr key={customerId || row.mobile} style={{ borderBottom: "1px solid #cbd5e1" }}>
+                    <td style={{ padding: 8, fontWeight: 900 }}>{editing ? <input value={editRow.customer_name || ""} onChange={(e) => setEditRow({ ...editRow, customer_name: e.target.value })} /> : row.customer_name}</td>
+                    <td style={{ textAlign: "center" }}>{editing ? <input value={editRow.mobile || ""} onChange={(e) => setEditRow({ ...editRow, mobile: e.target.value })} style={{ width: 115 }} /> : row.mobile}</td>
+                    <td style={{ textAlign: "center" }}>{editing ? <select value={editRow.shop || ""} onChange={(e) => setEditRow({ ...editRow, shop: e.target.value })}>{branches.map((branch) => <option key={branch}>{branch}</option>)}</select> : row.shop || "-"}</td>
+                    <td style={{ textAlign: "center" }}>{editing ? <input value={editRow.occupation || ""} onChange={(e) => setEditRow({ ...editRow, occupation: e.target.value })} style={{ width: 110 }} /> : row.occupation || "-"}</td>
+                    <td style={{ textAlign: "right", padding: 8 }}>{editing ? <input type="number" value={editRow.opening_balance ?? ""} onChange={(e) => setEditRow({ ...editRow, opening_balance: e.target.value })} style={{ width: 90 }} /> : money(row.opening_balance)}</td>
+                    <td style={{ textAlign: "right", padding: 8, color: "#08783e", fontWeight: 850 }}>{money(row.received_total)}</td>
+                    <td style={{ textAlign: "right", padding: 8, color: balance > 0 ? "#b42318" : "#08783e", fontWeight: 950 }}>{balance < 0 ? `${money(Math.abs(balance))} Advance` : money(balance)}</td>
+                    <td style={{ textAlign: "center" }}><ReliabilityBadge value={editing ? editRow.rating : row.rating} /></td>
+                    <td style={{ padding: 8 }}>{lastTransactionText(row)}</td>
+                    <td style={{ padding: 8 }}>
+                      <div style={{ display: "flex", gap: 5, justifyContent: "center", flexWrap: "wrap" }}>
+                        {editing ? <>
+                          <button className="btn-green" type="button" onClick={saveEdit}>Save</button>
+                          <button className="btn-gray" type="button" onClick={() => { setEditingId(null); setEditRow({}); }}>Cancel</button>
+                        </> : <>
+                          <button className="btn-blue" type="button" onClick={() => startEdit(row)}>Edit</button>
+                          <button className="btn-gray" type="button" onClick={() => moveCustomerToArrears(row)} disabled={balance <= 0 || arrearsSavingId === customerId}>Arrears</button>
+                          <button className="btn-red" type="button" onClick={() => handleDelete(customerId)}>Delete</button>
+                        </>}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {filteredCustomers.length === 0 && <tr><td colSpan={10} style={{ padding: 22, textAlign: "center", fontWeight: 850 }}>No customers to show</td></tr>}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="customer-card-list" style={{ display: "none" }}>
           {filteredCustomers.map((row: any) => {
             const customerId = getCustomerId(row);
             const openingBalance = Number(

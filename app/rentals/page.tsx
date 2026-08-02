@@ -1,6 +1,6 @@
 "use client";
 
-import { type CSSProperties, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import {
@@ -11,6 +11,7 @@ import {
   deleteRental,
   updateRentalWithAudit,
   saveCustomer,
+  moveGroupedToolStockForRental,
 } from "../actions";
 import { useAppMessage } from "../contexts/AppMessageProvider";
 
@@ -395,6 +396,7 @@ export default function RentalsPage() {
   const [showConfirm, setShowConfirm] = useState(false);
   const [confirmDate, setConfirmDate] = useState("");
   const [mobileSuggestions, setMobileSuggestions] = useState<any>({});
+  const [nameSuggestions, setNameSuggestions] = useState<any>({});
   const [shopPopupOpen, setShopPopupOpen] = useState(false);
   const [popupShop, setPopupShop] = useState("");
   const [rentalConfirm, setRentalConfirm] = useState<any>(null);
@@ -411,6 +413,31 @@ export default function RentalsPage() {
   const [editSaving, setEditSaving] = useState(false);
   const [activeEntryRow, setActiveEntryRow] = useState<number | null>(null);
   const [rentalActionSaving, setRentalActionSaving] = useState(false);
+  const [transferPrompt, setTransferPrompt] = useState<any>(null);
+  const transferPromptResolver = useRef<((value: any) => void) | null>(null);
+
+  function requestTransferPrompt(details: any): Promise<any> {
+    return new Promise((resolve) => {
+      const groupedSources: any[] = Array.from(
+        (details.sources || []).reduce((map: Map<string, any>, source: any) => {
+          const shop = normalizeBranch(source.shop || source.tool?.current_location || source.tool?.home_branch || "Not set");
+          const current = map.get(shop) || { key: shop, shop, qty: 0, toolIds: [], tool: source.tool };
+          current.qty += Math.max(Number(source.qty || 0), 0);
+          if (source.tool?.id) current.toolIds.push(Number(source.tool.id));
+          map.set(shop, current);
+          return map;
+        }, new Map<string, any>()).values() as any,
+      );
+      transferPromptResolver.current = resolve;
+      setTransferPrompt({ ...details, sources: groupedSources, sourceKey: String(groupedSources[0]?.key || ""), reason: "Rental entry transfer" });
+    });
+  }
+
+  function closeTransferPrompt(value: any) {
+    transferPromptResolver.current?.(value);
+    transferPromptResolver.current = null;
+    setTransferPrompt(null);
+  }
 
   useEffect(() => {
     const hasUnsavedEntry =
@@ -481,7 +508,9 @@ export default function RentalsPage() {
     const text = String(value || "").trim().toLowerCase();
 
     for (const branch of branches) {
-      if ((branchCodes[branch] || []).includes(text)) return branch;
+      if ((branchCodes[branch] || []).some((alias) =>
+        new RegExp(`(^|[^a-z0-9])${alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[^a-z0-9])`, "i").test(text),
+      )) return branch;
     }
 
     return String(value || "").trim();
@@ -995,6 +1024,34 @@ export default function RentalsPage() {
     }
   }
 
+  function handleCustomerNameChange(index: number, value: string) {
+    setRows((current) => current.map((row, rowIndex) => rowIndex === index ? {
+      ...row,
+      customer_name: value,
+      customer_id: "",
+      mobile: "",
+    } : row));
+
+    const query = value.trim().toLowerCase();
+    const matches = query
+      ? customers.filter((customer: any) => String(customer.customer_name || "").toLowerCase().includes(query)).slice(0, 10)
+      : [];
+    setNameSuggestions((current: any) => ({ ...current, [index]: matches }));
+  }
+
+  function selectCustomerForRentalRow(index: number, customer: any) {
+    setRows((current) => current.map((row, rowIndex) => rowIndex === index ? {
+      ...row,
+      customer_id: customer.id,
+      mobile: customer.mobile,
+      customer_name: customer.customer_name,
+    } : row));
+    setMobileSuggestions((current: any) => ({ ...current, [index]: [] }));
+    setNameSuggestions((current: any) => ({ ...current, [index]: [] }));
+    setShowAddCustomer(false);
+    warnForSelectedCustomer(customer);
+  }
+
   function arrearsForCustomer(customer: any) {
     return customerArrears
       .filter(
@@ -1067,7 +1124,7 @@ export default function RentalsPage() {
     setAddCustomerRowIndex(null);
   }
 
-  function handleToolChange(index: number, toolId: string): boolean {
+  async function handleToolChange(index: number, toolId: string): Promise<boolean> {
     const selectedTool = tools.find(
       (tool) => String(tool.id) === String(toolId),
     );
@@ -1110,10 +1167,23 @@ export default function RentalsPage() {
       const availableQty = availableQtyForTool(selectedTool, selectedBranch);
 
       if (availableQty <= 0) {
-        showWarning(
-          `${toolName} is not available at ${selectedBranch}. Move it to ${selectedBranch} first.`,
-        );
-        return false;
+        const sourceShop = normalizeBranch(selectedTool.current_location || selectedTool.home_branch || "");
+        const requestedQty = Math.max(Number(rows[index]?.qty || 1), 1);
+        const decision = await requestTransferPrompt({
+          title: isIndividualTool ? "Tool is at another shop" : "Quantity equipment is at another shop",
+          toolName,
+          toShop: selectedBranch,
+          requiredQty: requestedQty,
+          sources: [{ tool: selectedTool, shop: sourceShop || "Not set", qty: Math.max(Number(selectedTool.total_qty || 0), 0) }],
+        });
+        if (!decision) return false;
+        const moveResult = await moveGroupedToolStockForRental(decision.toolIds || [], selectedBranch, requestedQty, decision.reason);
+        if (!moveResult.success) {
+          showWarning(moveResult.message || "The stock could not be moved.");
+          return false;
+        }
+        toolId = String(moveResult.toolId || toolId);
+        await loadData();
       }
     }
 
@@ -1182,14 +1252,45 @@ export default function RentalsPage() {
 
   function matchingToolsForSearch(searchText: string) {
     const query = String(searchText || "").trim().toLowerCase();
-
-    if (!query) {
-      return rentableTools.slice(0, 30);
-    }
-
-    return rentableTools.filter((tool: any) =>
-      String(tool.tool_name || "").toLowerCase().includes(query),
+    const matching = uniqueTools.filter((tool: any) =>
+      !query || String(tool.tool_name || "").toLowerCase().includes(query),
     );
+    const groups = new Map<string, any[]>();
+    matching.forEach((tool: any) => {
+      const key = String(tool.tool_name || "").trim().toLowerCase();
+      if (!key) return;
+      groups.set(key, [...(groups.get(key) || []), tool]);
+    });
+
+    return Array.from(groups.values())
+      .map((items: any[]) => {
+        const localItems = items.filter((tool: any) => availableQtyForTool(tool, selectedBranch) > 0);
+        const representative = [...(localItems.length ? localItems : items)].sort(
+          (a: any, b: any) => availableQtyForTool(b, selectedBranch) - availableQtyForTool(a, selectedBranch) || Number(b.total_qty || 0) - Number(a.total_qty || 0),
+        )[0];
+        return {
+          ...representative,
+          _available_qty: localItems.reduce((sum: number, tool: any) => sum + availableQtyForTool(tool, selectedBranch), 0),
+          _same_name_rows: items.length,
+          _location_text: branches
+            .map((branch) => ({
+              branch,
+              qty: items.reduce((sum: number, tool: any) => sum + availableQtyForTool(tool, branch), 0),
+            }))
+            .filter((entry) => entry.qty > 0)
+            .sort((a, b) => (a.branch === selectedBranch ? -1 : b.branch === selectedBranch ? 1 : a.branch.localeCompare(b.branch)))
+            .map((entry) => `${entry.branch} (${entry.qty})`)
+            .join(" · "),
+        };
+      })
+      .sort((a: any, b: any) => {
+        const aName = String(a.tool_name || "").toLowerCase();
+        const bName = String(b.tool_name || "").toLowerCase();
+        const aStarts = query && aName.startsWith(query) ? 1 : 0;
+        const bStarts = query && bName.startsWith(query) ? 1 : 0;
+        return bStarts - aStarts || aName.localeCompare(bName);
+      })
+      .slice(0, 30);
   }
 
   function handleToolSearchInput(index: number, value: string) {
@@ -1222,8 +1323,8 @@ export default function RentalsPage() {
     }
   }
 
-  function selectToolFromSearch(index: number, tool: any) {
-    const accepted = handleToolChange(index, String(tool.id));
+  async function selectToolFromSearch(index: number, tool: any) {
+    const accepted = await handleToolChange(index, String(tool.id));
 
     if (!accepted) return;
 
@@ -1232,6 +1333,51 @@ export default function RentalsPage() {
       [index]: String(tool.tool_name || ""),
     }));
     setOpenToolSearchRow(null);
+  }
+
+  async function checkQuantityAvailability(index: number, value: any) {
+    const requestedQty = Math.max(Number(value || 1), 1);
+    changeRow(index, "qty", requestedQty);
+    const selected = tools.find((tool: any) => String(tool.id) === String(rows[index]?.tool_id || ""));
+    if (!selected || !selectedBranch) return;
+    const availableHere = availableQtyForTool(selected, selectedBranch);
+    if (requestedQty <= availableHere) return;
+
+    const shortage = requestedQty - availableHere;
+    const sources = uniqueTools
+      .filter((tool: any) => Number(tool.id) !== Number(selected.id))
+      .filter((tool: any) => String(tool.tool_name || "").trim().toLowerCase() === String(selected.tool_name || "").trim().toLowerCase())
+      .filter((tool: any) => normalizeBranch(tool.current_location || tool.home_branch) !== selectedBranch)
+      .map((tool: any) => ({ tool, shop: normalizeBranch(tool.current_location || tool.home_branch), qty: Math.max(Number(tool.total_qty || 0), 0) }))
+      .filter((source: any) => source.qty > 0);
+
+    if (sources.length === 0) {
+      showWarning(`${selected.tool_name} has only ${availableHere} at ${selectedBranch}. No stock is available at another shop. Reduce the quantity or use Outside.`);
+      return;
+    }
+
+    const decision = await requestTransferPrompt({
+      title: "Not enough quantity at this shop",
+      toolName: selected.tool_name,
+      toShop: selectedBranch,
+      requiredQty: shortage,
+      availableHere,
+      requestedQty,
+      sources,
+    });
+    if (!decision) return;
+    if (!decision.toolIds?.length) return showWarning("Select a source shop");
+    if (Number(decision.availableQty || 0) < shortage) {
+      showWarning(`${decision.shop} has only ${decision.availableQty}. Choose another shop or reduce the quantity.`);
+      return;
+    }
+    const result = await moveGroupedToolStockForRental(decision.toolIds, selectedBranch, shortage, decision.reason);
+    if (!result.success) {
+      showWarning(result.message || "The stock could not be moved.");
+      return;
+    }
+    setRows((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, tool_id: String(result.toolId || row.tool_id), qty: requestedQty } : row));
+    await loadData();
   }
 
   function clearRentalEntryRows() {
@@ -1818,6 +1964,50 @@ export default function RentalsPage() {
     <main className="rentals-premium-page">
       <style>{premiumRentalStyles}</style>
       <h1 className="rentals-premium-title">Rentals</h1>
+
+      {transferPrompt && (
+        <div style={confirmOverlayStyle}>
+          <div style={{ ...confirmCardStyle, width: "min(640px,96vw)" }}>
+            <div style={{ background: "linear-gradient(135deg,#0057ff,#0f2a5f)", color: "white", padding: "20px 24px" }}>
+              <div style={{ fontSize: 25, fontWeight: 1000 }}>{transferPrompt.title}</div>
+              <div style={{ marginTop: 5, fontWeight: 850 }}>{transferPrompt.toolName}</div>
+            </div>
+            <div style={confirmBodyStyle}>
+              {transferPrompt.availableHere !== undefined && (
+                <div style={{ padding: 12, background: "#fff7ed", border: "1px solid #fdba74", borderRadius: 10, marginBottom: 14, fontWeight: 900 }}>
+                  {transferPrompt.toShop} has {transferPrompt.availableHere}. Requested {transferPrompt.requestedQty}. Move {transferPrompt.requiredQty} more.
+                </div>
+              )}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                <label style={{ fontWeight: 900 }}>From shop
+                  <select style={compactSelectStyle} value={transferPrompt.sourceKey} onChange={(e) => setTransferPrompt({ ...transferPrompt, sourceKey: e.target.value })}>
+                    {(transferPrompt.sources || []).map((source: any) => <option key={source.key} value={source.key}>{source.shop} — Available {source.qty}</option>)}
+                  </select>
+                </label>
+                <label style={{ fontWeight: 900 }}>To shop
+                  <input style={compactInputStyle} value={transferPrompt.toShop} readOnly />
+                </label>
+                <label style={{ fontWeight: 900 }}>Quantity to move
+                  <input style={compactInputStyle} value={transferPrompt.requiredQty} readOnly />
+                </label>
+                <label style={{ fontWeight: 900 }}>Reason
+                  <input style={compactInputStyle} value={transferPrompt.reason} onChange={(e) => setTransferPrompt({ ...transferPrompt, reason: e.target.value })} />
+                </label>
+              </div>
+              <div style={{ marginTop: 14, padding: 12, background: "#eff6ff", borderRadius: 10, fontWeight: 850 }}>
+                Home Shop will remain unchanged. The movement will be saved in Tool History.
+              </div>
+              <div style={confirmButtonRowStyle}>
+                <button style={confirmCancelButtonStyle} type="button" onClick={() => closeTransferPrompt(null)}>Cancel</button>
+                <button style={{ ...confirmActionButtonStyle, background: "#15803d" }} type="button" onClick={() => {
+                  const source = (transferPrompt.sources || []).find((item: any) => item.key === transferPrompt.sourceKey);
+                  closeTransferPrompt(source ? { toolIds: source.toolIds, shop: source.shop, availableQty: source.qty, reason: transferPrompt.reason || "Rental entry transfer" } : null);
+                }}>Move & Continue</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {editRental && (
         <div style={confirmOverlayStyle}>
@@ -3101,36 +3291,16 @@ export default function RentalsPage() {
                             key={c.id}
                             style={{
                               display: "grid",
-                              gridTemplateColumns: "92px minmax(0, 1fr)",
-                              gap: 7,
+                              gridTemplateColumns: "118px minmax(0, 1fr)",
+                              gap: 16,
                               alignItems: "center",
                               padding: "6px 8px",
                               cursor: "pointer",
                               borderBottom: "1px solid #e3ecff",
                             }}
-                            onClick={() => {
-                              const updated = [...rows];
-
-                              updated[index] = {
-                                ...updated[index],
-                                customer_id: c.id,
-                                mobile: c.mobile,
-                                customer_name: c.customer_name,
-                              };
-
-                              setRows(updated);
-
-                              setMobileSuggestions({
-                                ...mobileSuggestions,
-                                [index]: [],
-                              });
-
-                              setShowAddCustomer(false);
-
-                              warnForSelectedCustomer(c);
-                            }}
+                            onClick={() => selectCustomerForRentalRow(index, c)}
                           >
-                            <strong style={{ whiteSpace: "nowrap" }}>
+                            <strong style={{ whiteSpace: "nowrap", paddingRight: 12, borderRight: "1px solid #cbd5e1" }}>
                               {c.mobile}
                             </strong>
                             <span
@@ -3151,16 +3321,35 @@ export default function RentalsPage() {
                 </td>
 
                 <td style={compactCellStyle}>
-                  <input
-                    style={{
-                      ...compactInputStyle,
-                      borderColor: groupColor || "#cbd5e1",
-                      fontWeight: 950,
-                    }}
-                    value={row.customer_name}
-                    readOnly
-                    placeholder="Name"
-                  />
+                  <div style={{ position: "relative" }}>
+                    <input
+                      style={{
+                        ...compactInputStyle,
+                        borderColor: groupColor || "#cbd5e1",
+                        fontWeight: 950,
+                      }}
+                      value={row.customer_name}
+                      onChange={(e) => handleCustomerNameChange(index, e.target.value)}
+                      readOnly={isGrouped && !isFirstGroupRow}
+                      placeholder="Type customer name"
+                    />
+                    {(nameSuggestions[index] || []).length > 0 && (
+                      <div style={{ position: "absolute", top: "100%", left: 0, width: "min(390px,75vw)", background: "white", border: "1px solid #93b4f8", borderRadius: 9, boxShadow: "0 12px 28px rgba(15,42,95,.2)", zIndex: 1200, maxHeight: 360, overflowY: "auto" }}>
+                        {nameSuggestions[index].map((customer: any) => (
+                          <button
+                            key={customer.id}
+                            type="button"
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => selectCustomerForRentalRow(index, customer)}
+                            style={{ width: "100%", display: "grid", gridTemplateColumns: "minmax(0,1fr) 125px", gap: 16, padding: "8px 10px", border: 0, borderBottom: "1px solid #e3ecff", background: "white", textAlign: "left", cursor: "pointer", fontWeight: 900 }}
+                          >
+                            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{customer.customer_name}</span>
+                            <strong style={{ whiteSpace: "nowrap", paddingLeft: 12, borderLeft: "1px solid #cbd5e1" }}>{customer.mobile}</strong>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </td>
 
                 <td
@@ -3305,7 +3494,10 @@ export default function RentalsPage() {
                                     overflowWrap: "anywhere",
                                   }}
                                 >
-                                  {t.tool_name}
+                                  <strong style={{ display: "block" }}>{t.tool_name}</strong>
+                                  <small style={{ display: "block", marginTop: 3, color: "#0057a8", fontWeight: 850 }}>
+                                    {t._location_text || "Location not set"}
+                                  </small>
                                 </span>
 
                                 <small
@@ -3315,7 +3507,7 @@ export default function RentalsPage() {
                                     whiteSpace: "nowrap",
                                   }}
                                 >
-                                  Avl {availableQtyForTool(t)} · ₹
+                                  {selectedBranch}: {Number(t._available_qty || 0)} · ₹
                                   {Number(t.daily_rent || 0).toFixed(0)}
                                 </small>
                               </button>
@@ -3368,6 +3560,7 @@ export default function RentalsPage() {
                     type="number"
                     value={row.qty}
                     onChange={(e) => changeRow(index, "qty", e.target.value)}
+                    onBlur={(e) => void checkQuantityAvailability(index, e.target.value)}
                   />
                 </td>
 

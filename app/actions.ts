@@ -1741,6 +1741,12 @@ function toolSearchScore(row: any, search: string) {
       .join(" ")
   );
 
+  // When the user enters more than one word, every word must be present in
+  // the tool name. "round pipe" must not return Pipe Cutter or Putty Sander.
+  if (tokens.length > 1 && !tokens.every((token) => toolName.includes(token))) {
+    return 0;
+  }
+
   if (!normalizedSearch) return 0;
   if (toolName === normalizedSearch) return 10000;
   if (toolName.startsWith(normalizedSearch)) return 9000;
@@ -1854,7 +1860,9 @@ export async function searchToolsForToolsPage(
     };
   }
 
-  const toolsResult = await fetchEveryToolRow("*");
+  const toolsResult = showAllTools
+    ? await fetchEveryToolRow("*")
+    : await fallbackToolNameRows(term, "*", 250);
 
   if (toolsResult.error) {
     return {
@@ -2065,6 +2073,12 @@ export async function saveTools(rows: any[]) {
 }
 
 export async function updateTool(id: number, row: any) {
+  const { data: before } = await supabase
+    .from("tools")
+    .select("total_qty,current_location")
+    .eq("id", id)
+    .maybeSingle();
+
   const { error } = await supabase
     .from("tools")
     .update({
@@ -2086,8 +2100,147 @@ export async function updateTool(id: number, row: any) {
 
   if (error) return { success: false, message: error.message };
 
+  const oldQty = Number(before?.total_qty || 0);
+  const newQty = Number(row.total_qty || 0);
+  const oldLocation = String(before?.current_location || "");
+  const newLocation = String(row.current_location || "");
+  if (before && (oldQty !== newQty || oldLocation !== newLocation)) {
+    await supabase.from("movements").insert({
+      tool_id: id,
+      from_location: oldLocation,
+      to_location: newLocation,
+      qty: Math.abs(newQty - oldQty) || newQty || 1,
+      movement_date: new Date().toISOString().slice(0, 10),
+      reason: String(row._change_reason || (oldLocation !== newLocation ? "Tool transfer" : "Quantity correction")),
+      remarks: oldQty !== newQty ? `Quantity corrected from ${oldQty} to ${newQty}` : "Location changed",
+    });
+  }
+
   revalidatePath("/tools");
   return { success: true, message: "Tool updated successfully" };
+}
+
+export async function moveToolStockForRental(
+  toolId: number,
+  toShop: string,
+  requestedQty: number,
+  movementReason = "Rental entry transfer",
+) {
+  const { data: tool, error: readError } = await supabase
+    .from("tools")
+    .select("*")
+    .eq("id", toolId)
+    .single();
+  if (readError || !tool) return { success: false, message: readError?.message || "Tool not found" };
+
+  const rawFromShop = String(tool.current_location || tool.home_branch || "");
+  const shopAliases: Record<string, string[]> = {
+    Karuvannur: ["karuvannur", "kvr"], Ollur: ["ollur", "olr"], Kachery: ["kachery", "kch"],
+    "Mulayam Rd": ["mulayam rd", "mulayam", "mly"], Pattikkad: ["pattikkad", "ptk"],
+  };
+  const fromShop = Object.entries(shopAliases).find(([, aliases]) =>
+    aliases.some((alias) => new RegExp(`(^|[^a-z0-9])${alias}(?=$|[^a-z0-9])`, "i").test(rawFromShop)),
+  )?.[0] || rawFromShop;
+  const moveQty = Math.max(Number(requestedQty || 1), 1);
+  const stockQty = Math.max(Number(tool.total_qty || 1), 1);
+  if (!toShop || fromShop === toShop) return { success: true, toolId, data: tool };
+  if (moveQty > stockQty) {
+    return { success: false, message: `${tool.tool_name} has only ${stockQty} at ${fromShop}.` };
+  }
+
+  let destinationToolId = toolId;
+  const { data: existingDestination } = await supabase
+    .from("tools")
+    .select("*")
+    .eq("tool_name", tool.tool_name)
+    .eq("current_location", toShop)
+    .neq("id", toolId)
+    .limit(1)
+    .maybeSingle();
+
+  if (stockQty > 1 && existingDestination) {
+    const destinationQty = Math.max(Number(existingDestination.total_qty || 0), 0);
+    const { error: destinationError } = await supabase
+      .from("tools")
+      .update({ total_qty: destinationQty + moveQty })
+      .eq("id", existingDestination.id);
+    if (destinationError) return { success: false, message: destinationError.message };
+    const { error: sourceError } = await supabase
+      .from("tools")
+      .update({ total_qty: stockQty - moveQty, current_location: fromShop })
+      .eq("id", toolId);
+    if (sourceError) {
+      await supabase.from("tools").update({ total_qty: destinationQty }).eq("id", existingDestination.id);
+      return { success: false, message: sourceError.message };
+    }
+    destinationToolId = Number(existingDestination.id);
+  } else if (moveQty === stockQty) {
+    const { error } = await supabase.from("tools").update({ current_location: toShop }).eq("id", toolId);
+    if (error) return { success: false, message: error.message };
+  } else {
+    const { error: sourceError } = await supabase
+      .from("tools")
+      .update({ total_qty: stockQty - moveQty, current_location: fromShop })
+      .eq("id", toolId);
+    if (sourceError) return { success: false, message: sourceError.message };
+
+    const copy = { ...tool };
+    delete copy.id;
+    delete copy.created_at;
+    delete copy.updated_at;
+    copy.total_qty = moveQty;
+    copy.current_location = toShop;
+    const { data: destination, error: destinationError } = await supabase
+      .from("tools")
+      .insert(copy)
+      .select("*")
+      .single();
+    if (destinationError) {
+      await supabase.from("tools").update({ total_qty: stockQty }).eq("id", toolId);
+      return { success: false, message: destinationError.message };
+    }
+    destinationToolId = Number(destination.id);
+  }
+
+  await supabase.from("movements").insert({
+    tool_id: destinationToolId,
+    from_location: fromShop,
+    to_location: toShop,
+    qty: moveQty,
+    movement_date: new Date().toISOString().slice(0, 10),
+    reason: movementReason,
+    remarks: `${movementReason}: ${fromShop} to ${toShop}`,
+  });
+
+  revalidatePath("/tools");
+  revalidatePath("/rentals");
+  return { success: true, toolId: destinationToolId };
+}
+
+export async function moveGroupedToolStockForRental(
+  toolIds: number[],
+  toShop: string,
+  requestedQty: number,
+  movementReason = "Rental entry transfer",
+) {
+  let remaining = Math.max(Number(requestedQty || 0), 0);
+  let destinationToolId = 0;
+  for (const id of toolIds.map(Number).filter(Boolean)) {
+    if (remaining <= 0) break;
+    const { data: source, error } = await supabase.from("tools").select("total_qty").eq("id", id).single();
+    if (error || !source) continue;
+    const available = Math.max(Number(source.total_qty || 0), 0);
+    if (available <= 0) continue;
+    const movingNow = Math.min(available, remaining);
+    const result = await moveToolStockForRental(id, toShop, movingNow, movementReason);
+    if (!result.success) return result;
+    destinationToolId = Number(result.toolId || destinationToolId);
+    remaining -= movingNow;
+  }
+  if (remaining > 0) {
+    return { success: false, message: `Selected shop is short by ${remaining}. No movement was completed for the remaining quantity.` };
+  }
+  return { success: true, toolId: destinationToolId };
 }
 
 export async function deleteTool(id: number) {
@@ -3473,25 +3626,39 @@ export async function getToolHistory(toolId: number) {
     return { success: false, message: toolError.message };
   }
 
+  const { data: sameNameTools } = await supabase
+    .from("tools")
+    .select("id")
+    .eq("tool_name", tool.tool_name);
+  const historyToolIds = (sameNameTools || [{ id: toolId }])
+    .map((row: any) => Number(row.id))
+    .filter(Boolean);
+
   const { data: movements } = await supabase
     .from("movements")
     .select("*")
-    .eq("tool_id", toolId);
+    .in("tool_id", historyToolIds);
 
   const { data: services } = await supabase
     .from("services")
     .select("*")
-    .eq("tool_id", toolId);
+    .in("tool_id", historyToolIds);
+
+  const { data: rentals } = await supabase
+    .from("rentals")
+    .select("*")
+    .in("tool_id", historyToolIds);
 
   const { data: archivedHistory } = await supabase
     .from("archived_tool_monthly")
     .select("*")
-    .eq("tool_id", toolId);
+    .in("tool_id", historyToolIds);
 
   const movementHistory =
     movements?.map((m: any) => ({
       date: m.movement_date || m.date || m.created_at || "",
       type: "Shop Movement",
+      qty: Number(m.qty || m.quantity || 1),
       from_location: m.from_location || m.from_branch || "",
       to_location: m.to_location || m.to_branch || "",
       service_centre: "",
@@ -3505,6 +3672,7 @@ export async function getToolHistory(toolId: number) {
     services?.map((s: any) => ({
       date: s.date_in || s.date_out || s.created_at || "",
       type: s.service_type || (s.date_in ? "From Service" : "To Service"),
+      qty: Number(s.qty || s.quantity || 1),
       from_location: s.date_in ? s.service_centre : s.active_branch,
       to_location: s.date_in ? s.return_branch : s.service_centre,
       service_centre: s.service_centre || "",
@@ -3514,10 +3682,27 @@ export async function getToolHistory(toolId: number) {
       status: s.status || "",
     })) || [];
 
+  const rentalHistory =
+    rentals?.map((r: any) => ({
+      date: r.start_date || r.created_at || "",
+      type: "Rental",
+      qty: Number(r.qty || 1),
+      from_location: r.shop || tool.current_location || tool.home_branch || "",
+      to_location: "Customer",
+      service_centre: "",
+      note: r.end_date
+        ? `Rented ${String(r.start_date || "").slice(0, 10)} to ${String(r.end_date || "").slice(0, 10)}`
+        : `Live rental from ${String(r.start_date || "").slice(0, 10)}`,
+      work_done: "",
+      cost: 0,
+      status: r.status || "Active",
+    })) || [];
+
   const archivedSummaryHistory =
     archivedHistory?.map((row: any) => ({
       date: row.month_start || "",
       type: "Archived Monthly Summary",
+      qty: 0,
       from_location: "",
       to_location: row.shop || "",
       service_centre: "",
@@ -3532,6 +3717,7 @@ export async function getToolHistory(toolId: number) {
   const history = [
     ...movementHistory,
     ...serviceHistory,
+    ...rentalHistory,
     ...archivedSummaryHistory,
   ].sort(
     (a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime()

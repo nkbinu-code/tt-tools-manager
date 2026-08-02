@@ -9,6 +9,7 @@ import {
   updateTool,
   deleteTool,
   getToolHistory,
+  moveToolStockForRental,
 } from "../actions";
 import { useAppMessage } from "../contexts/AppMessageProvider";
 
@@ -295,6 +296,9 @@ export default function ToolsPage() {
   const [suggestionLoading, setSuggestionLoading] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [showAddTools, setShowAddTools] = useState(false);
+  const [transferGroup, setTransferGroup] = useState<any>(null);
+  const [transferForm, setTransferForm] = useState({ sourceId: "", toShop: "", qty: 1, reason: "Manual stock transfer" });
+  const [transferSaving, setTransferSaving] = useState(false);
   const categorySelectRef = useRef<HTMLSelectElement | null>(null);
   const searchRequestIdRef = useRef(0);
   const suggestionRequestIdRef = useRef(0);
@@ -355,11 +359,19 @@ export default function ToolsPage() {
   useEffect(() => {
     const term = search.trim();
 
-    if (!term) return;
+    if (!term) {
+      searchRequestIdRef.current += 1;
+      setTools([]);
+      setRentals([]);
+      setServiceRows([]);
+      setHasSearched(false);
+      setSearchLoading(false);
+      return;
+    }
 
     const timer = window.setTimeout(() => {
       void loadTools(term);
-    }, 300);
+    }, 450);
 
     return () => window.clearTimeout(timer);
   }, [search]);
@@ -375,28 +387,9 @@ export default function ToolsPage() {
       return;
     }
 
-    const requestId = ++suggestionRequestIdRef.current;
-    const timer = window.setTimeout(async () => {
-      setSuggestionLoading(true);
-
-      try {
-        const res = await suggestToolsForToolsPage(term);
-        if (requestId !== suggestionRequestIdRef.current) return;
-
-        if (res.success) {
-          setToolSuggestions(res.data || []);
-          setShowSuggestions(true);
-        } else {
-          setToolSuggestions([]);
-        }
-      } finally {
-        if (requestId === suggestionRequestIdRef.current) {
-          setSuggestionLoading(false);
-        }
-      }
-    }, 180);
-
-    return () => window.clearTimeout(timer);
+    setToolSuggestions([]);
+    setSuggestionLoading(false);
+    setShowSuggestions(false);
   }, [search]);
 
   function showMessage(text: string) {
@@ -442,6 +435,25 @@ export default function ToolsPage() {
     );
   }
 
+  function locationMatchesShop(value: any, shop: string) {
+    if (shop === "All") return true;
+    const text = String(value || "").trim().toLowerCase();
+    const aliases: Record<string, string[]> = {
+      Karuvannur: ["karuvannur", "kvr"],
+      Ollur: ["ollur", "olr"],
+      Kachery: ["kachery", "kch"],
+      "Mulayam Rd": ["mulayam rd", "mulayam", "mly"],
+      Pattikkad: ["pattikkad", "ptk"],
+    };
+    return (aliases[shop] || [shop.toLowerCase()]).some((alias) =>
+      new RegExp(`(^|[^a-z0-9])${alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[^a-z0-9])`, "i").test(text),
+    );
+  }
+
+  function displayShopName(value: any) {
+    return branches.find((branch) => locationMatchesShop(value, branch)) || String(value || "Not set");
+  }
+
   function makeLocationSummary(items: any[], field: string) {
     const dist: any = {};
 
@@ -472,17 +484,20 @@ export default function ToolsPage() {
     if (locations.length === 0) return "-";
 
     if (locationFilter !== "All") {
-      const selectedQty = Number(dist[locationFilter] || 0);
+      const selectedQty = items
+        .filter((item) => {
+          const value = field === "home_branch" ? item.home_branch : locationName(item);
+          return locationMatchesShop(value, locationFilter);
+        })
+        .reduce((sum, item) => sum + Number(item.total_qty || 1), 0);
       if (selectedQty <= 0) return "-";
-      const code = shortNames[locationFilter] || locationFilter;
-      return selectedQty === 1 ? code : `${code}(${selectedQty})`;
+      return `${locationFilter}(${selectedQty})`;
     }
 
     return locations
       .map((loc) => {
-        const code = shortNames[loc] || loc;
         const qty = Number(dist[loc] || 0);
-        return qty === 1 ? code : `${code}(${qty})`;
+        return `${loc}(${qty})`;
       })
       .join(" ");
   }
@@ -739,10 +754,10 @@ export default function ToolsPage() {
         locationFilter !== "All" &&
         !(tool.grouped_items || []).some((item: any) => {
           return (
-            item.current_location === locationFilter ||
-            item.service_centre === locationFilter ||
-            item.physical_location === locationFilter ||
-            String(item.display_location || "").includes(locationFilter)
+            locationMatchesShop(item.current_location, locationFilter) ||
+            locationMatchesShop(item.service_centre, locationFilter) ||
+            locationMatchesShop(item.physical_location, locationFilter) ||
+            locationMatchesShop(item.display_location, locationFilter)
           );
         })
       ) {
@@ -980,7 +995,25 @@ export default function ToolsPage() {
   async function saveDetailEdit() {
     if (!detailEditingId) return;
 
-    const res = await updateTool(detailEditingId, rowForSave(detailEditRow));
+    const original = tools.find((row: any) => Number(row.id) === Number(detailEditingId));
+    const qtyChanged = Number(original?.total_qty || 0) !== Number(detailEditRow.total_qty || 0);
+    const locationChanged = String(original?.current_location || "") !== String(detailEditRow.current_location || "");
+    let changeReason = "";
+    if (qtyChanged || locationChanged) {
+      changeReason = window.prompt(
+        qtyChanged
+          ? `Quantity will change from ${Number(original?.total_qty || 0)} to ${Number(detailEditRow.total_qty || 0)}. Enter the reason:`
+          : `Location will change from ${original?.current_location || "Not set"} to ${detailEditRow.current_location || "Not set"}. Enter the reason:`,
+        qtyChanged ? "Physical stock correction" : "Tool transfer",
+      )?.trim() || "";
+      if (!changeReason) {
+        showWarning("A reason is required. Nothing was changed.");
+        return;
+      }
+      if (!window.confirm("Save this change? Existing rentals and all other quantities will remain unchanged.")) return;
+    }
+
+    const res = await updateTool(detailEditingId, rowForSave({ ...detailEditRow, _change_reason: changeReason }));
 
     if (!res.success) {
       showError(res.message || "Failed to update tool row");
@@ -1005,6 +1038,38 @@ export default function ToolsPage() {
     }
 
     showSuccess(res.message || "Tool row deleted successfully");
+    await loadTools(search);
+  }
+
+  function openTransfer(tool: any, preferredSourceId?: number) {
+    const source = (tool.grouped_items || []).find((item: any) => Number(item.id) === Number(preferredSourceId)) ||
+      (tool.grouped_items || []).find((item: any) => Number(item.total_qty || 0) > 0) || tool.grouped_items?.[0];
+    setTransferGroup(tool);
+    setTransferForm({
+      sourceId: String(source?.id || ""),
+      toShop: branches.find((branch) => branch !== source?.current_location) || "",
+      qty: 1,
+      reason: "Manual stock transfer",
+    });
+  }
+
+  async function saveTransfer() {
+    const source = transferGroup?.grouped_items?.find((item: any) => String(item.id) === transferForm.sourceId);
+    if (!source || !transferForm.toShop) return showWarning("Select the From shop and To shop");
+    const fromShop = displayShopName(source.current_location || source.home_branch || "");
+    const qty = Math.max(Number(transferForm.qty || 0), 0);
+    const available = Math.max(Number(source.total_qty || 0), 0);
+    if (!qty) return showWarning("Enter the quantity to move");
+    if (qty > available) return showWarning(`${fromShop} has only ${available}`);
+    if (fromShop === transferForm.toShop) return showWarning("From shop and To shop cannot be the same");
+    if (!transferForm.reason.trim()) return showWarning("Enter the movement reason");
+
+    setTransferSaving(true);
+    const result = await moveToolStockForRental(Number(source.id), transferForm.toShop, qty, transferForm.reason.trim());
+    setTransferSaving(false);
+    if (!result.success) return showError(result.message || "Transfer failed");
+    showSuccess(`${qty} ${transferGroup.tool_name} moved from ${fromShop} to ${transferForm.toShop}`);
+    setTransferGroup(null);
     await loadTools(search);
   }
 
@@ -1831,257 +1896,76 @@ export default function ToolsPage() {
       `}</style>
       <h1>Tools</h1>
 
+      {transferGroup && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 10000, background: "rgba(15,23,42,.58)", display: "grid", placeItems: "center", padding: 20 }}>
+          <div style={{ width: "min(620px, 96vw)", background: "white", borderRadius: 16, padding: 22, boxShadow: "0 24px 70px rgba(0,0,0,.28)" }}>
+            <h2 style={{ margin: 0, color: "#123b73" }}>Move Tool / Quantity Equipment</h2>
+            <p style={{ fontWeight: 900, fontSize: 18 }}>{transferGroup.tool_name}</p>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <label style={{ fontWeight: 850 }}>From shop
+                <select value={transferForm.sourceId} onChange={(e) => setTransferForm({ ...transferForm, sourceId: e.target.value })} style={{ width: "100%", minHeight: 44 }}>
+                  {(transferGroup.grouped_items || []).filter((item: any) => Number(item.total_qty || 0) > 0).map((item: any) => (
+                    <option key={item.id} value={item.id}>{displayShopName(item.current_location || item.home_branch)} — Available {Number(item.total_qty || 0)}</option>
+                  ))}
+                </select>
+              </label>
+              <label style={{ fontWeight: 850 }}>To shop
+                <select value={transferForm.toShop} onChange={(e) => setTransferForm({ ...transferForm, toShop: e.target.value })} style={{ width: "100%", minHeight: 44 }}>
+                  <option value="">Select shop</option>
+                  {branches.map((branch) => <option key={branch}>{branch}</option>)}
+                </select>
+              </label>
+              <label style={{ fontWeight: 850 }}>Quantity to move
+                <input type="number" min={1} value={transferForm.qty} onChange={(e) => setTransferForm({ ...transferForm, qty: Number(e.target.value) })} style={{ width: "100%", minHeight: 44 }} />
+              </label>
+              <label style={{ fontWeight: 850 }}>Reason
+                <input value={transferForm.reason} onChange={(e) => setTransferForm({ ...transferForm, reason: e.target.value })} style={{ width: "100%", minHeight: 44 }} />
+              </label>
+            </div>
+            <div style={{ marginTop: 14, padding: 12, background: "#eff6ff", borderRadius: 10, fontWeight: 800 }}>
+              This reduces the From-shop quantity and adds the same quantity to the To shop. The overall total will not change.
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>
+              <button className="btn-gray" type="button" onClick={() => setTransferGroup(null)} disabled={transferSaving}>Cancel</button>
+              <button className="btn-green" type="button" onClick={() => void saveTransfer()} disabled={transferSaving}>{transferSaving ? "Moving..." : "Confirm Movement"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="panel">
         <div className="tools-search-panel">
           <div className="tools-search-title-row">
             <div>
-              <h2>Tools Search, Filters & Full Movement History</h2>
-              <div className="tools-search-version">FIT-WIDTH TABLE • NO HORIZONTAL SCROLL • UNLIMITED LIVE MATCHES</div>
+              <h2>Find Tools</h2>
             </div>
           </div>
-
-        <div className="tools-filter-cards">
-          <ToolFilterCard
-            title="All Tools"
-            value={filterCounts.all}
-            active={quickFilter === "All"}
-            onClick={() => void showAllTools()}
-          />
-          <ToolFilterCard
-            title="Available"
-            value={filterCounts.available}
-            active={quickFilter === "Available"}
-            onClick={() => setQuickFilter("Available")}
-          />
-          <ToolFilterCard
-            title="Currently Rented"
-            value={filterCounts.rented}
-            active={quickFilter === "Rented"}
-            onClick={() => setQuickFilter("Rented")}
-          />
-          <ToolFilterCard
-            title="In Service"
-            value={filterCounts.service}
-            active={quickFilter === "Service"}
-            onClick={() => setQuickFilter("Service")}
-          />
-          <ToolFilterCard
-            title="Missing"
-            value={filterCounts.missing}
-            active={quickFilter === "Missing"}
-            onClick={() => setQuickFilter("Missing")}
-          />
-          <ToolFilterCard
-            title="Service Due"
-            value={filterCounts.serviceDue}
-            active={quickFilter === "Service Due"}
-            onClick={() => setQuickFilter("Service Due")}
-          />
-          <ToolFilterCard
-            title="Categories"
-            value={filterCounts.categories}
-            active={categoryFilter !== "All"}
-            onClick={() => categorySelectRef.current?.focus()}
-          />
-        </div>
 
         <div className="tools-search-main-row">
           <div className="tool-live-search-wrap">
             <input
-              placeholder="Start typing tool name, number, brand, category, shop or status..."
+              placeholder="Search tool name or tool number..."
               value={search}
               autoComplete="off"
-              onFocus={() => {
-                if (search.trim()) setShowSuggestions(true);
-              }}
-              onBlur={() => {
-                window.setTimeout(() => setShowSuggestions(false), 180);
-              }}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                setShowSuggestions(true);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  setShowSuggestions(false);
-                  void handleSearch();
-                }
-                if (e.key === "Escape") setShowSuggestions(false);
-              }}
+              onChange={(e) => setSearch(e.target.value)}
               style={{ minHeight: 48, fontSize: 17, fontWeight: 850 }}
             />
-
-            {showSuggestions && search.trim() && (
-              <div className="tool-live-suggestions">
-                <div className="tool-live-suggestions-head">
-                  <span>Tool name</span>
-                  <span>Qty</span>
-                  <span>Category</span>
-                  <span>Location / status</span>
-                </div>
-
-                {suggestionLoading ? (
-                  <div className="tool-live-suggestions-empty">Loading all matching tool names...</div>
-                ) : toolSuggestions.length === 0 ? (
-                  <div className="tool-live-suggestions-empty">No matching tool names found.</div>
-                ) : (
-                  toolSuggestions.map((suggestion: any) => (
-                    <button
-                      key={String(suggestion.tool_name)}
-                      type="button"
-                      className="tool-live-suggestion-row"
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => {
-                        const name = String(suggestion.tool_name || "");
-                        setSearch(name);
-                        setShowSuggestions(false);
-                        void loadTools(name);
-                      }}
-                    >
-                      <strong>{suggestion.tool_name}</strong>
-                      <span>{Number(suggestion.qty || 0)}</span>
-                      <span>{suggestion.category || "-"}</span>
-                      <span>
-                        {[(suggestion.locations || []).join(", "), (suggestion.statuses || []).join(", ")]
-                          .filter(Boolean)
-                          .join(" · ") || "-"}
-                      </span>
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
-
-            <div className="tool-live-indicator" style={{ marginTop: 8 }}>
-              <span className={`tool-live-dot ${searchLoading || suggestionLoading ? "loading" : ""}`} />
-              {suggestionLoading
-                ? "Loading every matching name..."
-                : search.trim()
-                ? `${toolSuggestions.length} matching tool name(s) • ${tools.length} saved row(s) in table`
-                : "Type to see every matching tool name and update the table automatically"}
-            </div>
           </div>
 
           <div className="tools-search-actions">
-            <button
-              className="btn-blue"
-              type="button"
-              onClick={() => {
-                setShowSuggestions(false);
-                void handleSearch();
-              }}
-              disabled={searchLoading || !search.trim()}
+            <select
+              value={locationFilter}
+              onChange={(e) => setLocationFilter(e.target.value)}
+              aria-label="Filter tools by shop"
+              style={{ minHeight: 48, minWidth: 210, fontSize: 16, fontWeight: 850 }}
             >
-              {searchLoading ? "Searching..." : "Search All Matches"}
-            </button>
-
-            <button className="btn-gray" type="button" onClick={() => void showAllTools()}>
-              Show All Tools
-            </button>
-
-            <button type="button" onClick={clearSearch} disabled={!search && !hasSearched}>
+              <option value="All">All Shops</option>
+              {branches.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+            </select>
+            <button type="button" onClick={clearSearch} disabled={!search && locationFilter === "All"}>
               Clear
             </button>
-
-            <button
-              className="btn-blue"
-              type="button"
-              onClick={downloadToolsExcel}
-              disabled={filteredTools.length === 0}
-              style={{
-                opacity: filteredTools.length === 0 ? 0.55 : 1,
-                cursor: filteredTools.length === 0 ? "not-allowed" : "pointer",
-              }}
-            >
-              Download Results
-            </button>
           </div>
-        </div>
-
-        <div className="tools-unified-filter-grid">
-          <select
-            value={toolTypeFilter}
-            onChange={(e) => setToolTypeFilter(e.target.value)}
-          >
-            <option value="All">All Tool Types</option>
-            <option value="Individual">Individual Tools</option>
-            <option value="Quantity">Quantity Equipment</option>
-          </select>
-
-          <select
-            ref={categorySelectRef}
-            value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value)}
-          >
-            <option value="All">All Categories</option>
-            {categoryOptions.map((category) => (
-              <option key={String(category)} value={String(category)}>
-                {String(category)}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={homeBranchFilter}
-            onChange={(e) => setHomeBranchFilter(e.target.value)}
-          >
-            <option value="All">All Home Shops</option>
-            {branches.map((branch) => (
-              <option key={branch} value={branch}>
-                {branch}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={locationFilter}
-            onChange={(e) => setLocationFilter(e.target.value)}
-          >
-            <option value="All">All Current Locations</option>
-            {branches.map((branch) => (
-              <option key={branch} value={branch}>
-                {branch}
-              </option>
-            ))}
-            {serviceCentres.map((centre) => (
-              <option key={centre} value={centre}>
-                {centre}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-          >
-            <option value="All">All Statuses</option>
-            {statuses.map((status) => (
-              <option key={status} value={status}>
-                {status}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={historyToolId}
-            onChange={(e) => void handleHistorySearch(e.target.value)}
-            disabled={historyOptions.length === 0}
-          >
-            <option value="">
-              {historyOptions.length === 0
-                ? "Search first for movement history"
-                : "Select Tool for Full Movement History"}
-            </option>
-            {historyOptions.map((tool: any) => (
-              <option key={tool.id} value={tool.id}>
-                {tool.tool_name}
-                {tool.brand ? ` · ${tool.brand}` : ""}
-                {tool.current_location ? ` · ${tool.current_location}` : ""}
-                {tool.status ? ` · ${tool.status}` : ""}
-              </option>
-            ))}
-          </select>
         </div>
 
         <div
@@ -2201,29 +2085,13 @@ export default function ToolsPage() {
                         ) : tool.color || "-"}
                       </td>
                       <td className="location-summary-cell" style={compactLocationCellStyle}>
-                        {isEditing ? (
-                          <select value={editRow.home_branch || ""} onChange={(e) => setEditRow({ ...editRow, home_branch: e.target.value })} style={{ width: 145 }}>
-                            <option value="">Keep Same</option>
-                            {branches.map((branch) => <option key={branch}>{branch}</option>)}
-                          </select>
-                        ) : renderLocationSummary(tool.home_branch_summary)}
+                        {renderLocationSummary(tool.home_branch_summary)}
                       </td>
                       <td className="location-summary-cell" style={compactLocationCellStyle}>
-                        {isEditing ? (
-                          <select value={editRow.current_location || ""} onChange={(e) => setEditRow({ ...editRow, current_location: e.target.value })} style={{ width: 170 }}>
-                            <option value="">Keep Same</option>
-                            {[...branches, ...serviceCentres].map((location) => <option key={location}>{location}</option>)}
-                          </select>
-                        ) : renderLocationSummary(tool.current_location_summary)}
+                        {renderLocationSummary(tool.current_location_summary)}
                       </td>
                       <td style={cellStyle}>
-                        {isEditing ? (
-                          <select value={editRow.status || "Available"} onChange={(e) => setEditRow({ ...editRow, status: e.target.value })} style={{ width: 110 }}>
-                            {statuses.map((status) => <option key={status}>{status}</option>)}
-                          </select>
-                        ) : (
-                          <span className={`tool-status-pill tool-status-${statusClass}`}>{tool.status || "Available"}</span>
-                        )}
+                        <span className={`tool-status-pill tool-status-${statusClass}`}>{tool.status || "Available"}</span>
                       </td>
                       <td style={cellStyle}>
                         {isEditing ? <input type="number" value={editRow.greasing_due_days ?? 0} onChange={(e) => setEditRow({ ...editRow, greasing_due_days: e.target.value })} style={{ width: 75 }} /> : formatDueCell(tool.greasing_due_days)}
@@ -2247,9 +2115,27 @@ export default function ToolsPage() {
                           ) : (
                             <>
                               <button className="btn-gray" type="button" onClick={() => setOpenDetailsKey(openDetailsKey === tool.group_key ? null : tool.group_key)}>
-                                {openDetailsKey === tool.group_key ? "Close" : "Details"}
+                                {openDetailsKey === tool.group_key
+                                  ? "Close"
+                                  : tool.tool_type === "Quantity"
+                                  ? "Edit Quantity & Locations"
+                                  : (tool.grouped_items || []).length > 1
+                                  ? "Edit Tool Numbers & Locations"
+                                  : "Details"}
                               </button>
                               <button className="btn-blue" type="button" onClick={() => startEditGroup(tool)}>Edit</button>
+                              <button className="btn-green" type="button" onClick={() => openTransfer(tool)}>Move</button>
+                              <button
+                                className="btn-gray"
+                                type="button"
+                                onClick={() => {
+                                  const firstId = tool.grouped_items?.[0]?.id;
+                                  if (firstId) void handleHistorySearch(String(firstId));
+                                  window.setTimeout(() => document.querySelector(".tools-history-section")?.scrollIntoView({ behavior: "smooth" }), 100);
+                                }}
+                              >
+                                History
+                              </button>
                               <button className="btn-red" type="button" onClick={() => handleDeleteGroup(tool)}>Delete</button>
                             </>
                           )}
@@ -2275,7 +2161,9 @@ export default function ToolsPage() {
                                   const editingDetail = detailEditingId === item.id;
                                   return (
                                     <tr key={item.id}>
-                                      <td style={{ ...cellStyle, textAlign: "left", fontWeight: 900 }}>{item.tool_name}</td>
+                                      <td style={{ ...cellStyle, textAlign: "left", fontWeight: 900 }}>
+                                        {item.tool_name}{item.tool_number || item.tool_no || item.number ? ` · No. ${item.tool_number || item.tool_no || item.number}` : ""}
+                                      </td>
                                       <td style={cellStyle}>{editingDetail ? <input type="number" value={detailEditRow.total_qty ?? 0} onChange={(e) => setDetailEditRow({ ...detailEditRow, total_qty: e.target.value })} style={{ width: 70 }} /> : Number(item.total_qty || 0)}</td>
                                       <td style={cellStyle}>{editingDetail ? <input type="number" value={detailEditRow.purchase_cost ?? 0} onChange={(e) => setDetailEditRow({ ...detailEditRow, purchase_cost: e.target.value })} style={{ width: 90 }} /> : `₹${Number(item.purchase_cost || 0).toFixed(0)}`}</td>
                                       <td style={cellStyle}>{editingDetail ? <select value={detailEditRow.home_branch || ""} onChange={(e) => setDetailEditRow({ ...detailEditRow, home_branch: e.target.value })}>{branches.map((branch) => <option key={branch}>{branch}</option>)}</select> : item.home_branch || "-"}</td>
@@ -2295,6 +2183,7 @@ export default function ToolsPage() {
                                           ) : (
                                             <>
                                               <button className="btn-blue" type="button" onClick={() => startDetailEdit(item)}>Edit</button>
+                                              <button className="btn-green" type="button" onClick={() => openTransfer(tool, item.id)}>Move</button>
                                               <button className="btn-red" type="button" onClick={() => handleDetailDelete(item.id)}>Delete</button>
                                             </>
                                           )}
@@ -2331,7 +2220,7 @@ export default function ToolsPage() {
         <div className="tools-history-section">
           <h2 style={{ marginTop: 0 }}>Full Movement History</h2>
           <p style={{ marginTop: -4, color: "#64748b", fontWeight: 750 }}>
-            Use the movement-history dropdown above. It contains every individual tool row from the same search results.
+            Select History from any tool row to see movements, rentals, repairs and costs.
           </p>
 
           {historyLoading && <strong>Loading history...</strong>}
@@ -2363,6 +2252,7 @@ export default function ToolsPage() {
             <tr>
               <th>Date</th>
               <th>Type</th>
+              <th>Qty</th>
               <th>From</th>
               <th>To</th>
               <th>Service Centre</th>
@@ -2378,6 +2268,7 @@ export default function ToolsPage() {
               <tr key={index}>
                 <td>{row.date || "-"}</td>
                 <td>{row.type || "-"}</td>
+                <td>{Number(row.qty || 0) || "-"}</td>
                 <td>{row.from_location || "-"}</td>
                 <td>{row.to_location || "-"}</td>
                 <td>{row.service_centre || "-"}</td>
@@ -2390,13 +2281,13 @@ export default function ToolsPage() {
 
             {historyToolId && toolHistory.length === 0 && !historyLoading && (
               <tr>
-                <td colSpan={9}>No movement history found</td>
+                <td colSpan={10}>No movement, rental or service history found</td>
               </tr>
             )}
 
             {!historyToolId && (
               <tr>
-                <td colSpan={9}>Select a tool to see full history</td>
+                <td colSpan={10}>Select History from a tool row</td>
               </tr>
             )}
           </tbody>

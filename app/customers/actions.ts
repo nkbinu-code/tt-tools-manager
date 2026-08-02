@@ -494,6 +494,34 @@ export async function searchCustomersForPage(
   };
 }
 
+export async function loadCustomersByShopForPage(shop: string) {
+  let query = supabase
+    .from("customers")
+    .select("*")
+    .order("customer_name", { ascending: true })
+    .limit(500);
+
+  const selectedShop = String(shop || "").trim();
+  if (selectedShop && selectedShop !== "All Shops") {
+    query = query.eq("shop", selectedShop);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    return { success: false, message: error.message, data: [], limited: false };
+  }
+
+  const customers = data || [];
+  const enriched = await loadCustomerFinancialRows(customers);
+  return {
+    ...enriched,
+    limited: customers.length >= 500,
+    message: selectedShop && selectedShop !== "All Shops"
+      ? `${selectedShop} customers loaded`
+      : "Customers loaded",
+  };
+}
+
 export async function suggestCustomersForPage(search: string) {
   const term = safeCustomerFilterText(search);
 
