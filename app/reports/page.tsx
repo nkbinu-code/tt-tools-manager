@@ -1478,8 +1478,49 @@ export default function ReportsPage() {
       const serviceRows = services.map((row: any) => [serviceDate(row), toolLabel(row), row.service_centre || "-", row.work_done || row.complaint || "-", rupee(row.cost || row.amount)]);
       const liveRows = rentals.filter((row: any) => isActiveRentalOnDate(row, range.to) && !row.is_transport_charge).map((row: any) => [customerLabel(row), toolLabel(row), Number(row.qty || 1), cleanDate(row.start_date), rupee(row.daily_rate)]);
 
+      const pendingByCustomer = new Map<string, any>();
+      const pendingKey = (row: any) => {
+        const customerId = String(row.customer_id || "").trim();
+        if (customerId) return `id:${customerId}`;
+        const mobile = rowMobile(row).replace(/\D/g, "");
+        if (mobile) return `mobile:${mobile}`;
+        return `name:${normalize(row.customer_name || row.name || "Unknown")}`;
+      };
+      const pendingEntry = (row: any) => {
+        const key = pendingKey(row);
+        const customer: any = customersById.get(String(row.customer_id || ""));
+        const current = pendingByCustomer.get(key) || {
+          name: customer?.customer_name || row.customer_name || row.name || "Unknown Customer",
+          mobile: customer?.mobile || rowMobile(row) || "-",
+          business: 0,
+          paid: 0,
+          discount: 0,
+        };
+        pendingByCustomer.set(key, current);
+        return current;
+      };
+
+      rentals.forEach((row: any) => {
+        const entry = pendingEntry(row);
+        const rentalDiscount = rentalRoundOffWithinRange(row, range.from, range.to);
+        entry.business += rentalAmountWithinRange(row, range.from, range.to) + rentalDiscount;
+        entry.discount += rentalDiscount;
+      });
+      payments.forEach((row: any) => {
+        const entry = pendingEntry(row);
+        entry.paid += paymentCollection(row);
+        entry.discount += paymentRoundOff(row);
+      });
+
+      const pendingCustomerRows = Array.from(pendingByCustomer.values())
+        .map((entry: any) => ({ ...entry, pending: entry.business - entry.paid - entry.discount }))
+        .filter((entry: any) => entry.pending > 0.5)
+        .sort((a: any, b: any) => b.pending - a.pending)
+        .map((entry: any, index: number) => [index + 1, entry.name, entry.mobile, rupee(entry.business), rupee(entry.paid), rupee(entry.discount), rupee(entry.pending)]);
+
       const sections = [
         { title: "Daily Business & Balance", headers: ["Date", "Business", "GPay", "Total Paid", "Discount", "Balance"], rows: dailyRows },
+        { title: "Payment Pending Customers", headers: ["#", "Customer", "Mobile", "Business", "Paid", "Discount", "Pending"], rows: pendingCustomerRows },
         { title: "Payment Details", headers: ["Date", "Customer", "Mode", "Paid", "Discount"], rows: paymentRows },
         { title: "Discount Details", headers: ["Date", "Customer", "Details", "Discount"], rows: discountRows },
         { title: "Expense Details", headers: ["Date", "Category", "Description", "Mode", "Amount"], rows: expenseRows },
