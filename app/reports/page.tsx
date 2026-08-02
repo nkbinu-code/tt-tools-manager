@@ -1490,6 +1490,7 @@ export default function ReportsPage() {
         const key = pendingKey(row);
         const customer: any = customersById.get(String(row.customer_id || ""));
         const current = pendingByCustomer.get(key) || {
+          customerId: customer?.id || row.customer_id || "",
           name: customer?.customer_name || row.customer_name || row.name || "Unknown Customer",
           mobile: customer?.mobile || rowMobile(row) || "-",
           business: 0,
@@ -1516,11 +1517,20 @@ export default function ReportsPage() {
         .map((entry: any) => ({ ...entry, pending: entry.business - entry.paid - entry.discount }))
         .filter((entry: any) => entry.pending > 0.5)
         .sort((a: any, b: any) => b.pending - a.pending)
-        .map((entry: any, index: number) => [index + 1, entry.name, entry.mobile, rupee(entry.business), rupee(entry.paid), rupee(entry.discount), rupee(entry.pending)]);
+        .map((entry: any, index: number) => [
+          index + 1,
+          entry.name,
+          entry.mobile,
+          rupee(entry.business),
+          rupee(entry.paid),
+          rupee(entry.discount),
+          rupee(entry.pending),
+          { kind: "pay", customerId: entry.customerId, mobile: entry.mobile },
+        ]);
 
       const sections = [
+        { title: `Payment Pending Customers (${pendingCustomerRows.length})`, headers: ["#", "Customer", "Mobile", "Business", "Paid", "Discount", "Pending", "Action"], rows: pendingCustomerRows, emptyMessage: "No payment pending customers for this month and shop" },
         { title: "Daily Business & Balance", headers: ["Date", "Business", "GPay", "Total Paid", "Discount", "Balance"], rows: dailyRows },
-        { title: "Payment Pending Customers", headers: ["#", "Customer", "Mobile", "Business", "Paid", "Discount", "Pending"], rows: pendingCustomerRows },
         { title: "Payment Details", headers: ["Date", "Customer", "Mode", "Paid", "Discount"], rows: paymentRows },
         { title: "Discount Details", headers: ["Date", "Customer", "Details", "Discount"], rows: discountRows },
         { title: "Expense Details", headers: ["Date", "Category", "Description", "Mode", "Amount"], rows: expenseRows },
@@ -1808,7 +1818,7 @@ export default function ReportsPage() {
                           {reportType === "shop_performance" && (
                             <td>
                               <button className="btn-blue" type="button" disabled={shopDetailLoading === shopName} onClick={() => void loadShopPerformanceDetails(shopName)}>
-                                {shopDetailLoading === shopName ? "Loading..." : expandedShop === shopName ? "Close" : "Details"}
+                                {shopDetailLoading === shopName ? "Loading..." : expandedShop === shopName ? "Close" : "Details + Pending"}
                               </button>
                             </td>
                           )}
@@ -1824,8 +1834,8 @@ export default function ReportsPage() {
                                       <table>
                                         <thead><tr>{section.headers.map((header: string) => <th key={header}>{header}</th>)}</tr></thead>
                                         <tbody>
-                                          {section.rows.map((detailRow: any[], detailIndex: number) => <tr key={detailIndex}>{detailRow.map((cell: any, cellIndex: number) => <td key={cellIndex} className={String(cell).includes("₹") ? "strong" : ""}>{cell === "" || cell === null ? "-" : cell}</td>)}</tr>)}
-                                          {section.rows.length === 0 && <tr><td colSpan={section.headers.length} className="reports-no-data">No entries</td></tr>}
+                                          {section.rows.map((detailRow: any[], detailIndex: number) => <tr key={detailIndex}>{detailRow.map((cell: any, cellIndex: number) => <td key={cellIndex} className={`${String(cell).includes("₹") ? "strong" : ""} ${cell && typeof cell === "object" && cell.kind === "pay" ? "reports-pay-cell" : ""}`}>{cell && typeof cell === "object" && cell.kind === "pay" ? <a className="reports-pay-button" href={`/payments?returnPay=1&customerId=${encodeURIComponent(String(cell.customerId || ""))}&mobile=${encodeURIComponent(String(cell.mobile || ""))}`}>₹ Pay Now</a> : cell === "" || cell === null ? "-" : cell}</td>)}</tr>)}
+                                          {section.rows.length === 0 && <tr><td colSpan={section.headers.length} className="reports-no-data">{section.emptyMessage || "No entries"}</td></tr>}
                                         </tbody>
                                       </table>
                                     </div>
@@ -2082,6 +2092,42 @@ const reportsStyles = `
     margin: 0 0 10px;
     color: #143f82;
     font-size: 18px;
+  }
+
+  .reports-pay-cell {
+    text-align: center !important;
+    vertical-align: middle !important;
+  }
+
+  .reports-pay-button {
+    display: inline-flex;
+    min-width: 104px;
+    min-height: 38px;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 15px;
+    border: 1px solid #08783e;
+    border-radius: 999px;
+    background: linear-gradient(135deg, #16a34a 0%, #059669 48%, #047857 100%);
+    box-shadow: 0 5px 12px rgba(5, 150, 105, 0.28), inset 0 1px 0 rgba(255,255,255,.34);
+    color: #ffffff !important;
+    font-size: 14px;
+    font-weight: 950;
+    line-height: 1;
+    text-decoration: none !important;
+    white-space: nowrap;
+    transition: transform .15s ease, box-shadow .15s ease, filter .15s ease;
+  }
+
+  .reports-pay-button:hover {
+    filter: brightness(1.07);
+    transform: translateY(-1px);
+    box-shadow: 0 7px 16px rgba(5, 150, 105, 0.34), inset 0 1px 0 rgba(255,255,255,.4);
+  }
+
+  .reports-pay-button:focus-visible {
+    outline: 3px solid rgba(14, 165, 233, .35);
+    outline-offset: 2px;
   }
 
   @media (max-width: 1100px) {
