@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -154,12 +154,12 @@ function compressRowNumbers(rowNumbers: number[]) {
       continue;
     }
 
-    ranges.push(start === previous ? String(start) : `${start}â€“${previous}`);
+    ranges.push(start === previous ? String(start) : `${start}–${previous}`);
     start = current;
     previous = current;
   }
 
-  ranges.push(start === previous ? String(start) : `${start}â€“${previous}`);
+  ranges.push(start === previous ? String(start) : `${start}–${previous}`);
   return ranges.join(", ");
 }
 
@@ -421,11 +421,10 @@ export default function RentalsPage() {
       const groupedSources: any[] = Array.from(
         (details.sources || []).reduce((map: Map<string, any>, source: any) => {
           const shop = normalizeBranch(source.shop || source.tool?.current_location || source.tool?.home_branch || "Not set");
-          const groupKey = shop.trim().toLowerCase().replace(/\s+/g, " ");
-          const current = map.get(groupKey) || { key: groupKey, shop, qty: 0, toolIds: [], tool: source.tool };
+          const current = map.get(shop) || { key: shop, shop, qty: 0, toolIds: [], tool: source.tool };
           current.qty += Math.max(Number(source.qty || 0), 0);
-          if (source.tool?.id && !current.toolIds.includes(Number(source.tool.id))) current.toolIds.push(Number(source.tool.id));
-          map.set(groupKey, current);
+          if (source.tool?.id) current.toolIds.push(Number(source.tool.id));
+          map.set(shop, current);
           return map;
         }, new Map<string, any>()).values() as any,
       );
@@ -1075,7 +1074,7 @@ export default function RentalsPage() {
     const rating = normalizeCustomerRating(customer?.rating);
     if (arrearsAmount > 0) {
       showWarning(
-        `Arrears warning: ${customer.customer_name || "This customer"} has â‚¹${arrearsAmount.toFixed(0)} in arrears.${rating <= 3 ? ` Reliability: ${rating}/10.` : ""}`,
+        `Arrears warning: ${customer.customer_name || "This customer"} has ₹${arrearsAmount.toFixed(0)} in arrears.${rating <= 3 ? ` Reliability: ${rating}/10.` : ""}`,
       );
       return;
     }
@@ -1281,7 +1280,7 @@ export default function RentalsPage() {
             .filter((entry) => entry.qty > 0)
             .sort((a, b) => (a.branch === selectedBranch ? -1 : b.branch === selectedBranch ? 1 : a.branch.localeCompare(b.branch)))
             .map((entry) => `${entry.branch} (${entry.qty})`)
-            .join(" Â· "),
+            .join(" · "),
         };
       })
       .sort((a: any, b: any) => {
@@ -1968,7 +1967,7 @@ export default function RentalsPage() {
 
       {transferPrompt && (
         <div style={confirmOverlayStyle}>
-          <div style={{ ...confirmCardStyle, width: "min(820px,96vw)", maxHeight: "92vh", overflowY: "auto" }}>
+          <div style={{ ...confirmCardStyle, width: "min(640px,96vw)" }}>
             <div style={{ background: "linear-gradient(135deg,#0057ff,#0f2a5f)", color: "white", padding: "20px 24px" }}>
               <div style={{ fontSize: 25, fontWeight: 1000 }}>{transferPrompt.title}</div>
               <div style={{ marginTop: 5, fontWeight: 850 }}>{transferPrompt.toolName}</div>
@@ -1979,45 +1978,21 @@ export default function RentalsPage() {
                   {transferPrompt.toShop} has {transferPrompt.availableHere}. Requested {transferPrompt.requestedQty}. Move {transferPrompt.requiredQty} more.
                 </div>
               )}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 18 }}>
-                <div>
-                  <div style={{ fontWeight: 950, color: "#173d75", marginBottom: 8 }}>1. Choose the source shop</div>
-                  <div style={{ display: "grid", gap: 8 }}>
-                    {(transferPrompt.sources || []).map((source: any) => {
-                      const selected = transferPrompt.sourceKey === source.key;
-                      return (
-                        <button
-                          key={source.key}
-                          type="button"
-                          onClick={() => setTransferPrompt({ ...transferPrompt, sourceKey: source.key })}
-                          style={{
-                            display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10,
-                            width: "100%", padding: "12px 14px", borderRadius: 10, textAlign: "left",
-                            border: selected ? "2px solid #0b63f6" : "1px solid #cbd5e1",
-                            background: selected ? "#eaf2ff" : "#fff", color: "#102f67", fontWeight: 900,
-                          }}
-                        >
-                          <span>{selected ? "â—" : "â—‹"} {source.shop}</span>
-                          <span style={{ background: source.qty >= transferPrompt.requiredQty ? "#dcfce7" : "#ffedd5", color: source.qty >= transferPrompt.requiredQty ? "#08783e" : "#9a4a00", borderRadius: 999, padding: "5px 9px", whiteSpace: "nowrap" }}>
-                            Available {source.qty}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-                <div style={{ display: "grid", gap: 11, alignContent: "start" }}>
-                  <div style={{ fontWeight: 950, color: "#173d75" }}>2. Confirm movement</div>
-                  <label style={{ fontWeight: 900 }}>To shop
-                    <input style={compactInputStyle} value={transferPrompt.toShop} readOnly />
-                  </label>
-                  <label style={{ fontWeight: 900 }}>Quantity to move
-                    <input style={compactInputStyle} value={transferPrompt.requiredQty} readOnly />
-                  </label>
-                  <label style={{ fontWeight: 900 }}>Reason
-                    <input style={compactInputStyle} value={transferPrompt.reason} onChange={(e) => setTransferPrompt({ ...transferPrompt, reason: e.target.value })} />
-                  </label>
-                </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                <label style={{ fontWeight: 900 }}>From shop
+                  <select style={compactSelectStyle} value={transferPrompt.sourceKey} onChange={(e) => setTransferPrompt({ ...transferPrompt, sourceKey: e.target.value })}>
+                    {(transferPrompt.sources || []).map((source: any) => <option key={source.key} value={source.key}>{source.shop} — Available {source.qty}</option>)}
+                  </select>
+                </label>
+                <label style={{ fontWeight: 900 }}>To shop
+                  <input style={compactInputStyle} value={transferPrompt.toShop} readOnly />
+                </label>
+                <label style={{ fontWeight: 900 }}>Quantity to move
+                  <input style={compactInputStyle} value={transferPrompt.requiredQty} readOnly />
+                </label>
+                <label style={{ fontWeight: 900 }}>Reason
+                  <input style={compactInputStyle} value={transferPrompt.reason} onChange={(e) => setTransferPrompt({ ...transferPrompt, reason: e.target.value })} />
+                </label>
               </div>
               <div style={{ marginTop: 14, padding: 12, background: "#eff6ff", borderRadius: 10, fontWeight: 850 }}>
                 Home Shop will remain unchanged. The movement will be saved in Tool History.
@@ -2099,7 +2074,7 @@ export default function RentalsPage() {
               }}
             >
               <div style={{ fontSize: 34, fontWeight: 1000, lineHeight: 1.1 }}>
-                ðŸ“„ Rental Draft Found
+                📄 Rental Draft Found
               </div>
               <div
                 style={{
@@ -2322,7 +2297,7 @@ export default function RentalsPage() {
                       fontSize: 22,
                     }}
                   >
-                    â‚¹{confirmAmount.toFixed(0)}
+                    ₹{confirmAmount.toFixed(0)}
                   </div>
                 </div>
               </div>
@@ -2372,7 +2347,7 @@ export default function RentalsPage() {
                 }}
               >
                 <div style={{ fontSize: 34, fontWeight: 1000, lineHeight: 1.1 }}>
-                  â†© Partial Return
+                  ↩ Partial Return
                 </div>
                 <div
                   style={{
@@ -2501,8 +2476,8 @@ export default function RentalsPage() {
             >
               <div style={{ fontSize: 34, fontWeight: 1000, lineHeight: 1.1 }}>
                 {rentalConfirm.type === "return"
-                  ? "â†© Return Rental"
-                  : "ðŸ—‘ Delete Rental"}
+                  ? "↩ Return Rental"
+                  : "🗑 Delete Rental"}
               </div>
               <div
                 style={{
@@ -2583,7 +2558,7 @@ export default function RentalsPage() {
                           fontWeight: 950,
                         }}
                       >
-                        âš  This action cannot be undone.
+                        ⚠ This action cannot be undone.
                       </div>
                     )}
 
@@ -2600,7 +2575,7 @@ export default function RentalsPage() {
                             fontWeight: 950,
                           }}
                         >
-                          âš  The selected return date is in the future.
+                          ⚠ The selected return date is in the future.
                         </div>
                       )}
 
@@ -2692,7 +2667,7 @@ export default function RentalsPage() {
             <div style={{ color: "#9a3412", fontSize: 13 }}>
               Entry Table Total
             </div>
-            <div style={{ fontSize: 34 }}>â‚¹{totalEntryAmount.toFixed(0)}</div>
+            <div style={{ fontSize: 34 }}>₹{totalEntryAmount.toFixed(0)}</div>
           </div>
 
           <div
@@ -2708,7 +2683,7 @@ export default function RentalsPage() {
             <div style={{ color: "#334155", fontSize: 13 }}>
               Live Rental Today
             </div>
-            <div style={{ fontSize: 34 }}>â‚¹{liveRentalToday.toFixed(0)}</div>
+            <div style={{ fontSize: 34 }}>₹{liveRentalToday.toFixed(0)}</div>
           </div>
 
           <div
@@ -2737,7 +2712,7 @@ export default function RentalsPage() {
               }}
             />
 
-            <div style={{ fontSize: 34 }}>â‚¹{dayTotalBusiness.toFixed(0)}</div>
+            <div style={{ fontSize: 34 }}>₹{dayTotalBusiness.toFixed(0)}</div>
           </div>
         </div>
 
@@ -2790,7 +2765,7 @@ export default function RentalsPage() {
               minHeight: 42,
             }}
           >
-            <span>ðŸ’¾ {draftStatus}</span>
+            <span>💾 {draftStatus}</span>
             <button
               type="button"
               className="btn-gray"
@@ -2902,7 +2877,7 @@ export default function RentalsPage() {
                     cursor: "pointer",
                   }}
                 >
-                  Ã—
+                  ×
                 </button>
               </div>
 
@@ -3114,7 +3089,7 @@ export default function RentalsPage() {
             }}
           >
             <div style={{ fontSize: 20, fontWeight: 1000 }}>
-              âš ï¸ PROCEED WITH CAUTION
+              ⚠️ PROCEED WITH CAUTION
             </div>
             {lowReliabilityGroups.map((item: any) => (
               <div
@@ -3153,7 +3128,7 @@ export default function RentalsPage() {
           <thead>
             <tr>
               <th style={compactHeaderStyle}>No</th>
-              <th style={compactHeaderStyle}>âŽ˜</th>
+              <th style={compactHeaderStyle}>⎘</th>
               <th style={compactHeaderStyle}>Mobile</th>
               <th style={compactHeaderStyle}>Customer</th>
               <th style={compactHeaderStyle}>Tool / Outside Item</th>
@@ -3247,7 +3222,7 @@ export default function RentalsPage() {
                         cursor: "pointer",
                       }}
                     >
-                      Ã—
+                      ×
                     </button>
                   )}
                   <button
@@ -3268,7 +3243,7 @@ export default function RentalsPage() {
                       padding: 0,
                     }}
                   >
-                    âŽ˜
+                    ⎘
                   </button>
                 </td>
 
@@ -3532,7 +3507,7 @@ export default function RentalsPage() {
                                     whiteSpace: "nowrap",
                                   }}
                                 >
-                                  {selectedBranch}: {Number(t._available_qty || 0)} Â· â‚¹
+                                  {selectedBranch}: {Number(t._available_qty || 0)} · ₹
                                   {Number(t.daily_rent || 0).toFixed(0)}
                                 </small>
                               </button>
@@ -3550,8 +3525,8 @@ export default function RentalsPage() {
                                   textAlign: "center",
                                 }}
                               >
-                                No available tool contains â€œ
-                                {currentToolSearchText(index, row)}â€
+                                No available tool contains “
+                                {currentToolSearchText(index, row)}”
                               </div>
                             )}
                           </div>
@@ -3610,7 +3585,7 @@ export default function RentalsPage() {
                     whiteSpace: "nowrap",
                   }}
                 >
-                  â‚¹{calcEntryAmount(row).toFixed(0)}
+                  ₹{calcEntryAmount(row).toFixed(0)}
                 </td>
 
                 <td style={compactCenterCellStyle}>
@@ -3735,7 +3710,7 @@ export default function RentalsPage() {
             </table>
           </div>
           <div style={{ marginTop: 10, textAlign: "right", fontWeight: 950, color: "#0057ff" }}>
-            Transport Total: â‚¹{totalTransportAmount.toFixed(0)}
+            Transport Total: ₹{totalTransportAmount.toFixed(0)}
           </div>
         </section>
 
@@ -3751,7 +3726,7 @@ export default function RentalsPage() {
         >
           <div style={{ fontWeight: 950, color: "#071735" }}>
             Rows: {totalRows} &nbsp; | &nbsp; Qty: {totalQty} &nbsp; | &nbsp;
-            Rental Total: â‚¹{totalEntryAmount.toFixed(0)} &nbsp; | &nbsp; Transport: â‚¹{totalTransportAmount.toFixed(0)}
+            Rental Total: ₹{totalEntryAmount.toFixed(0)} &nbsp; | &nbsp; Transport: ₹{totalTransportAmount.toFixed(0)}
           </div>
 
           <div>
@@ -3806,7 +3781,7 @@ export default function RentalsPage() {
             flexWrap: "wrap",
           }}
         >
-          <h2 style={{ margin: 0 }}>Live Rentals â€” {liveBranchFilter}</h2>
+          <h2 style={{ margin: 0 }}>Live Rentals — {liveBranchFilter}</h2>
 
           <input
             value={liveSearchText}
@@ -3888,13 +3863,13 @@ export default function RentalsPage() {
                     >
                       Outside Rent
                       {r.outside_shop_name
-                        ? ` Â· ${r.outside_shop_name}`
+                        ? ` · ${r.outside_shop_name}`
                         : ""}
                     </div>
                   )}
                 </td>
                 <td style={compactCenterCellStyle}>{r.qty}</td>
-                <td style={compactCenterCellStyle}>â‚¹{r.daily_rate}</td>
+                <td style={compactCenterCellStyle}>₹{r.daily_rate}</td>
                 <td style={compactCenterCellStyle}>{r.start_date}</td>
                 <td style={compactCenterCellStyle}>
                   {r.expected_end_date || r.end_date ? (
@@ -3913,7 +3888,7 @@ export default function RentalsPage() {
                     r.avoid_sundays !== false,
                   )}
                 </td>
-                <td style={compactCenterCellStyle}>â‚¹{(Number(r.qty || 1) * Number(r.daily_rate || 0)).toFixed(0)}</td>
+                <td style={compactCenterCellStyle}>₹{(Number(r.qty || 1) * Number(r.daily_rate || 0)).toFixed(0)}</td>
                 <td style={compactCenterCellStyle}>{r.shop || "-"}</td>
                 <td style={compactCenterCellStyle}>
                   {(r.expected_end_date || r.end_date) &&
@@ -4158,7 +4133,7 @@ export default function RentalsPage() {
                   </td>
                   <td style={compactCenterCellStyle}>{r.qty || 1}</td>
                   <td style={compactCenterCellStyle}>
-                    â‚¹{Number(r.daily_rate || 0).toFixed(0)}
+                    ₹{Number(r.daily_rate || 0).toFixed(0)}
                   </td>
                   <td
                     style={{
@@ -4184,7 +4159,7 @@ export default function RentalsPage() {
                       padding: "5px 3px",
                     }}
                   >
-                    â‚¹{Number(r.total_amount || calcTotal(r)).toFixed(0)}
+                    ₹{Number(r.total_amount || calcTotal(r)).toFixed(0)}
                   </td>
                   <td
                     style={{
@@ -4406,4 +4381,3 @@ const premiumRentalStyles = `
     }
   }
 `;
-
