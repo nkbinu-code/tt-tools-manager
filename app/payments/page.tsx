@@ -15,6 +15,7 @@ import {
   moveCustomerBalanceToArrears,
   updatePaymentEntry,
 } from "./actions";
+import CashStaffTransfers from "./CashStaffTransfers";
 import { returnRentalsBatch } from "../actions";
 import StatementPrintStyles from "../statements/StatementPrintStyles";
 import { useAppMessage } from "../contexts/AppMessageProvider";
@@ -176,6 +177,7 @@ export default function PaymentsPage() {
   const [sales, setSales] = useState<any[]>([]);
   const [arrears, setArrears] = useState<any[]>([]);
   const [shopCashEntries, setShopCashEntries] = useState<any[]>([]);
+  const [cashStaffTransfers, setCashStaffTransfers] = useState<any[]>([]);
 
   const [paymentRows, setPaymentRows] = useState<any[]>(
     Array.from({ length: 5 }, emptyPaymentRow),
@@ -282,6 +284,7 @@ export default function PaymentsPage() {
       { data: saleData },
       { data: arrearsData },
       { data: shopCashData },
+      { data: cashStaffTransferData },
     ] = await Promise.all([
       supabase
         .from("customers")
@@ -302,6 +305,10 @@ export default function PaymentsPage() {
         .from("shop_cash_received")
         .select("*")
         .order("received_date", { ascending: false }),
+      supabase
+        .from("cash_staff_transfers")
+        .select("*")
+        .order("created_at", { ascending: false }),
     ]);
 
     setCustomers(customerData || []);
@@ -311,6 +318,7 @@ export default function PaymentsPage() {
     setSales(saleData || []);
     setArrears(arrearsData || []);
     setShopCashEntries(shopCashData || []);
+    setCashStaffTransfers(cashStaffTransferData || []);
   }
 
   function sameMonth(date: any) {
@@ -1565,33 +1573,33 @@ export default function PaymentsPage() {
       <StatementPrintStyles />
       <style>{`
         .modern-card {
-          background: linear-gradient(180deg, #0b4cc2 0%, #083987 100%) !important;
-          border: 1px solid rgba(255,255,255,0.18) !important;
-          border-radius: 24px !important;
-          box-shadow: 0 20px 42px rgba(2, 8, 23, 0.22) !important;
-          color: #ffffff !important;
+          background: #ffffff !important;
+          border: 1px solid #e1e8f2 !important;
+          border-radius: 10px !important;
+          box-shadow: none !important;
+          color: #0f172a !important;
         }
 
         .modern-card .section-header h2,
         .modern-card h2,
         .modern-card h3 {
-          color: #ffffff !important;
+          color: #061a3d !important;
         }
 
         .modern-card .section-header p {
-          color: rgba(255,255,255,0.78) !important;
+          color: #526783 !important;
         }
 
         .modern-card table {
           background: #ffffff !important;
-          border-radius: 18px !important;
+          border-radius: 8px !important;
           overflow: hidden !important;
         }
 
         .modern-card th {
-          background: #071426 !important;
-          color: #ffffff !important;
-          border-color: rgba(255,255,255,0.12) !important;
+          background: #eaf3ff !important;
+          color: #071735 !important;
+          border-color: #e5eaf3 !important;
         }
 
         .modern-card td {
@@ -2262,6 +2270,15 @@ export default function PaymentsPage() {
           />
         )}
       </section>
+
+      <CashStaffTransfers
+        shops={shops}
+        transfers={cashStaffTransfers}
+        onRefresh={loadData}
+        showError={showError}
+        showSuccess={showSuccess}
+        showWarning={showWarning}
+      />
 
       <section className="modern-card">
         <SectionHeader

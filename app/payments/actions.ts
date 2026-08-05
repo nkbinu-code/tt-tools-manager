@@ -3,6 +3,8 @@
 import { supabase } from "@/lib/supabase";
 import { revalidatePath } from "next/cache";
 import { buildCustomerBalanceRows } from "../calculations";
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { validateRecoveryPassword } from "@/lib/recoveryAuth";
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
@@ -408,4 +410,102 @@ export async function moveCustomerBalanceToArrears(input: {
   revalidatePath("/customers");
 
   return { success: true, message: "Balance moved to arrears" };
+}
+
+export async function recordCashSentThroughStaff(input: {
+  sent_date: string;
+  amount: number;
+  collect_from: string;
+  shop_breakdown: Array<{ shop: string; amount: number }>;
+  remarks?: string;
+}) {
+  const sentDate = normalize(input.sent_date) || todayISO();
+  const collectFrom = normalize(input.collect_from);
+  const amount = Number(input.amount || 0);
+  const shopBreakdown = (input.shop_breakdown || [])
+    .map((row) => ({
+      shop: normalize(row.shop),
+      amount: Number(row.amount || 0),
+    }))
+    .filter((row) => row.shop && row.amount > 0);
+
+  if (!collectFrom) return { success: false, message: "Please enter Collect From" };
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { success: false, message: "Please enter a valid amount" };
+  }
+  if (shopBreakdown.length === 0) {
+    return { success: false, message: "Please add at least one shop amount" };
+  }
+
+  const uniqueShops = new Set(shopBreakdown.map((row) => row.shop));
+  if (uniqueShops.size !== shopBreakdown.length) {
+    return { success: false, message: "The same shop cannot be added twice" };
+  }
+
+  const allocatedTotal = shopBreakdown.reduce(
+    (sum, row) => sum + row.amount,
+    0,
+  );
+  if (Math.abs(allocatedTotal - amount) > 0.009) {
+    return {
+      success: false,
+      message: "Shop-wise amounts must equal the total amount sent",
+    };
+  }
+
+  const { error } = await supabase.from("cash_staff_transfers").insert({
+    sent_date: sentDate,
+    shop: shopBreakdown.length === 1 ? shopBreakdown[0].shop : "Multiple Shops",
+    amount,
+    staff_name: collectFrom,
+    shop_breakdown: shopBreakdown,
+    remarks: normalize(input.remarks),
+    status: "pending",
+  });
+
+  if (error) return { success: false, message: error.message };
+
+  revalidatePath("/payments");
+  return { success: true, message: "Cash sent entry recorded" };
+}
+
+export async function confirmCashReceivedFromStaff(input: {
+  transfer_id: any;
+  administrator_password: string;
+}) {
+  const transferId = normalize(input.transfer_id);
+  if (!transferId) return { success: false, message: "Cash transfer not found" };
+
+  const passwordError = validateRecoveryPassword(
+    normalize(input.administrator_password),
+  );
+  if (passwordError) {
+    return {
+      success: false,
+      message: passwordError.replace("Backup Administrator", "Administrator"),
+    };
+  }
+
+  try {
+    const admin = getSupabaseAdmin();
+    const { data, error } = await admin.rpc("confirm_cash_staff_transfer", {
+      p_transfer_id: transferId,
+    });
+
+    if (error) return { success: false, message: error.message };
+    if (!data) {
+      return {
+        success: false,
+        message: "This entry was already confirmed or is no longer pending",
+      };
+    }
+
+    revalidatePath("/payments");
+    return { success: true, message: "Cash received confirmed" };
+  } catch (error) {
+    return {
+      success: false,
+      message: error instanceof Error ? error.message : "Confirmation failed",
+    };
+  }
 }

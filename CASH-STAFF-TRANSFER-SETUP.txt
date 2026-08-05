@@ -1,0 +1,18 @@
+T&T TOOLS MANAGER - CASH SENT THROUGH STAFF SETUP
+
+1. Open Supabase Dashboard -> SQL Editor -> New query.
+2. Copy all SQL from:
+   supabase/migrations/20260805_add_cash_staff_transfers.sql
+3. Press Run once.
+4. Test locally with: npm run dev
+
+The Confirm Received button uses the existing BACKUP_ADMIN_PASSWORD.
+One transfer can contain amounts from several shops and includes Collect From.
+The shop-wise allocated total must equal the total amount sent. After protected
+confirmation, each shop amount is added to Shop Cash Received automatically.
+Browser users cannot directly update or delete pending or confirmed transfers.
+
+After checking locally, deploy normally with:
+  git add .
+  git commit -m "Add protected cash staff transfer confirmation"
+  git push origin main
