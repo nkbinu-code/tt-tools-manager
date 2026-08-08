@@ -58,7 +58,19 @@ async function proxyDatabaseRequest(
   });
 
   const responseHeaders = new Headers(upstream.headers);
-  responseHeaders.delete("set-cookie");
+  // fetch() has already decoded the upstream response body. Forwarding the
+  // original compression/length headers can make Vercel send a body that the
+  // browser cannot decode, which surfaces as `TypeError: Failed to fetch`.
+  for (const name of [
+    "set-cookie",
+    "content-encoding",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+  ]) {
+    responseHeaders.delete(name);
+  }
+  responseHeaders.set("cache-control", "private, no-store");
 
   return new Response(upstream.body, {
     status: upstream.status,
