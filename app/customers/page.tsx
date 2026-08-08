@@ -102,18 +102,23 @@ function ratingColor(value: any) {
   const rating = normalizeRating(value);
   const colors: Record<number, string> = {
     1: "#991b1b",
-    2: "#dc2626",
-    3: "#f97316",
-    4: "#f59e0b",
-    5: "#eab308",
-    6: "#84cc16",
-    7: "#65a30d",
-    8: "#22c55e",
-    9: "#16a34a",
+    2: "#b91c1c",
+    3: "#dc2626",
+    4: "#f97316",
+    5: "#f59e0b",
+    6: "#facc15",
+    7: "#eab308",
+    8: "#86efac",
+    9: "#4ade80",
     10: "#15803d",
   };
 
   return colors[rating] || colors[10];
+}
+
+function ratingTextColor(value: any) {
+  const rating = normalizeRating(value);
+  return rating >= 4 && rating <= 9 ? "#172033" : "#ffffff";
 }
 
 function ReliabilityBadge({ value }: { value: any }) {
@@ -122,7 +127,7 @@ function ReliabilityBadge({ value }: { value: any }) {
   return (
     <span
       className="customer-reliability-pill"
-      style={{ background: ratingColor(rating) }}
+      style={{ background: ratingColor(rating), color: ratingTextColor(rating) }}
       title={`Reliability ${rating}/10`}
     >
       {rating}/10
@@ -154,6 +159,7 @@ function RatingButtons({
                   ? "3px solid #0f172a"
                   : "1px solid #e2e8f0",
               background: ratingColor(rating),
+              color: ratingTextColor(rating),
             }}
           >
             {rating}
