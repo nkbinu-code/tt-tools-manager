@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { SESSION_COOKIE, verifySessionToken } from "@/lib/session";
 
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   if (
@@ -13,9 +14,15 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const loggedIn = request.cookies.get("tt_logged_in")?.value;
+  const token = request.cookies.get(SESSION_COOKIE)?.value;
 
-  if (loggedIn !== "yes") {
+  if (!(await verifySessionToken(token))) {
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json(
+        { error: "Authentication required." },
+        { status: 401 },
+      );
+    }
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
@@ -23,5 +30,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!api|_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };

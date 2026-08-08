@@ -1,7 +1,9 @@
 "use server";
 
-import { supabase } from "@/lib/supabase";
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { revalidatePath } from "next/cache";
+
+const supabase = getSupabaseAdmin();
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);

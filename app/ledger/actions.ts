@@ -1,6 +1,8 @@
 "use server";
 
-import { supabase } from "../../lib/supabase";
+import { getSupabaseAdmin } from "../../lib/supabaseAdmin";
+
+const supabase = getSupabaseAdmin();
 import {
   buildCustomerBalanceRows,
   calcCustomerTotals,

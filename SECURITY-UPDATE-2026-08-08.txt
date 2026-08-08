@@ -1,0 +1,32 @@
+T&T TOOLS MANAGER - SECURITY UPDATE - 2026-08-08
+
+IMPORTANT ORDER
+
+1. Do NOT run the Supabase RLS SQL first.
+2. Add APP_SESSION_SECRET to both local .env.local and the Vercel project.
+   Use a random value of at least 32 characters.
+3. Confirm these existing server-side variables are configured:
+   APP_PASSWORD
+   SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_SECRET_KEY)
+   NEXT_PUBLIC_SUPABASE_URL
+   NEXT_PUBLIC_SUPABASE_ANON_KEY
+4. Install/build and test the updated Manager while the database is unchanged.
+5. Deploy the updated Manager.
+6. Test login, dashboard, rentals, returns, payments, customers, tools,
+   services, expenses, sales and reports.
+7. Only then run:
+   supabase/migrations/20260808_secure_public_data.sql
+   in the Supabase SQL Editor.
+8. Test the Manager again.
+9. Re-run Supabase Security Advisor.
+
+WHAT CHANGED
+
+- The old forgeable tt_logged_in=yes cookie was replaced with a signed session.
+- The Manager password no longer falls back to a hard-coded default.
+- Browser database requests now go through the authenticated Manager server.
+- Server actions use the private Supabase server client.
+- The Supabase service-role/secret key remains server-only.
+
+The RLS migration changes access rules only. It does not delete or modify
+rentals, tools, customers, payments, services or other business records.

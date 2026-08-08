@@ -1,10 +1,11 @@
 "use server";
 
-import { supabase } from "@/lib/supabase";
 import { revalidatePath } from "next/cache";
 import { buildCustomerBalanceRows } from "../calculations";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { validateRecoveryPassword } from "@/lib/recoveryAuth";
+
+const supabase = getSupabaseAdmin();
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
